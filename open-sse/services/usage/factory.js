@@ -30,8 +30,8 @@ export async function getFactoryUsage(accessToken, providerSpecificData = null, 
   const headers = {
     Authorization: `Bearer ${accessToken}`,
     "X-Factory-Client": process.env.FACTORY_UPSTREAM_CLIENT_TYPE?.trim() || "cli",
-    "X-Client-Version": "0.213.0",
-    "User-Agent": "factory-cli/0.213.0",
+    "X-Client-Version": "0.215.1",
+    "User-Agent": "factory-cli/0.215.1",
   };
 
   const orgId = providerSpecificData?.orgId || process.env.FACTORY_ORG_ID?.trim();
@@ -78,6 +78,7 @@ export async function getFactoryUsage(accessToken, providerSpecificData = null, 
       quotas,
       plan: data.planType || "standard",
       ...(extraUsage ? { extraUsage } : {}),
+      ...(typeof data.usesTokenRateLimitsBilling === "boolean" ? { usesTokenRateLimitsBilling: data.usesTokenRateLimitsBilling } : {}),
       raw: data,
     };
   } catch (err) {

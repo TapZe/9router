@@ -25,8 +25,8 @@ export default {
     format: "openai",
     headers: {
       "X-Factory-Client": "cli",
-      "X-Client-Version": "0.213.0",
-      "User-Agent": "factory-cli/0.213.0",
+      "X-Client-Version": "0.215.1",
+      "User-Agent": "factory-cli/0.215.1",
     },
     usage: {
       url: "https://api.factory.ai/api/billing/limits",
@@ -42,6 +42,11 @@ export default {
     {
       format: "claude",
       baseUrl: "https://api.factory.ai/api/llm/a/v1/messages",
+      auth: { combined: true, header: "Authorization", scheme: "bearer" },
+    },
+    {
+      format: "gemini",
+      baseUrl: "https://api.factory.ai/api/llm/g/v1/generate",
       auth: { combined: true, header: "Authorization", scheme: "bearer" },
     },
     {
@@ -136,5 +141,14 @@ export default {
     { id: "deepseek-v4-flash-0731", name: "DeepSeek V4 Flash (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "nemotron-3-ultra", name: "Nemotron 3 Ultra (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "inkling", name: "Inkling (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
+
+    // Google Gemini family (routed to /api/llm/g/v1/generate)
+    { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
+    { id: "gemini-3.7-flash", name: "Gemini 3.7 Flash (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
+    { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
+    { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
+    { id: "gemini-3-flash-preview", name: "Gemini 3 Flash Preview (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
+    { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
+    { id: "gemini-3-pro-preview", name: "Gemini 3 Pro Preview (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
   ],
 };

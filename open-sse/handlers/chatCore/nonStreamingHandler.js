@@ -267,10 +267,21 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
         if (part.thought === true && part.text) reasoningContent += part.text;
         else if (part.text !== undefined) textContent += part.text;
         if (part.functionCall) {
+          let name = part.functionCall.name;
+          let args = part.functionCall.args || {};
+          if (typeof name === "string" && name.trimStart().startsWith("{")) {
+            try {
+              const parsed = JSON.parse(name);
+              if (parsed?.name) {
+                name = parsed.name;
+                args = typeof parsed.arguments === "object" ? parsed.arguments : (parsed.arguments || args);
+              }
+            } catch {}
+          }
           toolCalls.push({
-            id: `call_${part.functionCall.name}_${Date.now()}_${toolCalls.length}`,
+            id: `call_${name}_${Date.now()}_${toolCalls.length}`,
             type: "function",
-            function: { name: part.functionCall.name, arguments: JSON.stringify(part.functionCall.args || {}) }
+            function: { name, arguments: JSON.stringify(args) }
           });
         }
         // Handle inline image data (from image generation models)

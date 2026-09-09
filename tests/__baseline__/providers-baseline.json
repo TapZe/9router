@@ -1018,8 +1018,8 @@
     "forceStream": true,
     "headers": {
       "X-Factory-Client": "cli",
-      "X-Client-Version": "0.213.0",
-      "User-Agent": "factory-cli/0.213.0"
+      "X-Client-Version": "0.215.1",
+      "User-Agent": "factory-cli/0.215.1"
     },
     "usage": {
       "url": "https://api.factory.ai/api/billing/limits"
@@ -1035,6 +1035,15 @@
       {
         "format": "claude",
         "baseUrl": "https://api.factory.ai/api/llm/a/v1/messages",
+        "auth": {
+          "combined": true,
+          "header": "Authorization",
+          "scheme": "bearer"
+        }
+      },
+      {
+        "format": "gemini",
+        "baseUrl": "https://api.factory.ai/api/llm/g/v1/generate",
         "auth": {
           "combined": true,
           "header": "Authorization",

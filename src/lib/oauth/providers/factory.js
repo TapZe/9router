@@ -114,8 +114,8 @@ const factory = {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
           "X-Factory-Client": "cli",
-          "X-Client-Version": "0.213.0",
-          "User-Agent": "factory-cli/0.213.0",
+          "X-Client-Version": "0.215.1",
+          "User-Agent": "factory-cli/0.215.1",
         },
       });
       if (res.ok) {

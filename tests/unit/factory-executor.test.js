@@ -59,6 +59,16 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("nemotron-3-ultra")).toBe("openai-completions");
       expect(resolveTargetGateway("inkling")).toBe("openai-completions");
     });
+
+    it("routes Gemini models to Google Generative AI gateway", () => {
+      expect(resolveTargetGateway("gemini-3.8-flash")).toBe("google");
+      expect(resolveTargetGateway("gemini-3.7-flash")).toBe("google");
+      expect(resolveTargetGateway("gemini-3.6-flash")).toBe("google");
+      expect(resolveTargetGateway("gemini-3.5-flash")).toBe("google");
+      expect(resolveTargetGateway("gemini-3-flash-preview")).toBe("google");
+      expect(resolveTargetGateway("gemini-3.1-pro-preview")).toBe("google");
+      expect(resolveTargetGateway("gemini-3-pro-preview")).toBe("google");
+    });
   });
 
   describe("upstreamProviderFor", () => {
@@ -66,6 +76,12 @@ describe("FactoryExecutor", () => {
       expect(upstreamProviderFor("claude-opus-5")).toBe("anthropic");
       expect(upstreamProviderFor("claude-sonnet-4-6")).toBe("anthropic");
       expect(upstreamProviderFor("atlas-07-21")).toBe("anthropic");
+    });
+
+    it("returns google for Gemini family", () => {
+      expect(upstreamProviderFor("gemini-3.8-flash")).toBe("google");
+      expect(upstreamProviderFor("gemini-3-flash-preview")).toBe("google");
+      expect(upstreamProviderFor("gemini-3.1-pro-preview")).toBe("google");
     });
 
     it("returns openai for GPT and Codex models", () => {
@@ -155,17 +171,14 @@ describe("FactoryExecutor", () => {
     });
 
     it("configures enabled thinking with budget_tokens and without effort for MiniMax", () => {
-      const configHigh = resolveClaudeThinking("minimax-m3", "high");
-      expect(configHigh.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
-      expect(configHigh.outputConfig).toBeUndefined();
-      expect(configHigh.requiresEffortBeta).toBe(false);
+      const config = resolveClaudeThinking("minimax-m3", "low");
+      expect(config.thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
+      expect(config.outputConfig).toBeUndefined();
+      expect(config.requiresEffortBeta).toBe(false);
 
-      const configDefault = resolveClaudeThinking("minimax-m2.7");
-      expect(configDefault.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
-      expect(configDefault.outputConfig).toBeUndefined();
-
-      const configCustom = resolveClaudeThinking("minimax-m2.7", 3000);
-      expect(configCustom.thinking).toEqual({ type: "enabled", budget_tokens: 3000 });
+      const highConfig = resolveClaudeThinking("minimax-m2.7", "high");
+      expect(highConfig.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
+      expect(highConfig.outputConfig).toBeUndefined();
     });
   });
 
@@ -174,6 +187,11 @@ describe("FactoryExecutor", () => {
 
     it("builds Anthropic messages URL for Claude", () => {
       expect(executor.buildUrl("claude-opus-5", true)).toBe("https://api.factory.ai/api/llm/a/v1/messages");
+    });
+
+    it("builds Google Generative AI URL for Gemini", () => {
+      expect(executor.buildUrl("gemini-3.8-flash", true)).toBe("https://api.factory.ai/api/llm/g/v1/generate");
+      expect(executor.buildUrl("gemini-3-flash-preview", true)).toBe("https://api.factory.ai/api/llm/g/v1/generate");
     });
 
     it("builds OpenAI Responses URL for GPT and Grok", () => {
@@ -198,10 +216,11 @@ describe("FactoryExecutor", () => {
       const headers = executor.buildHeaders(creds, true, "", "claude-fable-5.1");
 
       expect(headers["X-Factory-Client"]).toBe("cli");
-      expect(headers["X-Client-Version"]).toBe("0.213.0");
-      expect(headers["User-Agent"]).toBe("factory-cli/0.213.0");
+      expect(headers["X-Client-Version"]).toBe("0.215.1");
+      expect(headers["User-Agent"]).toBe("factory-cli/0.215.1");
       expect(headers["Authorization"]).toBe("Bearer workos-token-123");
       expect(headers["X-Factory-Org-Id"]).toBe("RFmWaCAuH8jTGM21tL5k");
+      expect(headers["x-provider-routing-source"]).toBe("registry_default");
     });
 
     it("appends effort beta header for adaptive Claude models", () => {
@@ -227,6 +246,15 @@ describe("FactoryExecutor", () => {
 
       expect(headers["OpenAI-Platform"]).toBe(FACTORY_OPENAI_PLATFORM_ORG);
       expect(headers["x-api-provider"]).toBe("xai");
+    });
+
+    it("attaches x-provider-routing-source: registry_default and strips x-goog-api-key for Gemini", () => {
+      const creds = { accessToken: "tok" };
+      const headers = executor.buildHeaders(creds, true, "", "gemini-3.8-flash");
+
+      expect(headers["x-api-provider"]).toBe("google");
+      expect(headers["x-provider-routing-source"]).toBe("registry_default");
+      expect(headers["x-goog-api-key"]).toBeUndefined();
     });
 
     it("attaches x-session-id and x-assistant-message-id UUID headers", () => {
@@ -303,6 +331,31 @@ describe("FactoryExecutor", () => {
       expect(transformed.tool_choice).toBe("auto");
       expect(transformed.parallel_tool_calls).toBe(true);
       expect(transformed.store).toBe(false);
+    });
+
+    it("formats tools to functionDeclarations for Google Gemini gateway", () => {
+      const body = {
+        messages: [{ role: "user", content: "Check status" }],
+        tools: [
+          {
+            type: "function",
+            function: { name: "get_status", description: "Get server status", parameters: { type: "object" } },
+          },
+        ],
+      };
+      const transformed = executor.transformRequest("gemini-3.8-flash", body, true);
+      expect(transformed.model).toBe("gemini-3.8-flash");
+      expect(transformed.tools).toEqual([
+        {
+          functionDeclarations: [
+            {
+              name: "get_status",
+              description: "Get server status",
+              parameters: { type: "object" },
+            },
+          ],
+        },
+      ]);
     });
 
     it("preserves tool calls and tool results in conversation history", () => {
@@ -443,9 +496,90 @@ describe("FactoryExecutor", () => {
       const glm = executor.transformRequest("glm-5.3", { messages: [] });
       expect(glm.reasoning_history).toBe("preserved");
     });
+
+    it("injects FACTORY_DROID_SYSTEM_PROMPT into Gemini systemInstruction and configures thinking", () => {
+      const body = {
+        contents: [{ role: "user", parts: [{ text: "Hello" }] }],
+        reasoning_effort: "high",
+      };
+      const transformed = executor.transformRequest("gemini-3.8-flash", body, true);
+      expect(transformed.model).toBe("gemini-3.8-flash");
+      expect(transformed.systemInstruction).toBeDefined();
+      expect(transformed.systemInstruction.parts[0].text).toContain("You are Droid, an AI software engineering agent built by Factory");
+      expect(transformed.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
+      // Critical Google proto3 constraints: no stream, no reasoning_effort at top-level
+      expect(transformed.stream).toBeUndefined();
+      expect(transformed.reasoning_effort).toBeUndefined();
+    });
+
+    it("sanitizes Gemini requests: strips stream, tool_choice, messages and moves params to generationConfig", () => {
+      const body = {
+        messages: [
+          { role: "system", content: "You are Claude Code, official assistant. Be helpful." },
+          { role: "user", content: "Write a test" },
+        ],
+        stream: true,
+        reasoning_effort: "high",
+        max_tokens: 2048,
+        temperature: 0.7,
+        top_p: 0.9,
+        stop: ["END"],
+        tool_choice: "auto",
+        parallel_tool_calls: true,
+        tools: [],
+      };
+      const transformed = executor.transformRequest("gemini-3.7-flash", body, true);
+
+      // model injected
+      expect(transformed.model).toBe("gemini-3.7-flash");
+      // stream stripped
+      expect(transformed.stream).toBeUndefined();
+      // reasoning_effort stripped and moved to thinkingConfig
+      expect(transformed.reasoning_effort).toBeUndefined();
+      expect(transformed.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
+      // generationConfig parameters moved and deleted from top-level
+      expect(transformed.generationConfig?.maxOutputTokens).toBe(2048);
+      expect(transformed.max_tokens).toBeUndefined();
+      expect(transformed.generationConfig?.temperature).toBe(0.7);
+      expect(transformed.temperature).toBeUndefined();
+      expect(transformed.generationConfig?.topP).toBe(0.9);
+      expect(transformed.top_p).toBeUndefined();
+      expect(transformed.generationConfig?.stopSequences).toEqual(["END"]);
+      expect(transformed.stop).toBeUndefined();
+      // messages converted to contents
+      expect(transformed.messages).toBeUndefined();
+      expect(transformed.contents).toBeDefined();
+      expect(transformed.contents[0].parts[0].text).toBe("Write a test");
+      // systemInstruction has Droid prefix and stripped Claude Code identity
+      expect(transformed.systemInstruction.role).toBe("user");
+      expect(transformed.systemInstruction.parts[0].text).toContain("You are Droid, an AI software engineering agent built by Factory");
+      expect(transformed.systemInstruction.parts[0].text).toContain("Be helpful.");
+      expect(transformed.systemInstruction.parts[0].text).not.toContain("You are Claude Code");
+      // non-Gemini top-level fields stripped
+      expect(transformed.tool_choice).toBeUndefined();
+      expect(transformed.parallel_tool_calls).toBeUndefined();
+      expect(transformed.tools).toBeUndefined();
+    });
+
+    it("normalizes reasoning effort: allows xhigh for supported models and clamps for others", () => {
+      // Supported models keep xhigh / max -> xhigh
+      const gpt6 = executor.transformRequest("gpt-6-astra", { reasoning_effort: "max" }, true);
+      expect(gpt6.reasoning_effort).toBe("xhigh");
+
+      const glm = executor.transformRequest("glm-5.3", { reasoning_effort: "xhigh" }, true);
+      expect(glm.reasoning_effort).toBe("xhigh");
+
+      // Non-supported models clamp xhigh / max -> high
+      const gpt54 = executor.transformRequest("gpt-5.4", { reasoning_effort: "max" }, true);
+      expect(gpt54.reasoning_effort).toBe("high");
+
+      // minimal -> low
+      const min = executor.transformRequest("gpt-5.4", { reasoning_effort: "minimal" }, true);
+      expect(min.reasoning_effort).toBe("low");
+    });
   });
 
-  describe("Non-streaming response translation (Responses & Claude → OpenAI)", () => {
+  describe("Non-streaming response translation (Responses, Claude & Gemini → OpenAI)", () => {
     it("converts OpenAI Responses non-streaming output to OpenAI Chat Completion with choices and tool_calls", async () => {
       const { translateNonStreamingResponse } = await import("../../open-sse/handlers/chatCore/nonStreamingHandler.js");
       const responsesOutput = {
@@ -508,6 +642,59 @@ describe("FactoryExecutor", () => {
       expect(converted.choices).toHaveLength(1);
       expect(converted.choices[0].finish_reason).toBe("tool_calls");
       expect(converted.choices[0].message.tool_calls[0].function.name).toBe("read_file");
+    });
+
+    it("unwraps embedded JSON tool name in Gemini non-streaming candidate parts", async () => {
+      const { translateNonStreamingResponse } = await import("../../open-sse/handlers/chatCore/nonStreamingHandler.js");
+      const geminiOutput = {
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  functionCall: {
+                    name: JSON.stringify({ name: "grep_search", arguments: { query: "export" } }),
+                    args: { query: "export" },
+                  },
+                },
+              ],
+            },
+            finishReason: "STOP",
+          },
+        ],
+      };
+
+      const converted = translateNonStreamingResponse(geminiOutput, "gemini", "openai");
+      expect(converted.choices).toHaveLength(1);
+      expect(converted.choices[0].finish_reason).toBe("tool_calls");
+      expect(converted.choices[0].message.tool_calls[0].function.name).toBe("grep_search");
+    });
+
+    it("unwraps embedded JSON tool name in Gemini streaming response chunk", async () => {
+      const { geminiToOpenAIResponse } = await import("../../open-sse/translator/response/gemini-to-openai.js");
+      const geminiChunk = {
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  functionCall: {
+                    name: JSON.stringify({ name: "bash", arguments: { command: "pwd" } }),
+                    args: { command: "pwd" },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      };
+
+      const state = { functionIndex: 0, model: "gemini-3.8-flash" };
+      const chunks = geminiToOpenAIResponse(geminiChunk, state);
+      expect(chunks).toBeDefined();
+      const toolCallChunk = chunks.find((c) => c.choices?.[0]?.delta?.tool_calls);
+      expect(toolCallChunk).toBeDefined();
+      expect(toolCallChunk.choices[0].delta.tool_calls[0].function.name).toBe("bash");
     });
   });
 });

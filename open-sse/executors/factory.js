@@ -11,7 +11,7 @@ export const FACTORY_DROID_SYSTEM_PROMPT =
   "4. NEVER output conversational commentary, promises, or preambles of what you will do before calling tools (do NOT say 'I will inspect...', 'Let me read...', or 'I need to check...'). Call the tools directly.\n" +
   "5. Always ground all analysis, planning, and answers in actual file contents and tool outputs rather than assumptions.";
 
-export const FACTORY_CLIENT_VERSION = "0.213.0";
+export const FACTORY_CLIENT_VERSION = "0.215.1";
 export const FACTORY_OPENAI_PLATFORM_ORG = "org-bHuLtG1fGmYk5YaOihAAXFBw";
 export const ANTHROPIC_VERSION = "2023-06-01";
 export const ANTHROPIC_BETAS = "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14";
@@ -19,8 +19,6 @@ export const ANTHROPIC_EFFORT_BETA = "effort-2025-11-24";
 
 // Server-generated item ID prefixes from OpenAI Responses that cause 404 with store=false
 const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
-
-
 
 export function embeddedToolCallFromName(name) {
   if (typeof name !== "string" || !name.trimStart().startsWith("{")) {
@@ -50,6 +48,9 @@ export function resolveTargetGateway(modelId) {
   if (m.startsWith("claude-") || m.startsWith("minimax-") || m.startsWith("atlas-") || m.startsWith("aster-")) {
     return "anthropic";
   }
+  if (m.startsWith("gemini-")) {
+    return "google";
+  }
   if (m.startsWith("gpt-") || m.startsWith("gpt6") || m.endsWith("-codex") || m.startsWith("grok-")) {
     return "openai-responses";
   }
@@ -60,6 +61,9 @@ export function upstreamProviderFor(modelId) {
   const m = String(modelId || "").toLowerCase();
   if (m.startsWith("claude-") || m.startsWith("atlas-") || m.startsWith("aster-")) {
     return "anthropic";
+  }
+  if (m.startsWith("gemini-")) {
+    return "google";
   }
   if (m.startsWith("gpt-") || m.startsWith("gpt6") || m.endsWith("-codex")) {
     return "openai";
@@ -154,6 +158,9 @@ export class FactoryExecutor extends BaseExecutor {
     if (gateway === "anthropic") {
       return `${base}/api/llm/a/v1/messages`;
     }
+    if (gateway === "google") {
+      return `${base}/api/llm/g/v1/generate`;
+    }
     if (gateway === "openai-responses") {
       return `${base}/api/llm/o/v1/responses`;
     }
@@ -184,6 +191,7 @@ export class FactoryExecutor extends BaseExecutor {
 
     const gateway = resolveTargetGateway(model);
     headers["x-api-provider"] = upstreamProviderFor(model);
+    headers["x-provider-routing-source"] = "registry_default";
 
     if (gateway === "anthropic") {
       headers["anthropic-version"] = ANTHROPIC_VERSION;
@@ -195,6 +203,8 @@ export class FactoryExecutor extends BaseExecutor {
       }
     } else if (gateway === "openai-responses") {
       headers["OpenAI-Platform"] = FACTORY_OPENAI_PLATFORM_ORG;
+    } else if (gateway === "google") {
+      delete headers["x-goog-api-key"];
     }
 
     if (globalThis.crypto?.randomUUID) {
@@ -214,10 +224,12 @@ export class FactoryExecutor extends BaseExecutor {
   transformRequest(model, body, stream, credentials) {
     if (!body || typeof body !== "object") return body;
     const cloned = { ...body };
-    cloned.stream = !!stream;
-
     const gateway = resolveTargetGateway(model);
     const m = String(model || "").toLowerCase();
+
+    if (gateway !== "google") {
+      cloned.stream = !!stream;
+    }
 
     if (Array.isArray(cloned.tools) && cloned.tools.length > 0) {
       if (gateway === "anthropic") {
@@ -250,6 +262,31 @@ export class FactoryExecutor extends BaseExecutor {
         });
         cloned.tool_choice = "auto";
         cloned.parallel_tool_calls = true;
+      } else if (gateway === "google") {
+        // Google Gemini shape: tools: [{ functionDeclarations: [...] }]
+        if (cloned.tools[0]?.functionDeclarations) {
+          // Already in Gemini format
+        } else {
+          const declarations = [];
+          for (const t of cloned.tools) {
+            if (!t || typeof t !== "object") continue;
+            const name = t.name || t.function?.name || "";
+            const desc = t.description || t.function?.description || "";
+            const schema = t.parameters || t.function?.parameters || t.input_schema || { type: "object", properties: {} };
+            if (name) {
+              declarations.push({
+                name,
+                description: desc,
+                parameters: schema,
+              });
+            }
+          }
+          if (declarations.length > 0) {
+            cloned.tools = [{ functionDeclarations: declarations }];
+          } else {
+            delete cloned.tools;
+          }
+        }
       } else {
         // OpenAI Chat shape: { type: "function", function: { name, description, parameters } }
         cloned.tools = cloned.tools.map((t) => {
@@ -358,6 +395,128 @@ export class FactoryExecutor extends BaseExecutor {
           return true;
         });
       }
+    } else if (gateway === "google") {
+      // Google Gemini format (/api/llm/g/v1/generate requires model in body)
+      cloned.model = model;
+
+      // Convert messages to contents if contents is missing (e.g. raw OpenAI shape input)
+      if (!cloned.contents && Array.isArray(cloned.messages)) {
+        const contents = [];
+        let systemText = "";
+        for (const msg of cloned.messages) {
+          if (msg.role === "system") {
+            systemText += (systemText ? "\n\n" : "") + (typeof msg.content === "string" ? msg.content : "");
+          } else {
+            const role = msg.role === "assistant" ? "model" : "user";
+            const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+            contents.push({ role, parts: [{ text }] });
+          }
+        }
+        cloned.contents = contents;
+        if (systemText && !cloned.systemInstruction) {
+          cloned.systemInstruction = systemText;
+        }
+      }
+
+      if (typeof cloned.systemInstruction === "string") {
+        const clean = stripCompeting(cloned.systemInstruction);
+        const text = clean.includes(DROID_PROMPT_PREFIX)
+          ? clean
+          : (clean ? `${FACTORY_DROID_SYSTEM_PROMPT}\n\n${clean}` : FACTORY_DROID_SYSTEM_PROMPT);
+        cloned.systemInstruction = {
+          role: "user",
+          parts: [{ text }],
+        };
+      } else if (cloned.systemInstruction?.parts && Array.isArray(cloned.systemInstruction.parts)) {
+        const cleaned = cloned.systemInstruction.parts
+          .map((p) => (typeof p === "string" ? { text: stripCompeting(p) } : { ...p, text: stripCompeting(p.text || "") }))
+          .filter((p) => typeof p.text === "string" && p.text.length > 0);
+        const hasPrefix = cleaned.some((item) => item.text?.includes(DROID_PROMPT_PREFIX));
+        if (!hasPrefix) {
+          cleaned.unshift({ text: FACTORY_DROID_SYSTEM_PROMPT });
+        }
+        cloned.systemInstruction = {
+          role: "user",
+          parts: cleaned,
+        };
+      } else {
+        cloned.systemInstruction = {
+          role: "user",
+          parts: [{ text: FACTORY_DROID_SYSTEM_PROMPT }],
+        };
+      }
+
+      // Gemini level-based thinking config
+      const supportsMinimal = m === "gemini-3-flash-preview" || m === "gemini-3.5-flash";
+      const effort = cloned.reasoning_effort || cloned.thinking?.effort || credentials?._requestedEffort;
+      if (effort) {
+        let level = String(effort).toLowerCase();
+        if (level === "minimal" && !supportsMinimal) level = "low";
+        if (level === "xhigh" || level === "max") level = "high";
+        if (!cloned.generationConfig) cloned.generationConfig = {};
+        if (!cloned.generationConfig.thinkingConfig) {
+          cloned.generationConfig.thinkingConfig = { thinkingLevel: level };
+        }
+      }
+
+      // Clean up parameters mapped into generationConfig
+      if (cloned.max_tokens !== undefined) {
+        if (!cloned.generationConfig) cloned.generationConfig = {};
+        if (cloned.generationConfig.maxOutputTokens === undefined) {
+          cloned.generationConfig.maxOutputTokens = cloned.max_tokens;
+        }
+        delete cloned.max_tokens;
+      }
+      if (cloned.temperature !== undefined) {
+        if (!cloned.generationConfig) cloned.generationConfig = {};
+        if (cloned.generationConfig.temperature === undefined) {
+          cloned.generationConfig.temperature = cloned.temperature;
+        }
+        delete cloned.temperature;
+      }
+      if (cloned.top_p !== undefined) {
+        if (!cloned.generationConfig) cloned.generationConfig = {};
+        if (cloned.generationConfig.topP === undefined) {
+          cloned.generationConfig.topP = cloned.top_p;
+        }
+        delete cloned.top_p;
+      }
+      if (cloned.top_k !== undefined) {
+        if (!cloned.generationConfig) cloned.generationConfig = {};
+        if (cloned.generationConfig.topK === undefined) {
+          cloned.generationConfig.topK = cloned.top_k;
+        }
+        delete cloned.top_k;
+      }
+      if (cloned.stop !== undefined) {
+        if (!cloned.generationConfig) cloned.generationConfig = {};
+        if (!cloned.generationConfig.stopSequences) {
+          cloned.generationConfig.stopSequences = Array.isArray(cloned.stop) ? cloned.stop : [cloned.stop];
+        }
+        delete cloned.stop;
+      }
+
+      // Google proto3 GenerateContentRequest schema strictly rejects unknown fields.
+      // Top-level fields like `stream`, `reasoning_effort`, `thinking`, `tool_choice`,
+      // `parallel_tool_calls`, `messages` cause HTTP 400:
+      // "Invalid JSON payload received. Unknown name 'stream': Cannot find field."
+      delete cloned.stream;
+      delete cloned.reasoning_effort;
+      delete cloned.thinking;
+      delete cloned.tool_choice;
+      delete cloned.parallel_tool_calls;
+      delete cloned.messages;
+      delete cloned.user;
+      delete cloned.store;
+      delete cloned.metadata;
+      delete cloned.service_tier;
+      delete cloned.n;
+      delete cloned.logit_bias;
+      delete cloned.response_format;
+
+      if (Array.isArray(cloned.tools) && cloned.tools.length === 0) {
+        delete cloned.tools;
+      }
     } else {
       // OpenAI Chat Completions format (Factory Core / Fireworks gateway)
       if (Array.isArray(cloned.messages)) {
@@ -419,6 +578,27 @@ export class FactoryExecutor extends BaseExecutor {
       // 4. Reasoning history for completions gateway
       const isDeepseek = m.startsWith("deepseek-");
       cloned.reasoning_history = isDeepseek ? "interleaved" : "preserved";
+    }
+
+    // 5. Reasoning effort normalization across gateways
+    const supportsExtraHighEffort =
+      m === "grok-4.6" ||
+      m.startsWith("gpt-6") ||
+      m.startsWith("gpt6") ||
+      m.startsWith("gpt-5.6") ||
+      m.startsWith("glm-5.3") ||
+      m.startsWith("claude-opus-5") ||
+      m.startsWith("claude-fable-5");
+
+    if (cloned.reasoning_effort) {
+      const re = String(cloned.reasoning_effort).toLowerCase();
+      if (re === "minimal") {
+        cloned.reasoning_effort = "low";
+      } else if (re === "max") {
+        cloned.reasoning_effort = supportsExtraHighEffort ? "xhigh" : "high";
+      } else if (re === "xhigh" && !supportsExtraHighEffort) {
+        cloned.reasoning_effort = "high";
+      }
     }
 
     return cloned;
