@@ -1,4 +1,5 @@
 import { FACTORY_CONFIG } from "../constants/oauth.js";
+import { FACTORY_CLIENT_VERSION, randomTraceparent } from "open-sse/executors/factory.js";
 
 const WORKOS_CLIENT_ID = "client_01HNM792M5G5G1A2THWPXKFMXB";
 const WORKOS_DEVICE_AUTHORIZE = "https://api.workos.com/user_management/authorize/device";
@@ -114,8 +115,9 @@ const factory = {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
           "X-Factory-Client": "cli",
-          "X-Client-Version": "0.215.1",
-          "User-Agent": "factory-cli/0.215.1",
+          "X-Client-Version": FACTORY_CLIENT_VERSION,
+          "User-Agent": `factory-cli/${FACTORY_CLIENT_VERSION}`,
+          traceparent: randomTraceparent(),
         },
       });
       if (res.ok) {

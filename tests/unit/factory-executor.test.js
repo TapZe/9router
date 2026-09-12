@@ -6,6 +6,7 @@ import {
   resolveFactoryApiBase,
   resolveClaudeThinking,
   embeddedToolCallFromName,
+  supportsExtraHighEffort,
   FACTORY_DROID_SYSTEM_PROMPT,
   FACTORY_OPENAI_PLATFORM_ORG,
   ANTHROPIC_VERSION,
@@ -216,11 +217,12 @@ describe("FactoryExecutor", () => {
       const headers = executor.buildHeaders(creds, true, "", "claude-fable-5.1");
 
       expect(headers["X-Factory-Client"]).toBe("cli");
-      expect(headers["X-Client-Version"]).toBe("0.215.1");
-      expect(headers["User-Agent"]).toBe("factory-cli/0.215.1");
+      expect(headers["X-Client-Version"]).toBe("0.218.1");
+      expect(headers["User-Agent"]).toBe("factory-cli/0.218.1");
       expect(headers["Authorization"]).toBe("Bearer workos-token-123");
       expect(headers["X-Factory-Org-Id"]).toBe("RFmWaCAuH8jTGM21tL5k");
       expect(headers["x-provider-routing-source"]).toBe("registry_default");
+      expect(headers["traceparent"]).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
     });
 
     it("appends effort beta header for adaptive Claude models", () => {
@@ -569,6 +571,9 @@ describe("FactoryExecutor", () => {
       const glm = executor.transformRequest("glm-5.3", { reasoning_effort: "xhigh" }, true);
       expect(glm.reasoning_effort).toBe("xhigh");
 
+      const grok = executor.transformRequest("grok-4.6", { reasoning_effort: "max" }, true);
+      expect(grok.reasoning_effort).toBe("xhigh");
+
       // Non-supported models clamp xhigh / max -> high
       const gpt54 = executor.transformRequest("gpt-5.4", { reasoning_effort: "max" }, true);
       expect(gpt54.reasoning_effort).toBe("high");
@@ -576,6 +581,17 @@ describe("FactoryExecutor", () => {
       // minimal -> low
       const min = executor.transformRequest("gpt-5.4", { reasoning_effort: "minimal" }, true);
       expect(min.reasoning_effort).toBe("low");
+
+      // Verify supportsExtraHighEffort helper directly
+      expect(supportsExtraHighEffort("grok-4.6")).toBe(true);
+      expect(supportsExtraHighEffort("qwen-2.5-coder")).toBe(true);
+      expect(supportsExtraHighEffort("qwen2.5-72b")).toBe(true);
+      expect(supportsExtraHighEffort("gpt-6-astra")).toBe(true);
+      expect(supportsExtraHighEffort("gpt-5.6-sol")).toBe(true);
+      expect(supportsExtraHighEffort("claude-opus-5")).toBe(true);
+      expect(supportsExtraHighEffort("claude-fable-5.1")).toBe(true);
+      expect(supportsExtraHighEffort("gpt-5.4")).toBe(false);
+      expect(supportsExtraHighEffort("claude-sonnet-4-6")).toBe(false);
     });
   });
 

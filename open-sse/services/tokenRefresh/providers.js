@@ -710,6 +710,19 @@ export async function refreshWindsurfToken(credentials, log) {
   return null;
 }
 
+function parseJwtPayload(token) {
+  if (!token || typeof token !== "string" || !token.includes(".")) return null;
+  try {
+    const [, b64] = token.split(".");
+    const base64 = b64.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    const json = Buffer.from(padded, "base64").toString("utf8");
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
 export async function refreshFactoryToken(refreshToken, credentials, log) {
   if (!refreshToken) return null;
   return dedupRefresh("factory", refreshToken, async () => {
@@ -717,44 +730,88 @@ export async function refreshFactoryToken(refreshToken, credentials, log) {
     const clientId = oauth.clientId || "client_01HNM792M5G5G1A2THWPXKFMXB";
     const tokenUrl = oauth.tokenUrl || "https://api.workos.com/user_management/authenticate";
     const orgId = credentials?.providerSpecificData?.orgId;
+    // WorkOS expects organization_id to be an internal WorkOS identifier (starting with "org_" or "org-").
+    // Passing an external Factory organization ID causes WorkOS to reject with 400 organization_not_found.
+    const isWorkosOrgId = orgId ? /^org[-_][a-zA-Z0-9_-]+$/.test(orgId) : false;
 
     const params = new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,
       client_id: clientId,
-      ...(orgId ? { organization_id: orgId } : {}),
+      ...(isWorkosOrgId && orgId ? { organization_id: orgId } : {}),
     });
 
-    const response = await fetch(tokenUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "application/json",
-      },
-      body: params,
-    });
+    const maxAttempts = 3;
+    let lastError = null;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      log?.error?.("TOKEN_REFRESH", "Failed to refresh Factory token", {
-        status: response.status,
-        error: errorText,
-      });
-      const err = classifyOAuthRefreshError(response.status, errorText);
-      return err || null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const response = await fetch(tokenUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            Accept: "application/json",
+          },
+          body: params,
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          const isTransient = response.status === 429 || (response.status >= 500 && response.status <= 504);
+          if (isTransient && attempt < maxAttempts) {
+            log?.warn?.("TOKEN_REFRESH", `Transient error refreshing Factory token (HTTP ${response.status}), retrying attempt ${attempt + 1}/${maxAttempts}...`);
+            await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+            continue;
+          }
+
+          log?.error?.("TOKEN_REFRESH", "Failed to refresh Factory token", {
+            status: response.status,
+            error: errorText,
+          });
+          const failure = classifyOAuthRefreshError(errorText, response.status);
+          if (failure.permanent) {
+            log?.error?.("TOKEN_REFRESH", "Factory refresh token already used or invalid. Re-auth required.", {
+              status: response.status,
+              code: failure.code,
+            });
+            return { error: "unrecoverable_refresh_error", code: failure.code };
+          }
+          return null;
+        }
+
+        const data = await response.json();
+        if (!data.access_token) {
+          log?.error?.("TOKEN_REFRESH", "Factory token refresh returned no access token", data);
+          return null;
+        }
+
+        const jwt = parseJwtPayload(data.access_token);
+        const tokenOrgId = jwt?.org_id || jwt?.organization_id || jwt?.external_org_id || null;
+        const finalOrgId = credentials?.providerSpecificData?.orgId || tokenOrgId;
+
+        return {
+          accessToken: data.access_token,
+          refreshToken: data.refresh_token || refreshToken,
+          expiresIn: data.expires_in,
+          providerSpecificData: {
+            ...credentials?.providerSpecificData,
+            ...(finalOrgId ? { orgId: finalOrgId } : {}),
+          },
+        };
+      } catch (err) {
+        lastError = err;
+        if (attempt < maxAttempts) {
+          log?.warn?.("TOKEN_REFRESH", `Network error refreshing Factory token (${err.message}), retrying attempt ${attempt + 1}/${maxAttempts}...`);
+          await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+          continue;
+        }
+      }
     }
 
-    const data = await response.json();
-    if (!data.access_token) {
-      log?.error?.("TOKEN_REFRESH", "Factory token refresh returned no access token", data);
-      return null;
+    if (lastError) {
+      log?.error?.("TOKEN_REFRESH", `Factory token refresh network error after ${maxAttempts} attempts: ${lastError.message}`);
     }
-
-    return {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token || refreshToken,
-      expiresIn: data.expires_in,
-    };
+    return null;
   }, log);
 }
 
