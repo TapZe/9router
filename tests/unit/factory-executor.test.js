@@ -59,7 +59,6 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("deepseek-v4-flash-0731")).toBe("openai-completions");
       expect(resolveTargetGateway("nemotron-3-ultra")).toBe("openai-completions");
       expect(resolveTargetGateway("inkling")).toBe("openai-completions");
-      expect(resolveTargetGateway("qwen3.8-max")).toBe("openai-completions");
     });
 
     it("routes Gemini models to Google Generative AI gateway", () => {
@@ -104,7 +103,6 @@ describe("FactoryExecutor", () => {
       expect(upstreamProviderFor("deepseek-v4-pro")).toBe("fireworks");
       expect(upstreamProviderFor("nemotron-3-ultra")).toBe("fireworks");
       expect(upstreamProviderFor("inkling")).toBe("fireworks");
-      expect(upstreamProviderFor("qwen3.8-max")).toBe("fireworks");
     });
   });
 
@@ -573,8 +571,8 @@ describe("FactoryExecutor", () => {
       const glm = executor.transformRequest("glm-5.3", { reasoning_effort: "xhigh" }, true);
       expect(glm.reasoning_effort).toBe("xhigh");
 
-      const qwen = executor.transformRequest("qwen3.8-max", { reasoning_effort: "max" }, true);
-      expect(qwen.reasoning_effort).toBe("xhigh");
+      const grok = executor.transformRequest("grok-4.6", { reasoning_effort: "max" }, true);
+      expect(grok.reasoning_effort).toBe("xhigh");
 
       // Non-supported models clamp xhigh / max -> high
       const gpt54 = executor.transformRequest("gpt-5.4", { reasoning_effort: "max" }, true);
@@ -585,7 +583,7 @@ describe("FactoryExecutor", () => {
       expect(min.reasoning_effort).toBe("low");
 
       // Verify supportsExtraHighEffort helper directly
-      expect(supportsExtraHighEffort("qwen3.8-max")).toBe(true);
+      expect(supportsExtraHighEffort("grok-4.6")).toBe(true);
       expect(supportsExtraHighEffort("qwen-2.5-coder")).toBe(true);
       expect(supportsExtraHighEffort("qwen2.5-72b")).toBe(true);
       expect(supportsExtraHighEffort("gpt-6-astra")).toBe(true);
