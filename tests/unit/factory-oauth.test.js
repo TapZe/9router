@@ -272,6 +272,17 @@ describe("Factory OAuth & Token Management", () => {
       expect(refreshed.providerSpecificData?.orgId).toBe("org_backfilled_999");
     });
 
+    it("classifies permanent OAuth error as unrecoverable_refresh_error", async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: async () => JSON.stringify({ error: "invalid_grant", error_description: "The authorization grant is invalid" }),
+      });
+
+      const failure = await refreshFactoryToken("dead_refresh_token_unrecoverable", {});
+      expect(failure?.error).toBe("unrecoverable_refresh_error");
+    });
+
     it("returns null when refreshToken is missing", async () => {
       const refreshed = await refreshFactoryToken(null);
       expect(refreshed).toBeNull();

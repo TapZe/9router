@@ -768,8 +768,15 @@ export async function refreshFactoryToken(refreshToken, credentials, log) {
             status: response.status,
             error: errorText,
           });
-          const err = classifyOAuthRefreshError(errorText, response.status);
-          return err || null;
+          const failure = classifyOAuthRefreshError(errorText, response.status);
+          if (failure.permanent) {
+            log?.error?.("TOKEN_REFRESH", "Factory refresh token already used or invalid. Re-auth required.", {
+              status: response.status,
+              code: failure.code,
+            });
+            return { error: "unrecoverable_refresh_error", code: failure.code };
+          }
+          return null;
         }
 
         const data = await response.json();
