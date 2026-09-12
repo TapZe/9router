@@ -165,7 +165,7 @@ describe("Factory OAuth & Token Management", () => {
   });
 
   describe("refreshFactoryToken and refreshTokenByProvider", () => {
-    it("refreshes token via WorkOS and includes organization_id", async () => {
+    it("omits external alphanumeric Factory orgId from WorkOS refresh payload to prevent 400 rejection", async () => {
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         json: async () => ({
@@ -176,20 +176,62 @@ describe("Factory OAuth & Token Management", () => {
       });
 
       const refreshed = await refreshFactoryToken("old_refresh_token", {
-        providerSpecificData: { orgId: "org_test_refresh" },
+        providerSpecificData: { orgId: "RFmWaCAuH8jTGM21tL5k", region: "eu" },
       });
 
       expect(refreshed.accessToken).toBe("new_factory_access_token");
       expect(refreshed.refreshToken).toBe("new_factory_refresh_token");
       expect(refreshed.expiresIn).toBe(3600);
+      expect(refreshed.providerSpecificData.orgId).toBe("RFmWaCAuH8jTGM21tL5k");
 
-      expect(global.fetch).toHaveBeenCalledWith(
-        "https://api.workos.com/user_management/authenticate",
-        expect.objectContaining({
-          method: "POST",
-          body: expect.any(URLSearchParams),
-        })
-      );
+      const call = global.fetch.mock.calls[0];
+      const body = call[1].body;
+      expect(body.get("grant_type")).toBe("refresh_token");
+      expect(body.get("client_id")).toBe("client_01HNM792M5G5G1A2THWPXKFMXB");
+      expect(body.get("refresh_token")).toBe("old_refresh_token");
+      expect(body.get("organization_id")).toBeNull();
+    });
+
+    it("includes organization_id when orgId matches WorkOS internal org pattern", async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          access_token: "new_factory_access_token",
+          refresh_token: "new_factory_refresh_token",
+          expires_in: 3600,
+        }),
+      });
+
+      const refreshed = await refreshFactoryToken("old_refresh_token_workos_pattern", {
+        providerSpecificData: { orgId: "org_workos_123" },
+      });
+
+      expect(refreshed.accessToken).toBe("new_factory_access_token");
+      const call = global.fetch.mock.calls[0];
+      const body = call[1].body;
+      expect(body.get("organization_id")).toBe("org_workos_123");
+    });
+
+    it("retries on transient 429/500 errors and succeeds", async () => {
+      let attempts = 0;
+      global.fetch = vi.fn().mockImplementation(async () => {
+        attempts++;
+        if (attempts === 1) {
+          return { ok: false, status: 429, text: async () => "Rate limited" };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            access_token: "retry_success_token",
+            refresh_token: "retry_success_refresh",
+            expires_in: 3600,
+          }),
+        };
+      });
+
+      const refreshed = await refreshFactoryToken("transient_refresh_token", {});
+      expect(refreshed.accessToken).toBe("retry_success_token");
+      expect(attempts).toBe(2);
     });
 
     it("dispatches through refreshTokenByProvider", async () => {
@@ -209,6 +251,25 @@ describe("Factory OAuth & Token Management", () => {
 
       expect(refreshed.accessToken).toBe("dispatch_access_token");
       expect(refreshed.refreshToken).toBe("dispatch_refresh_token");
+    });
+
+    it("backfills orgId from refreshed access token JWT when credentials lack orgId", async () => {
+      const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64");
+      const payload = Buffer.from(JSON.stringify({ org_id: "org_backfilled_999" })).toString("base64");
+      const jwtWithOrg = `${header}.${payload}.signature`;
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          access_token: jwtWithOrg,
+          refresh_token: "ref_backfill_tok",
+          expires_in: 3600,
+        }),
+      });
+
+      const refreshed = await refreshFactoryToken("token_for_backfill_test", {});
+      expect(refreshed.accessToken).toBe(jwtWithOrg);
+      expect(refreshed.providerSpecificData?.orgId).toBe("org_backfilled_999");
     });
 
     it("returns null when refreshToken is missing", async () => {
