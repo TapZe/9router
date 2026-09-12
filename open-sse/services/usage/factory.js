@@ -1,6 +1,6 @@
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
 import { parseResetTime, toFiniteNumber } from "./shared.js";
-import { resolveFactoryApiBase } from "../../executors/factory.js";
+import { resolveFactoryApiBase, FACTORY_CLIENT_VERSION, randomTraceparent } from "../../executors/factory.js";
 
 function formatFactoryWindow(window) {
   if (!window || typeof window !== "object") return null;
@@ -30,8 +30,9 @@ export async function getFactoryUsage(accessToken, providerSpecificData = null, 
   const headers = {
     Authorization: `Bearer ${accessToken}`,
     "X-Factory-Client": process.env.FACTORY_UPSTREAM_CLIENT_TYPE?.trim() || "cli",
-    "X-Client-Version": "0.215.1",
-    "User-Agent": "factory-cli/0.215.1",
+    "X-Client-Version": FACTORY_CLIENT_VERSION,
+    "User-Agent": `factory-cli/${FACTORY_CLIENT_VERSION}`,
+    traceparent: randomTraceparent(),
   };
 
   const orgId = providerSpecificData?.orgId || process.env.FACTORY_ORG_ID?.trim();

@@ -11,11 +11,30 @@ export const FACTORY_DROID_SYSTEM_PROMPT =
   "4. NEVER output conversational commentary, promises, or preambles of what you will do before calling tools (do NOT say 'I will inspect...', 'Let me read...', or 'I need to check...'). Call the tools directly.\n" +
   "5. Always ground all analysis, planning, and answers in actual file contents and tool outputs rather than assumptions.";
 
-export const FACTORY_CLIENT_VERSION = "0.215.1";
+export const FACTORY_CLIENT_VERSION = "0.218.1";
 export const FACTORY_OPENAI_PLATFORM_ORG = "org-bHuLtG1fGmYk5YaOihAAXFBw";
 export const ANTHROPIC_VERSION = "2023-06-01";
 export const ANTHROPIC_BETAS = "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14";
 export const ANTHROPIC_EFFORT_BETA = "effort-2025-11-24";
+
+function randomHex(bytes) {
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    const arr = new Uint8Array(bytes);
+    globalThis.crypto.getRandomValues(arr);
+    return Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  let out = "";
+  for (let i = 0; i < bytes; i++) {
+    out += Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+export function randomTraceparent() {
+  const traceId = randomHex(16);
+  const spanId = randomHex(8);
+  return `00-${traceId}-${spanId}-01`;
+}
 
 // Server-generated item ID prefixes from OpenAI Responses that cause 404 with store=false
 const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
@@ -147,6 +166,20 @@ export function resolveClaudeThinking(modelId, requestedEffort) {
   };
 }
 
+export function supportsExtraHighEffort(modelId) {
+  const m = String(modelId || "").toLowerCase();
+  return (
+    m === "grok-4.6" ||
+    m.startsWith("gpt-6") ||
+    m.startsWith("gpt6") ||
+    m.startsWith("gpt-5.6") ||
+    m.startsWith("glm-5.3") ||
+    m.startsWith("claude-opus-5") ||
+    m.startsWith("claude-fable-5") ||
+    m.startsWith("qwen")
+  );
+}
+
 export class FactoryExecutor extends BaseExecutor {
   constructor(provider = "factory") {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
@@ -192,6 +225,7 @@ export class FactoryExecutor extends BaseExecutor {
     const gateway = resolveTargetGateway(model);
     headers["x-api-provider"] = upstreamProviderFor(model);
     headers["x-provider-routing-source"] = "registry_default";
+    headers["traceparent"] = randomTraceparent();
 
     if (gateway === "anthropic") {
       headers["anthropic-version"] = ANTHROPIC_VERSION;
@@ -581,22 +615,15 @@ export class FactoryExecutor extends BaseExecutor {
     }
 
     // 5. Reasoning effort normalization across gateways
-    const supportsExtraHighEffort =
-      m === "grok-4.6" ||
-      m.startsWith("gpt-6") ||
-      m.startsWith("gpt6") ||
-      m.startsWith("gpt-5.6") ||
-      m.startsWith("glm-5.3") ||
-      m.startsWith("claude-opus-5") ||
-      m.startsWith("claude-fable-5");
+    const hasExtraHigh = supportsExtraHighEffort(m);
 
     if (cloned.reasoning_effort) {
       const re = String(cloned.reasoning_effort).toLowerCase();
       if (re === "minimal") {
         cloned.reasoning_effort = "low";
       } else if (re === "max") {
-        cloned.reasoning_effort = supportsExtraHighEffort ? "xhigh" : "high";
-      } else if (re === "xhigh" && !supportsExtraHighEffort) {
+        cloned.reasoning_effort = hasExtraHigh ? "xhigh" : "high";
+      } else if (re === "xhigh" && !hasExtraHigh) {
         cloned.reasoning_effort = "high";
       }
     }

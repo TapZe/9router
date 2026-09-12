@@ -25,8 +25,8 @@ export default {
     format: "openai",
     headers: {
       "X-Factory-Client": "cli",
-      "X-Client-Version": "0.215.1",
-      "User-Agent": "factory-cli/0.215.1",
+      "X-Client-Version": "0.218.1",
+      "User-Agent": "factory-cli/0.218.1",
     },
     usage: {
       url: "https://api.factory.ai/api/billing/limits",
@@ -139,6 +139,7 @@ export default {
     { id: "glm-4.6", name: "GLM 4.6 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "deepseek-v4-flash-0731", name: "DeepSeek V4 Flash (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
+    { id: "qwen3.8-max", name: "Qwen3.8 Max (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "nemotron-3-ultra", name: "Nemotron 3 Ultra (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "inkling", name: "Inkling (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
 

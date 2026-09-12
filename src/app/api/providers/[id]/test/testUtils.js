@@ -5,6 +5,7 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/sha
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js";
 import { CODEX_CLI_VERSION } from "open-sse/config/appConstants.js";
+import { FACTORY_CLIENT_VERSION, randomTraceparent } from "open-sse/executors/factory.js";
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
@@ -133,12 +134,15 @@ const OAUTH_TEST_CONFIG = {
     authPrefix: "Bearer ",
     extraHeaders: {
       "X-Factory-Client": "cli",
-      "X-Client-Version": "0.213.0",
-      "User-Agent": "factory-cli/0.213.0",
+      "X-Client-Version": FACTORY_CLIENT_VERSION,
+      "User-Agent": `factory-cli/${FACTORY_CLIENT_VERSION}`,
     },
     getHeaders: (connection) => {
       const orgId = connection?.providerSpecificData?.orgId;
-      return orgId ? { "X-Factory-Org-Id": orgId } : {};
+      return {
+        traceparent: randomTraceparent(),
+        ...(orgId ? { "X-Factory-Org-Id": orgId } : {}),
+      };
     },
     refreshable: true,
   },
@@ -849,8 +853,9 @@ case "llm7": {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
             "X-Factory-Client": "cli",
-            "X-Client-Version": "0.213.0",
-            "User-Agent": "factory-cli/0.213.0",
+            "X-Client-Version": FACTORY_CLIENT_VERSION,
+            "User-Agent": `factory-cli/${FACTORY_CLIENT_VERSION}`,
+            traceparent: randomTraceparent(),
           },
         }, effectiveProxy);
         if (res.ok) return { valid: true, error: null };
