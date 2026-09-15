@@ -7,6 +7,7 @@ vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
 import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
 import { getFactoryUsage } from "../../open-sse/services/usage/factory.js";
 import { getUsageForProvider } from "../../open-sse/services/usage.js";
+import { parseQuotaData } from "../../src/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
 import { USAGE_SUPPORTED_PROVIDERS } from "../../src/shared/constants/providers.js";
 
 function jsonResponse(body, status = 200) {
@@ -95,9 +96,9 @@ describe("Factory Usage Service", () => {
     expect(result.quotas.core_5h.used).toBe(80.0);
     expect(result.quotas.core_5h.remaining).toBe(20.0);
 
-    // Fallbacks for standard dashboard views
-    expect(result.quotas.session).toEqual(result.quotas.standard_5h);
-    expect(result.quotas.weekly).toEqual(result.quotas.standard_weekly);
+    // Redundant session and weekly aliases should not be present
+    expect(result.quotas.session).toBeUndefined();
+    expect(result.quotas.weekly).toBeUndefined();
 
     // Extra usage
     expect(result.extraUsage).toEqual({
@@ -132,5 +133,56 @@ describe("Factory Usage Service", () => {
 
     expect(result.plan).toBe("pro");
     expect(result.quotas.standard_5h.used).toBe(42.5);
+  });
+
+  it("normalizes Factory quotas into Standard and Core windows for dashboard QuotaTable", async () => {
+    proxyAwareFetch.mockResolvedValue(jsonResponse(SAMPLE_LIMITS_RESPONSE));
+
+    const result = await getFactoryUsage("factory-access-token-123");
+    const normalized = parseQuotaData("factory", result);
+
+    expect(normalized.map((q) => q.name)).toEqual([
+      "Standard (5h)",
+      "Standard (Weekly)",
+      "Standard (Monthly)",
+      "Core (5h)",
+      "Core (Weekly)",
+    ]);
+
+    expect(normalized[0]).toMatchObject({
+      name: "Standard (5h)",
+      quotaType: "standard_5h",
+      used: 42.5,
+      total: 100,
+      remaining: 57.5,
+      resetAt: "2026-09-05T18:00:00.000Z",
+    });
+
+    expect(normalized[3]).toMatchObject({
+      name: "Core (5h)",
+      quotaType: "core_5h",
+      used: 80.0,
+      total: 100,
+      remaining: 20.0,
+      resetAt: "2026-09-05T19:00:00.000Z",
+    });
+
+    // Verify session and weekly aliases are ignored even if injected
+    const withAliases = {
+      ...result,
+      quotas: {
+        ...result.quotas,
+        session: result.quotas.standard_5h,
+        weekly: result.quotas.standard_weekly,
+      },
+    };
+    const normalizedWithAliases = parseQuotaData("factory", withAliases);
+    expect(normalizedWithAliases.map((q) => q.name)).toEqual([
+      "Standard (5h)",
+      "Standard (Weekly)",
+      "Standard (Monthly)",
+      "Core (5h)",
+      "Core (Weekly)",
+    ]);
   });
 });

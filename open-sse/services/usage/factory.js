@@ -63,10 +63,6 @@ export async function getFactoryUsage(accessToken, providerSpecificData = null, 
     if (core.weekly) quotas.core_weekly = formatFactoryWindow(core.weekly);
     if (core.monthly) quotas.core_monthly = formatFactoryWindow(core.monthly);
 
-    // Provide default session and weekly quotas for standard UI display
-    if (quotas.standard_5h && !quotas.session) quotas.session = quotas.standard_5h;
-    if (quotas.standard_weekly && !quotas.weekly) quotas.weekly = quotas.standard_weekly;
-
     const extraUsage = typeof data.extraUsageBalanceCents === "number"
       ? {
           balance: data.extraUsageBalanceCents / 100,
