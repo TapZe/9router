@@ -272,6 +272,29 @@ describe("Factory OAuth & Token Management", () => {
       expect(refreshed.providerSpecificData?.orgId).toBe("org_backfilled_999");
     });
 
+    it("derives expiresIn and expiresAt from JWT exp claim when WorkOS omits expires_in", async () => {
+      const futureExp = Math.floor(Date.now() / 1000) + 86400; // 24 hours
+      const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64");
+      const payload = Buffer.from(JSON.stringify({ exp: futureExp, org_id: "org_exp_test" })).toString("base64");
+      const jwtToken = `${header}.${payload}.sig`;
+
+      // Real WorkOS responses omit expires_in!
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          access_token: jwtToken,
+          refresh_token: "new_rotated_refresh_token",
+        }),
+      });
+
+      const refreshed = await refreshFactoryToken("valid_refresh_token", {});
+      expect(refreshed.accessToken).toBe(jwtToken);
+      expect(refreshed.refreshToken).toBe("new_rotated_refresh_token");
+      expect(refreshed.expiresIn).toBeGreaterThan(86300);
+      expect(refreshed.expiresIn).toBeLessThanOrEqual(86400);
+      expect(refreshed.expiresAt).toBe(new Date(futureExp * 1000).toISOString());
+    });
+
     it("classifies permanent OAuth error as unrecoverable_refresh_error", async () => {
       global.fetch = vi.fn().mockResolvedValue({
         ok: false,
@@ -289,6 +312,28 @@ describe("Factory OAuth & Token Management", () => {
 
       const viaDispatch = await refreshTokenByProvider("factory", {});
       expect(viaDispatch).toBeNull();
+    });
+  });
+
+  describe("FactoryExecutor refresh integration", () => {
+    it("implements refreshCredentials and needsRefresh on FactoryExecutor", async () => {
+      const { FactoryExecutor } = await import("../../open-sse/executors/factory.js");
+      const executor = new FactoryExecutor();
+
+      expect(typeof executor.refreshCredentials).toBe("function");
+      expect(typeof executor.needsRefresh).toBe("function");
+
+      // Without refresh token, returns null
+      const noRt = await executor.refreshCredentials({});
+      expect(noRt).toBeNull();
+
+      // Fresh token does not need refresh
+      const future = new Date(Date.now() + 10 * 3600 * 1000).toISOString();
+      expect(executor.needsRefresh({ expiresAt: future })).toBe(false);
+
+      // Expired or near-expiry token needs refresh
+      const nearExpiry = new Date(Date.now() + 60 * 1000).toISOString();
+      expect(executor.needsRefresh({ expiresAt: nearExpiry })).toBe(true);
     });
   });
 });

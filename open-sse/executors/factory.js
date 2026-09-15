@@ -1,5 +1,9 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
+import {
+  refreshProviderCredentials,
+  shouldRefreshCredentials,
+} from "../services/oauthCredentialManager.js";
 
 export const FACTORY_DROID_SYSTEM_PROMPT =
   "You are Droid, an AI software engineering agent built by Factory.\n" +
@@ -183,6 +187,15 @@ export function supportsExtraHighEffort(modelId) {
 export class FactoryExecutor extends BaseExecutor {
   constructor(provider = "factory") {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
+  }
+
+  async refreshCredentials(credentials, log, proxyOptions = null) {
+    if (!credentials?.refreshToken) return null;
+    return refreshProviderCredentials("factory", credentials, log);
+  }
+
+  needsRefresh(credentials) {
+    return shouldRefreshCredentials("factory", credentials);
   }
 
   buildUrl(model, stream, urlIndex = 0, credentials = null) {
