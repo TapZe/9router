@@ -770,6 +770,37 @@ export async function refreshFactoryToken(refreshToken, credentials, log) {
           });
           const failure = classifyOAuthRefreshError(errorText, response.status);
           if (failure.permanent) {
+            // If this credential originated from local Droid CLI, check if Droid CLI refreshed
+            // in the terminal and stored a newer valid access token in Keychain/file.
+            if (credentials?.providerSpecificData?.isLocalCli) {
+              try {
+                const autoImport = await import("../../../src/app/api/oauth/factory/auto-import/route.js");
+                const localCreds = autoImport.loadDroidCliCredentials();
+                if (localCreds?.accessToken && localCreds.accessToken !== credentials?.accessToken) {
+                  const localJwt = parseJwtPayload(localCreds.accessToken);
+                  const localExp = localJwt?.exp;
+                  const now = Math.floor(Date.now() / 1000);
+                  if (typeof localExp === "number" && localExp > now + 60) {
+                    log?.info?.("TOKEN_REFRESH", "Recovered Factory session from updated local Droid CLI");
+                    const recoveredExpiresIn = Math.max(1, localExp - now);
+                    const recoveredExpiresAt = new Date(localExp * 1000).toISOString();
+                    return {
+                      accessToken: localCreds.accessToken,
+                      refreshToken: localCreds.refreshToken,
+                      expiresIn: recoveredExpiresIn,
+                      expiresAt: recoveredExpiresAt,
+                      providerSpecificData: {
+                        ...credentials?.providerSpecificData,
+                        ...(localCreds.activeOrganizationId ? { orgId: localCreds.activeOrganizationId } : {}),
+                      },
+                    };
+                  }
+                }
+              } catch {
+                // Fall through to unrecoverable error
+              }
+            }
+
             log?.error?.("TOKEN_REFRESH", "Factory refresh token already used or invalid. Re-auth required.", {
               status: response.status,
               code: failure.code,
@@ -789,10 +820,36 @@ export async function refreshFactoryToken(refreshToken, credentials, log) {
         const tokenOrgId = jwt?.org_id || jwt?.organization_id || jwt?.external_org_id || null;
         const finalOrgId = credentials?.providerSpecificData?.orgId || tokenOrgId;
 
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const expiresIn =
+          typeof data.expires_in === "number"
+            ? data.expires_in
+            : (typeof jwt?.exp === "number" ? Math.max(1, jwt.exp - nowSeconds) : 86400);
+        const expiresAt =
+          typeof jwt?.exp === "number"
+            ? new Date(jwt.exp * 1000).toISOString()
+            : new Date(Date.now() + expiresIn * 1000).toISOString();
+
+        if (credentials?.providerSpecificData?.isLocalCli) {
+          try {
+            const autoImport = await import("../../../src/app/api/oauth/factory/auto-import/route.js");
+            if (typeof autoImport.saveDroidCliCredentials === "function") {
+              autoImport.saveDroidCliCredentials({
+                accessToken: data.access_token,
+                refreshToken: data.refresh_token || refreshToken,
+                activeOrganizationId: finalOrgId,
+              });
+            }
+          } catch {
+            // Ignore non-fatal local save failure
+          }
+        }
+
         return {
           accessToken: data.access_token,
           refreshToken: data.refresh_token || refreshToken,
-          expiresIn: data.expires_in,
+          expiresIn,
+          expiresAt,
           providerSpecificData: {
             ...credentials?.providerSpecificData,
             ...(finalOrgId ? { orgId: finalOrgId } : {}),

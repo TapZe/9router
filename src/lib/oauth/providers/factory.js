@@ -156,10 +156,23 @@ const factory = {
       email ||
       "Factory User";
 
+    const jwtPayload = extra?.jwtPayload || parseJwtPayload(tokens.access_token);
+    const jwtExp = jwtPayload?.exp;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const expiresIn =
+      typeof tokens.expires_in === "number"
+        ? tokens.expires_in
+        : (typeof jwtExp === "number" ? Math.max(1, jwtExp - nowSeconds) : 86400);
+    const expiresAt =
+      typeof jwtExp === "number"
+        ? new Date(jwtExp * 1000).toISOString()
+        : new Date(Date.now() + expiresIn * 1000).toISOString();
+
     return {
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
-      expiresIn: tokens.expires_in,
+      expiresIn,
+      expiresAt,
       name: displayName,
       displayName,
       email,
@@ -167,6 +180,7 @@ const factory = {
         orgId: extra?.orgId || null,
         region: extra?.region || null,
         apiEndpoint: extra?.apiEndpoint || FACTORY_API,
+        ...(extra?.isLocalCli ? { isLocalCli: true } : {}),
       },
     };
   },

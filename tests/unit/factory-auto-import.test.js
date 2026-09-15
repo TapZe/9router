@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as crypto from "node:crypto";
 import {
   decryptPayload,
+  encryptPayload,
+  saveDroidCliCredentials,
   readKeyfileKey,
   readKeychainKey,
   loadDroidCliCredentials,
@@ -17,18 +19,10 @@ describe("Factory Droid Local Auto-Import", () => {
     vi.restoreAllMocks();
   });
 
-  describe("decryptPayload", () => {
+  describe("decryptPayload and encryptPayload", () => {
     const key = crypto.randomBytes(32);
 
-    function encryptPayload(data, encryptionKey) {
-      const iv = crypto.randomBytes(16);
-      const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey, iv);
-      const encrypted = Buffer.concat([cipher.update(JSON.stringify(data), "utf8"), cipher.final()]);
-      const authTag = cipher.getAuthTag();
-      return `${iv.toString("base64")}:${authTag.toString("base64")}:${encrypted.toString("base64")}`;
-    }
-
-    it("decrypts valid AES-256-GCM ciphertext", () => {
+    it("encrypts and decrypts valid AES-256-GCM ciphertext roundtrip", () => {
       const payload = {
         access_token: "test_access_token_123",
         refresh_token: "test_refresh_token_456",
@@ -36,6 +30,7 @@ describe("Factory Droid Local Auto-Import", () => {
       };
 
       const ciphertext = encryptPayload(payload, key);
+      expect(typeof ciphertext).toBe("string");
       const decrypted = decryptPayload(ciphertext, key);
 
       expect(decrypted).toEqual(payload);
@@ -62,11 +57,18 @@ describe("Factory Droid Local Auto-Import", () => {
     });
   });
 
-  describe("loadDroidCliCredentials", () => {
+  describe("loadDroidCliCredentials and saveDroidCliCredentials", () => {
     it("returns null when no credentials exist in candidate paths", () => {
       const creds = loadDroidCliCredentials();
       // On machines without active ~/.factory/auth.v2 credentials, returns null gracefully
       expect(creds === null || typeof creds.accessToken === "string").toBe(true);
+    });
+
+    it("handles saveDroidCliCredentials validation safely", () => {
+      expect(saveDroidCliCredentials(null)).toBe(false);
+      expect(saveDroidCliCredentials({})).toBe(false);
+      expect(saveDroidCliCredentials({ accessToken: "only_access" })).toBe(false);
+      expect(saveDroidCliCredentials({ refreshToken: "only_refresh" })).toBe(false);
     });
   });
 
