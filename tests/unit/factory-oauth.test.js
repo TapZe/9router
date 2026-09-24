@@ -4,6 +4,9 @@ import { FACTORY_CONFIG, PROVIDERS } from "../../src/lib/oauth/constants/oauth.j
 import { PROVIDERS as oauthProviders, getProvider } from "../../src/lib/oauth/providers/index.js";
 import { refreshFactoryToken } from "../../open-sse/services/tokenRefresh/providers.js";
 import { refreshTokenByProvider } from "../../open-sse/services/tokenRefresh.js";
+import factoryRegistry from "../../open-sse/providers/registry/factory.js";
+import { getProviderModels, getModelTargetFormat } from "../../open-sse/config/providerModels.js";
+import { FACTORY_CLIENT_VERSION, resolveTargetGateway } from "../../open-sse/executors/factory.js";
 
 const originalFetch = global.fetch;
 
@@ -36,6 +39,45 @@ describe("Factory OAuth & Token Management", () => {
       expect(oauthProviders.factory).toBeDefined();
       expect(oauthProviders.factory.flowType).toBe("device_code");
       expect(getProvider("factory")).toBe(factory);
+    });
+
+    it("keeps registry headers on the executor's Droid client version", () => {
+      expect(factoryRegistry.transport.headers["X-Client-Version"]).toBe(FACTORY_CLIENT_VERSION);
+      expect(factoryRegistry.transport.headers["User-Agent"]).toBe(`factory-cli/${FACTORY_CLIENT_VERSION}`);
+    });
+
+    it("registers Droid 0.226.1 model additions with the correct gateway formats", () => {
+      const models = new Map(factoryRegistry.models.map((model) => [model.id, model]));
+      const expectedFormats = {
+        "claude-opus-5-5": "claude",
+        "claude-opus-5-5-fast": "claude",
+        "gpt-6-sol": "openai-responses",
+        "gpt-6-luna": "openai-responses",
+        "grok-4.7": "openai-responses",
+        "minimax-m3": "openai",
+        "qwen3.8-max": "openai",
+        "mistral-medium-3.5": "openai",
+        "garnet-07-15": "gemini",
+      };
+
+      for (const [id, targetFormat] of Object.entries(expectedFormats)) {
+        expect(models.get(id)?.targetFormat, id).toBe(targetFormat);
+        expect(models.get(id)?.supportedFormats).toEqual([targetFormat]);
+      }
+      // Feature-gated in the Droid binary (default off) and absent from
+      // docs.factory.ai/models — must not be offered to Factory users.
+      expect(models.has("deepseek-v4.1-flash")).toBe(false);
+      expect(getProviderModels("factory").some((model) => model.id === "deepseek-v4.1-flash")).toBe(false);
+    });
+
+    it("keeps every Factory registry format aligned with its executor gateway", () => {
+      const gateways = { claude: "anthropic", gemini: "google", "openai-responses": "openai-responses", openai: "openai-completions" };
+      const models = getProviderModels("factory");
+      expect(models).toHaveLength(factoryRegistry.models.length);
+      for (const { id, targetFormat } of models) {
+        expect(getModelTargetFormat("factory", id), id).toBe(targetFormat);
+        expect(resolveTargetGateway(id), id).toBe(gateways[targetFormat]);
+      }
     });
   });
 

@@ -299,7 +299,7 @@ async function droidQuickSetup(port) {
     return;
   }
 
-  const model = await selectModelFromList("Select Droid Model", "cc/claude-sonnet-4-5-20250929", { excludeCombos: true });
+  const model = await selectModelFromList("Select Droid Model", "cc/claude-sonnet-5", { excludeCombos: true });
   if (!model) return;
 
   const result = await api.applyCliToolSettings("droid", { baseUrl: endpoint, apiKey, model });

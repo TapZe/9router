@@ -15,11 +15,10 @@ export const FACTORY_DROID_SYSTEM_PROMPT =
   "4. NEVER output conversational commentary, promises, or preambles of what you will do before calling tools (do NOT say 'I will inspect...', 'Let me read...', or 'I need to check...'). Call the tools directly.\n" +
   "5. Always ground all analysis, planning, and answers in actual file contents and tool outputs rather than assumptions.";
 
-export const FACTORY_CLIENT_VERSION = "0.218.1";
+export const FACTORY_CLIENT_VERSION = "0.226.1";
 export const FACTORY_OPENAI_PLATFORM_ORG = "org-bHuLtG1fGmYk5YaOihAAXFBw";
 export const ANTHROPIC_VERSION = "2023-06-01";
 export const ANTHROPIC_BETAS = "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14";
-export const ANTHROPIC_EFFORT_BETA = "effort-2025-11-24";
 
 function randomHex(bytes) {
   if (typeof globalThis.crypto?.getRandomValues === "function") {
@@ -68,10 +67,10 @@ export function embeddedToolCallFromName(name) {
 
 export function resolveTargetGateway(modelId) {
   const m = String(modelId || "").toLowerCase();
-  if (m.startsWith("claude-") || m.startsWith("minimax-") || m.startsWith("atlas-") || m.startsWith("aster-")) {
+  if (m.startsWith("claude-") || (m.startsWith("minimax-") && m !== "minimax-m3") || m.startsWith("atlas-") || m.startsWith("aster-")) {
     return "anthropic";
   }
-  if (m.startsWith("gemini-")) {
+  if (m.startsWith("gemini-") || m.startsWith("garnet-")) {
     return "google";
   }
   if (m.startsWith("gpt-") || m.startsWith("gpt6") || m.endsWith("-codex") || m.startsWith("grok-")) {
@@ -85,7 +84,7 @@ export function upstreamProviderFor(modelId) {
   if (m.startsWith("claude-") || m.startsWith("atlas-") || m.startsWith("aster-")) {
     return "anthropic";
   }
-  if (m.startsWith("gemini-")) {
+  if (m.startsWith("gemini-") || m.startsWith("garnet-")) {
     return "google";
   }
   if (m.startsWith("gpt-") || m.startsWith("gpt6") || m.endsWith("-codex")) {
@@ -93,6 +92,9 @@ export function upstreamProviderFor(modelId) {
   }
   if (m.startsWith("grok-")) {
     return "xai";
+  }
+  if (m.startsWith("mistral-")) {
+    return "mistral";
   }
   return "fireworks";
 }
@@ -108,47 +110,60 @@ export function resolveFactoryApiBase(credentials = null) {
   return "https://api.factory.ai";
 }
 
-export function resolveClaudeThinking(modelId, requestedEffort) {
+export function resolveClaudeThinking(modelId, requestedEffort, requestedBudget) {
   const m = String(modelId || "").toLowerCase();
-  const effort = requestedEffort || "high";
+  const disabled = requestedEffort === "off" || requestedEffort === "none";
+  const explicitBudget = Number.isFinite(requestedBudget) && requestedBudget > 0
+    ? requestedBudget
+    : Number.isFinite(requestedEffort) && requestedEffort > 0 ? requestedEffort : undefined;
+  const requestedLevel = ["low", "medium", "high", "xhigh", "max"].includes(requestedEffort)
+    ? requestedEffort
+    : requestedEffort === "minimal" ? "low" : "high";
+  const effort = requestedLevel === "xhigh" && !supportsExtraHighEffort(m) ? "high" : requestedLevel;
+  if (disabled && (m.startsWith("claude-") || m.startsWith("atlas-") || m.startsWith("aster-")) && !m.startsWith("claude-opus-5-5")) {
+    return { thinking: undefined, outputConfig: undefined };
+  }
 
   // Adaptive models
   if (
     m.startsWith("claude-fable-5.1") ||
     m.startsWith("claude-fable-5") ||
     m.startsWith("claude-opus-5") ||
-    m.startsWith("claude-opus-4-8")
+    m.startsWith("claude-opus-4-8") ||
+    m.startsWith("claude-opus-4-7") ||
+    m.startsWith("claude-sonnet-5") ||
+    m.startsWith("atlas-") ||
+    m.startsWith("aster-")
   ) {
     return {
       thinking: { type: "adaptive", display: "summarized" },
-      outputConfig: { effort },
-      requiresEffortBeta: true,
+      outputConfig: disabled ? undefined : { effort },
     };
   }
 
-  // Sonnet 4.6
-  if (m.startsWith("claude-sonnet-4-6")) {
+  // Opus 4.6 and Sonnet 4.6 use adaptive thinking without summarized display.
+  if (m.startsWith("claude-sonnet-4-6") || m.startsWith("claude-opus-4-6")) {
     return {
       thinking: { type: "adaptive" },
       outputConfig: { effort },
-      requiresEffortBeta: true,
     };
   }
 
-  // Opus 4.5
-  if (m.startsWith("claude-opus-4-5-20251101") || m.startsWith("claude-opus-4-5")) {
+  // Older Claude releases use token budgets; only Opus 4.5 accepts output effort.
+  const isOpus45 = m.startsWith("claude-opus-4-5");
+  if (isOpus45 || m.startsWith("claude-sonnet-4-5") || m.startsWith("claude-haiku-4-5")) {
+    const budget = explicitBudget ?? (effort === "low" ? 4096 : effort === "medium" ? 12288 : 24576);
     return {
-      thinking: { type: "enabled", budget_tokens: 24576 },
-      outputConfig: { effort },
-      requiresEffortBeta: true,
+      thinking: { type: "enabled", budget_tokens: budget },
+      outputConfig: isOpus45 ? { effort: effort === "low" || effort === "medium" ? effort : "high" } : undefined,
     };
   }
 
-  // MiniMax
-  if (m.startsWith("minimax-")) {
+  // MiniMax M2.x uses Anthropic-compatible budget thinking; M3 uses completions.
+  if (m.startsWith("minimax-m2.")) {
     let budget = 2048;
-    if (typeof requestedEffort === "number" && requestedEffort >= 1024) {
-      budget = requestedEffort;
+    if (explicitBudget !== undefined) {
+      budget = Math.max(1024, explicitBudget);
     } else if (requestedEffort === "low") {
       budget = 1024;
     } else if (requestedEffort === "medium") {
@@ -159,14 +174,12 @@ export function resolveClaudeThinking(modelId, requestedEffort) {
     return {
       thinking: { type: "enabled", budget_tokens: budget },
       outputConfig: undefined,
-      requiresEffortBeta: false,
     };
   }
 
   return {
     thinking: undefined,
     outputConfig: undefined,
-    requiresEffortBeta: false,
   };
 }
 
@@ -174,12 +187,18 @@ export function supportsExtraHighEffort(modelId) {
   const m = String(modelId || "").toLowerCase();
   return (
     m === "grok-4.6" ||
+    m === "grok-4.7" ||
     m.startsWith("gpt-6") ||
     m.startsWith("gpt6") ||
     m.startsWith("gpt-5.6") ||
     m.startsWith("glm-5.3") ||
     m.startsWith("claude-opus-5") ||
+    m.startsWith("claude-opus-4-8") ||
+    m.startsWith("claude-opus-4-7") ||
+    m.startsWith("claude-sonnet-5") ||
     m.startsWith("claude-fable-5") ||
+    m.startsWith("atlas-") ||
+    m.startsWith("aster-") ||
     m.startsWith("qwen")
   );
 }
@@ -242,12 +261,9 @@ export class FactoryExecutor extends BaseExecutor {
 
     if (gateway === "anthropic") {
       headers["anthropic-version"] = ANTHROPIC_VERSION;
-      const thinkingMeta = resolveClaudeThinking(model, credentials?._requestedEffort);
-      if (thinkingMeta.requiresEffortBeta) {
-        headers["anthropic-beta"] = `${ANTHROPIC_BETAS},${ANTHROPIC_EFFORT_BETA}`;
-      } else {
-        headers["anthropic-beta"] = ANTHROPIC_BETAS;
-      }
+      // Effort rides the body's output_config.effort — the gateway needs no
+      // effort beta flag (verified against the live Droid client contract).
+      headers["anthropic-beta"] = ANTHROPIC_BETAS;
     } else if (gateway === "openai-responses") {
       headers["OpenAI-Platform"] = FACTORY_OPENAI_PLATFORM_ORG;
     } else if (gateway === "google") {
@@ -367,19 +383,24 @@ export class FactoryExecutor extends BaseExecutor {
         cloned.max_tokens = 4096;
       }
 
-      // Thinking & Effort configuration
+      // The translator already normalized effort and budget for this wire format.
+      const disabledThinking = cloned.thinking?.type === "disabled";
       const thinkingConfig = resolveClaudeThinking(
         model,
-        cloned.thinking?.budget_tokens || cloned.reasoning_effort || cloned.thinking?.effort,
+        disabledThinking ? "off" : cloned.output_config?.effort ?? cloned.reasoning_effort ?? cloned.thinking?.effort ?? cloned.thinking?.budget_tokens,
+        cloned.thinking?.budget_tokens,
       );
       if (thinkingConfig.thinking) {
         cloned.thinking = thinkingConfig.thinking;
+      } else if (disabledThinking || cloned.reasoning_effort === "off" || cloned.reasoning_effort === "none") {
+        delete cloned.thinking;
       }
       if (thinkingConfig.outputConfig) {
         cloned.output_config = thinkingConfig.outputConfig;
       } else {
         delete cloned.output_config;
       }
+      delete cloned.reasoning_effort;
 
       // Ensure max_tokens > budget_tokens if thinking is enabled (Anthropic / Fireworks requirement)
       if (cloned.thinking?.type === "enabled" && cloned.thinking.budget_tokens) {
@@ -596,6 +617,14 @@ export class FactoryExecutor extends BaseExecutor {
         const isGlm = m.startsWith("glm-");
 
         for (const msg of msgs) {
+          // DeepSeek validates reasoning on every assistant turn; replay captured
+          // reasoning before falling back to empty text, never synthetic ".".
+          if (isDeepseek && msg.role === "assistant" && msg.reasoning_content == null) {
+            msg.reasoning_content =
+              (typeof msg.reasoning === "string" && msg.reasoning) ||
+              (typeof msg.reasoning_text === "string" && msg.reasoning_text) ||
+              "";
+          }
           if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
             // requiresAssistantContentForToolCalls
             if (msg.content === undefined || msg.content === null) {
@@ -603,7 +632,7 @@ export class FactoryExecutor extends BaseExecutor {
             }
             // requiresReasoningContentForToolCalls
             if (msg.reasoning_content === undefined || msg.reasoning_content === null) {
-              msg.reasoning_content = isDeepseek ? "" : (isKimi || isGlm ? "." : "");
+              msg.reasoning_content = isKimi || isGlm ? "." : "";
             }
           }
           // requiresToolResultName for Kimi
@@ -619,7 +648,16 @@ export class FactoryExecutor extends BaseExecutor {
           }
         }
 
+
         cloned.messages = msgs;
+      }
+
+      // z.ai-habit request bodies smuggle enable_thinking; the Fireworks
+      // gateway rejects the field with HTTP 400.
+      delete cloned.enable_thinking;
+      if (cloned.chat_template_kwargs && typeof cloned.chat_template_kwargs === "object" && "enable_thinking" in cloned.chat_template_kwargs) {
+        cloned.chat_template_kwargs = { ...cloned.chat_template_kwargs };
+        delete cloned.chat_template_kwargs.enable_thinking;
       }
 
       // 4. Reasoning history for completions gateway

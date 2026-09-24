@@ -52,6 +52,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const popupRef = useRef(null);
   const pollingAbortRef = useRef(false);
   const openedRef = useRef(false);
+  const factoryProbeRef = useRef(0);
   // Proxy-flow session ledger: which provider's proxy THIS modal session
   // started, and whether its stop was already sent. Every stop-proxy call is
   // gated on this — parent re-renders can never spam it, and a close stops
@@ -490,6 +491,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     setAuthMode("browser");
     setPasteToken("");
     setIdeStatus(null);
+    setFactoryLocalSession(null);
+    setImportingFactorySession(false);
     pollingAbortRef.current = false;
     flowRef.current = { proxyStarted: false, proxyProvider: null, stopSent: false };
     // Best-effort IDE detection for paste-token providers (Trae/Windsurf)
@@ -498,6 +501,16 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         .then((r) => r.json())
         .then((data) => setIdeStatus(data))
         .catch(() => setIdeStatus({ installed: false, path: null }));
+    }
+    // Best-effort local session detection for Factory Droid
+    if (provider === "factory") {
+      const probeId = ++factoryProbeRef.current;
+      fetch("/api/oauth/factory/auto-import")
+        .then((r) => r.json())
+        .then((data) => {
+          if (data?.found && factoryProbeRef.current === probeId) setFactoryLocalSession(data);
+        })
+        .catch(() => {});
     }
     startOAuthFlowRef.current();
   }, [isOpen, provider]);
@@ -510,6 +523,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     if (isOpen) return;
     pollingAbortRef.current = true;
     openedRef.current = false;
+    factoryProbeRef.current += 1;
     stopOwnedProxy();
     flowRef.current = { proxyStarted: false, proxyProvider: null, stopSent: false };
   }, [isOpen, provider, stopOwnedProxy]);
@@ -742,6 +756,27 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     onCloseRef.current();
   }, [stopOwnedProxy]);
 
+  // Import the locally detected Droid CLI session (~/.factory) as a connection.
+  const handleImportFactorySession = useCallback(async () => {
+    setImportingFactorySession(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/oauth/factory/auto-import", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to import local Factory Droid session");
+      }
+      pollingAbortRef.current = true;
+      setPolling(false);
+      onSuccessRef.current?.();
+      handleClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setImportingFactorySession(false);
+    }
+  }, [handleClose]);
+
   if (!provider || !providerInfo) return null;
   const isXaiProvider = provider === "xai";
   const isKimchiProvider = provider === "kimchi";
@@ -912,6 +947,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
                     </p>
                   </div>
                 </div>
+                {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
                 <div className="flex gap-2">
                   <Button
                     size="sm"

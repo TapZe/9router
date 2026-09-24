@@ -154,10 +154,95 @@ const KIRO_GPT_5_6_CAPABILITIES = { vision: true, reasoning: true, search: true,
 const CODEX_GPT_56_SOL_CAPS  = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 372000, maxOutput: 128000 };
 const CODEX_GPT_56_DEFAULT_CAPS = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 };
 
+// Factory's hosted limits differ from the same model ids on direct upstream routes.
+const FACTORY_LIMIT_GROUPS = [
+  [995_000, 128_000, [
+    "claude-fable-5.1", "claude-fable-5", "claude-opus-5", "claude-opus-5-fast",
+    "claude-opus-4-8", "claude-opus-4-8-fast", "claude-opus-4-7", "claude-opus-4-7-fast",
+    "claude-opus-4-6", "claude-opus-4-6-fast", "atlas-07-21", "aster-07-15",
+  ]],
+  [1_000_000, 128_000, ["claude-opus-5-5", "claude-opus-5-5-fast", "claude-sonnet-5"]],
+  [200_000, 64_000, ["claude-opus-4-5-20251101"]],
+  [995_000, 64_000, ["claude-sonnet-4-6"]],
+  [200_000, 32_000, ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"]],
+  [512_000, 64_000, ["minimax-m3"]],
+  [260_600, 64_000, ["minimax-m2.7"]],
+  [268_800, 64_000, ["minimax-m2.5"]],
+  [1_050_000, 128_000, [
+    "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-sol-fast",
+    "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.5-fast",
+    "gpt-5.4", "gpt-5.4-fast",
+  ]],
+  [400_000, 128_000, ["gpt-5.4-mini", "gpt-5.4-mini-fast", "gpt-5.2", "gpt-5.3-codex", "gpt-5.3-codex-fast", "gpt-5.2-codex"]],
+  [400_000, 32_768, ["gpt-5.1", "gpt-5", "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5-codex"]],
+  [500_000, 63_356, ["grok-4.7"]],
+  [263_356, 63_356, ["grok-4.6", "grok-4.5"]],
+  [262_144, 65_536, ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6"]],
+  [288_768, 32_768, ["kimi-k2.5"]],
+  // deepseek-v4.1-flash omitted from Factory groups: gated off in the Droid
+  // binary (deepseek_v4_1_flash, default false) and absent from
+  // docs.factory.ai/models, so Factory 400s on that logical id.
+  [1_040_000, 131_072, ["glm-5.3", "glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash-0731"]],
+  [1_048_576, 131_072, ["glm-5.3-flash"]],
+  [524_288, 131_072, ["glm-5.2-fast"]],
+  [200_000, 65_536, ["glm-5.1"]],
+  [222_000, 32_000, ["glm-5"]],
+  [223_344, 25_344, ["glm-4.7"]],
+  [328_000, 128_000, ["glm-4.6"]],
+  [256_000, 64_000, ["mistral-medium-3.5"]],
+  [262_144, 131_072, ["qwen3.8-max"]],
+  [202_000, 65_536, ["nemotron-3-ultra"]],
+  [1_040_000, 32_768, ["inkling"]],
+  [1_065_536, 65_536, [
+    "garnet-07-15", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
+    "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3-pro-preview",
+  ]],
+];
+const FACTORY_TEXT_ONLY = new Set([
+  "minimax-m2.7", "minimax-m2.5", "gpt-5.3-codex", "gpt-5.3-codex-fast",
+  "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.2-fast", "glm-5.1", "glm-5", "glm-4.7", "glm-4.6",
+  "qwen3.8-max", "deepseek-v4-pro", "deepseek-v4-flash-0731", "nemotron-3-ultra", "inkling",
+]);
+const FACTORY_ALWAYS_THINKING = new Set([
+  "claude-opus-5-5", "claude-opus-5-5-fast", "minimax-m3", "minimax-m2.7", "minimax-m2.5",
+  "gpt-6-astra", "gpt-5.5", "gpt-5.5-pro", "gpt-5.5-fast", "gpt-5.4", "gpt-5.4-fast",
+  "gpt-5.4-mini", "gpt-5.4-mini-fast", "gpt-5.3-codex", "gpt-5.3-codex-fast",
+  "gpt-5.2-codex", "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5-codex",
+  "grok-4.7", "grok-4.6", "grok-4.5", "glm-5.3", "glm-5.3-flash", "qwen3.8-max",
+  "garnet-07-15", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
+  "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
+]);
+const FACTORY_BUDGET_MODELS = new Set([
+  "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001",
+  "minimax-m2.7", "minimax-m2.5",
+]);
+const FACTORY_NO_EFFORT = new Set(["glm-5", "glm-4.7", "glm-4.6"]);
+const FACTORY_MODEL_CAPABILITIES = {};
+for (const [contextWindow, maxOutput, ids] of FACTORY_LIMIT_GROUPS) {
+  for (const id of ids) {
+    const isGoogle = id.startsWith("gemini-") || id.startsWith("garnet-");
+    const isAnthropicWire = id.startsWith("claude-") || id.startsWith("atlas-") ||
+      id.startsWith("aster-") || id.startsWith("minimax-m2.");
+    FACTORY_MODEL_CAPABILITIES[id] = {
+      vision: !FACTORY_TEXT_ONLY.has(id),
+      reasoning: !FACTORY_NO_EFFORT.has(id),
+      thinkingFormat: isGoogle ? "gemini-level" : isAnthropicWire
+        ? (FACTORY_BUDGET_MODELS.has(id) ? "claude-budget" : "claude-adaptive")
+        : "openai",
+      thinkingCanDisable: !FACTORY_ALWAYS_THINKING.has(id),
+      contextWindow,
+      maxOutput,
+    };
+  }
+}
+
 /**
  * Provider-specific capability overrides. Keyed by provider alias/id.
  */
 export const PROVIDER_CAPABILITIES = {
+  "factory": FACTORY_MODEL_CAPABILITIES,
+  "fy": FACTORY_MODEL_CAPABILITIES,
+  "droid": FACTORY_MODEL_CAPABILITIES,
   // NVIDIA NIM is OpenAI-compatible → rejects MiniMax/GLM native `thinking` field.
   // Force openai reasoning_effort format for its reasoning models. #issue
   "nvidia": {

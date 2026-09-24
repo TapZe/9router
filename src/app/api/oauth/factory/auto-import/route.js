@@ -54,7 +54,8 @@ export function encryptPayload(payload, key) {
 }
 
 export function readKeychainKey() {
-  if (process.platform !== "darwin") return null;
+  // No Keychain lookup or macOS password prompt without ciphertext to decrypt.
+  if (process.platform !== "darwin" || !fs.existsSync(LOGIN_KEYCHAIN_PATH)) return null;
   try {
     const stdout = execFileSync(
       "/usr/bin/security",

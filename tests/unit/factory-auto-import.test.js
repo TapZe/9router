@@ -1,15 +1,30 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import * as crypto from "node:crypto";
-import {
-  decryptPayload,
-  encryptPayload,
-  saveDroidCliCredentials,
-  readKeyfileKey,
-  readKeychainKey,
-  loadDroidCliCredentials,
-  GET,
-  POST,
-} from "../../src/app/api/oauth/factory/auto-import/route.js";
+import { mkdtempSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const originalHome = process.env.HOME;
+const originalDataDir = process.env.DATA_DIR;
+const testDir = mkdtempSync(join(tmpdir(), "9router-factory-autoimport-"));
+process.env.HOME = testDir;
+process.env.DATA_DIR = testDir;
+const { DATA_FILE } = await import("../../src/lib/db/paths.js");
+if (DATA_FILE !== join(testDir, "db", "data.sqlite") || global._dbAdapter?.instance || global._dbAdapter?.initPromise) {
+  throw new Error("Factory auto-import tests require a fresh disposable database");
+}
+
+const { decryptPayload, encryptPayload, saveDroidCliCredentials, readKeyfileKey,
+  readKeychainKey, loadDroidCliCredentials, GET, POST } = await import("../../src/app/api/oauth/factory/auto-import/route.js");
+const { default: factoryProvider } = await import("../../src/lib/oauth/providers/factory.js");
+
+afterAll(() => {
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+  if (originalDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = originalDataDir;
+  rmSync(testDir, { recursive: true, force: true });
+});
 
 describe("Factory Droid Local Auto-Import", () => {
   const originalPlatform = process.platform;
@@ -58,10 +73,13 @@ describe("Factory Droid Local Auto-Import", () => {
   });
 
   describe("loadDroidCliCredentials and saveDroidCliCredentials", () => {
+    it("does not read Keychain without a local encrypted credential file", () => {
+      expect(readKeychainKey()).toBeNull();
+    });
+
     it("returns null when no credentials exist in candidate paths", () => {
       const creds = loadDroidCliCredentials();
-      // On machines without active ~/.factory/auth.v2 credentials, returns null gracefully
-      expect(creds === null || typeof creds.accessToken === "string").toBe(true);
+      expect(creds).toBeNull();
     });
 
     it("handles saveDroidCliCredentials validation safely", () => {
@@ -77,13 +95,49 @@ describe("Factory Droid Local Auto-Import", () => {
       const response = await GET();
       expect(response).toBeDefined();
       const json = await response.json();
-      expect(typeof json.found).toBe("boolean");
+      expect(json.found).toBe(false);
     });
 
     it("handles POST request safely and returns JSON", async () => {
       const response = await POST();
-      expect(response).toBeDefined();
-      expect(response.status === 200 || response.status === 404 || response.status === 500).toBe(true);
+      expect(response.status).toBe(404);
+    });
+
+    it("imports an encrypted fixture from disposable HOME into disposable DB", async () => {
+      const factoryDir = join(testDir, ".factory");
+      mkdirSync(factoryDir, { recursive: true, mode: 0o700 });
+      const key = crypto.randomBytes(32);
+      const keyfile = join(factoryDir, "auth.v2.key");
+      const encryptedFile = join(factoryDir, "auth.v2.file");
+      writeFileSync(keyfile, key.toString("base64"), { mode: 0o600 });
+      writeFileSync(encryptedFile, encryptPayload({
+        access_token: "fixture_access_token",
+        refresh_token: "fixture_refresh_token",
+        active_organization_id: "org_fixture",
+      }, key), { mode: 0o600 });
+      const lookup = vi.spyOn(factoryProvider, "postExchange").mockResolvedValue({
+        orgId: "org_fixture",
+        whoami: { user: { email: "fixture@example.test", name: "Fixture Account" } },
+      });
+      try {
+        expect(readKeychainKey()).toBeNull();
+        expect((await GET().then((r) => r.json()))).toMatchObject({ found: true, email: "fixture@example.test", orgId: "org_fixture" });
+        const response = await POST();
+        expect(response.status).toBe(200);
+        const { connection } = await response.json();
+        const { getProviderConnections } = await import("../../src/models");
+        const saved = (await getProviderConnections()).find((entry) => entry.id === connection.id);
+        expect(saved).toMatchObject({
+          provider: "factory",
+          email: "fixture@example.test",
+          providerSpecificData: { orgId: "org_fixture", isLocalCli: true },
+        });
+        expect(lookup).toHaveBeenCalledTimes(2);
+      } finally {
+        lookup.mockRestore();
+        unlinkSync(keyfile);
+        unlinkSync(encryptedFile);
+      }
     });
   });
 

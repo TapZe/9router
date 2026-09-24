@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { getCapabilitiesForModel } from "../../open-sse/providers/capabilities.js";
+import { getCapabilitiesForModel, PROVIDER_CAPABILITIES } from "../../open-sse/providers/capabilities.js";
+import factoryRegistry from "../../open-sse/providers/registry/factory.js";
 
 describe("getCapabilitiesForModel", () => {
 
@@ -19,6 +20,61 @@ describe("getCapabilitiesForModel", () => {
     });
     // the superseded text-only Flash id stays text-only
     expect(getCapabilitiesForModel("opencode-go", "deepseek-v4-flash").vision).toBe(false);
+  });
+
+  it("uses audited Droid 0.226.1 limits and wire formats for new Factory models", () => {
+    const expected = {
+      "claude-opus-5-5": [1000000, 128000, true, "claude-adaptive"],
+      "claude-opus-5-5-fast": [1000000, 128000, true, "claude-adaptive"],
+      "gpt-6-sol": [1050000, 128000, true, "openai"],
+      "gpt-6-luna": [1050000, 128000, true, "openai"],
+      "grok-4.7": [500000, 63356, true, "openai"],
+      "minimax-m3": [512000, 64000, true, "openai"],
+      "qwen3.8-max": [262144, 131072, false, "openai"],
+      "mistral-medium-3.5": [256000, 64000, true, "openai"],
+      "garnet-07-15": [1065536, 65536, true, "gemini-level"],
+    };
+
+    for (const [model, [contextWindow, maxOutput, vision, thinkingFormat]] of Object.entries(expected)) {
+      expect(getCapabilitiesForModel("factory", model)).toMatchObject({
+        contextWindow,
+        maxOutput,
+        vision,
+        reasoning: true,
+        thinkingFormat,
+      });
+    }
+
+    expect(getCapabilitiesForModel("fy", "qwen3.8-max").contextWindow).toBe(262144);
+    expect(getCapabilitiesForModel("droid", "grok-4.7").maxOutput).toBe(63356);
+  });
+
+  it("uses corrected Factory limits for Fable 5.1 and Gemini 3.8", () => {
+    expect(getCapabilitiesForModel("factory", "claude-fable-5.1")).toMatchObject({
+      contextWindow: 995000,
+      maxOutput: 128000,
+    });
+    expect(getCapabilitiesForModel("factory", "gemini-3.8-flash")).toMatchObject({
+      contextWindow: 1065536,
+      maxOutput: 65536,
+    });
+  });
+
+  it("defines hosted limits for every registered Factory model", () => {
+    const registered = factoryRegistry.models.map(({ id }) => id).sort();
+    expect([...new Set(registered)]).toEqual(registered);
+    expect(Object.keys(PROVIDER_CAPABILITIES.factory).sort()).toEqual(registered);
+    // Gated off in the Droid binary (deepseek_v4_1_flash, default false) and
+    // absent from docs.factory.ai/models — no hosted override, and no
+    // registration aliasing it to an older model id.
+    expect(PROVIDER_CAPABILITIES.factory["deepseek-v4.1-flash"]).toBeUndefined();
+    expect(getCapabilitiesForModel("factory", "gpt-5.5")).toMatchObject({ contextWindow: 1050000, maxOutput: 128000 });
+    expect(getCapabilitiesForModel("factory", "grok-4.6")).toMatchObject({ contextWindow: 263356, maxOutput: 63356 });
+    expect(getCapabilitiesForModel("factory", "glm-5.3-flash")).toMatchObject({ contextWindow: 1048576, maxOutput: 131072, vision: false, thinkingFormat: "openai" });
+    expect(getCapabilitiesForModel("factory", "kimi-k3").thinkingFormat).toBe("openai");
+    expect(getCapabilitiesForModel("factory", "minimax-m2.7").thinkingFormat).toBe("claude-budget");
+    expect(getCapabilitiesForModel("factory", "atlas-07-21").thinkingFormat).toBe("claude-adaptive");
+    expect(getCapabilitiesForModel("factory", "minimax-m3").thinkingCanDisable).toBe(false);
   });
   const claudeSonnet5Expected = {
     contextWindow: 1000000,
