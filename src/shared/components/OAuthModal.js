@@ -47,6 +47,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [authMode, setAuthMode] = useState("browser"); // "browser" | "paste-token"
   const [pasteToken, setPasteToken] = useState("");
   const [ideStatus, setIdeStatus] = useState(null);
+  const [factoryLocalSession, setFactoryLocalSession] = useState(null);
+  const [importingFactorySession, setImportingFactorySession] = useState(false);
   const popupRef = useRef(null);
   const pollingAbortRef = useRef(false);
   const openedRef = useRef(false);
@@ -291,6 +293,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         "qoder",
         "qoder-cn",
         "grok-cli",
+        "factory",
       ];
       if (deviceCodeProviders.includes(provider)) {
         setIsDeviceCode(true);
@@ -895,6 +898,39 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         {/* Device Code Flow - Waiting */}
         {step === "waiting" && isDeviceCode && deviceData && (
           <>
+            {provider === "factory" && factoryLocalSession && (
+              <div className="p-4 rounded-lg border border-primary/30 bg-primary/5 space-y-3 mb-2 text-left">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-primary flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-base">smart_toy</span>
+                      Active Local Factory Droid Session Detected
+                    </p>
+                    <p className="text-xs text-text-muted mt-1">
+                      Logged in as: <span className="font-mono font-medium text-foreground">{factoryLocalSession.email || factoryLocalSession.displayName || "Local Droid User"}</span>
+                      {factoryLocalSession.orgId ? ` (${factoryLocalSession.orgId})` : ""}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    onClick={handleImportFactorySession}
+                    disabled={importingFactorySession}
+                    icon={importingFactorySession ? "progress_activity" : "download"}
+                  >
+                    {importingFactorySession ? "Importing..." : "Import Local Session"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setFactoryLocalSession(null)}
+                  >
+                    Log in to another account below
+                  </Button>
+                </div>
+              </div>
+            )}
             <div className="text-center py-4">
               <p className="text-sm text-text-muted mb-4">
                 Visit the login URL below and authorize:

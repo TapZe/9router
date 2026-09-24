@@ -27,6 +27,7 @@ import kimchi from "./kimchi.js";
 import trae from "./trae.js";
 import windsurf from "./windsurf.js";
 import zed from "./zed.js";
+import factory from "./factory.js";
 
 // Provider configurations
 const PROVIDERS = {
@@ -53,6 +54,7 @@ const PROVIDERS = {
   trae,
   windsurf,
   zed,
+  factory,
 };
 
 export { PROVIDERS };
