@@ -25,8 +25,8 @@ export default {
     format: "openai",
     headers: {
       "X-Factory-Client": "cli",
-      "X-Client-Version": "0.218.1",
-      "User-Agent": "factory-cli/0.218.1",
+      "X-Client-Version": "0.226.1",
+      "User-Agent": "factory-cli/0.226.1",
     },
     usage: {
       url: "https://api.factory.ai/api/billing/limits",
@@ -78,6 +78,8 @@ export default {
     // Claude & Anthropic family (routed to /api/llm/a/v1/messages)
     { id: "claude-fable-5.1", name: "Claude Fable 5.1 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-fable-5", name: "Claude Fable 5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
+    { id: "claude-opus-5-5", name: "Claude Opus 5.5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
+    { id: "claude-opus-5-5-fast", name: "Claude Opus 5.5 Fast (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-opus-5", name: "Claude Opus 5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-opus-5-fast", name: "Claude Opus 5 Fast (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-opus-4-8", name: "Claude Opus 4.8 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
@@ -94,13 +96,15 @@ export default {
     { id: "atlas-07-21", name: "Atlas 07-21 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "aster-07-15", name: "Aster 07-15 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
 
-    // MiniMax models (routed to /api/llm/a/v1/messages via Fireworks upstream)
-    { id: "minimax-m3", name: "MiniMax M3 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
+    // MiniMax M3 uses chat completions; M2.x stays on Anthropic-compatible Messages.
+    { id: "minimax-m3", name: "MiniMax M3 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "minimax-m2.7", name: "MiniMax M2.7 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "minimax-m2.5", name: "MiniMax M2.5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
 
     // GPT / Codex / Grok family (routed to /api/llm/o/v1/responses)
     { id: "gpt-6-astra", name: "GPT-6 Astra (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6-sol", name: "GPT-6 Sol (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6-luna", name: "GPT-6 Luna (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.6-sol", name: "GPT-5.6 Sol (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.6-sol-fast", name: "GPT-5.6 Sol Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.6-terra", name: "GPT-5.6 Terra (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
@@ -121,6 +125,7 @@ export default {
     { id: "gpt-5.1-codex", name: "GPT-5.1 Codex (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.1-codex-max", name: "GPT-5.1 Codex Max (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5-codex", name: "GPT-5 Codex (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "grok-4.7", name: "Grok 4.7 (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "grok-4.6", name: "Grok 4.6 (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "grok-4.5", name: "Grok 4.5 (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
 
@@ -137,12 +142,18 @@ export default {
     { id: "glm-5", name: "GLM 5 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "glm-4.7", name: "GLM 4.7 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "glm-4.6", name: "GLM 4.6 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
+    { id: "mistral-medium-3.5", name: "Mistral Medium 3.5 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
+    { id: "qwen3.8-max", name: "Qwen3.8 Max (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
+    // deepseek-v4.1-flash omitted: gated off in the Droid binary
+    // (deepseek_v4_1_flash, default false) and absent from
+    // docs.factory.ai/models — Factory 400s on the unlaunched logical id.
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "deepseek-v4-flash-0731", name: "DeepSeek V4 Flash (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "nemotron-3-ultra", name: "Nemotron 3 Ultra (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "inkling", name: "Inkling (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
 
     // Google Gemini family (routed to /api/llm/g/v1/generate)
+    { id: "garnet-07-15", name: "Garnet 07-15 Preview (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "gemini-3.7-flash", name: "Gemini 3.7 Flash (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
