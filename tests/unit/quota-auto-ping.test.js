@@ -42,6 +42,16 @@ vi.mock("@/shared/constants/config", () => ({
         pingInstructions: "Reply with OK.",
         pingReasoningEffort: "none",
       },
+      factory: {
+        settingsKey: "factoryAutoPing",
+        quotaKey: "standard_5h",
+        pingWhenWindowInactive: true,
+        skipWhenBlockingQuotaExhausted: true,
+        minPingIntervalMs: 600000,
+        pingModel: "glm-5.3-flash",
+        pingText: "hi",
+        pingMaxTokens: 1,
+      },
     },
   },
 }));
@@ -62,6 +72,10 @@ vi.mock("open-sse/services/usage/claude.js", () => ({
   getClaudeUsage: vi.fn(),
 }));
 
+vi.mock("open-sse/services/usage/factory.js", () => ({
+  getFactoryUsage: vi.fn(),
+}));
+
 vi.mock("open-sse/services/usage/codex.js", () => ({
   getCodexUsage: vi.fn(),
 }));
@@ -77,6 +91,7 @@ describe("quota auto-ping", () => {
   let state;
   let getCodexUsage;
   let getClaudeUsage;
+  let getFactoryUsage;
   let getExecutor;
   let codexResponseText;
 
@@ -88,9 +103,9 @@ describe("quota auto-ping", () => {
 
     ({ getCodexUsage } = await import("open-sse/services/usage/codex.js"));
     ({ getClaudeUsage } = await import("open-sse/services/usage/claude.js"));
+    ({ getFactoryUsage } = await import("open-sse/services/usage/factory.js"));
     ({ getExecutor } = await import("open-sse/executors/index.js"));
     ({ runQuotaAutoPingTick, configureQuotaAutoPing } = await import("../../src/shared/services/quotaAutoPing.js"));
-
     deps = {
       getSettings: vi.fn(),
       getProviderConnections: vi.fn(),
@@ -368,5 +383,127 @@ describe("quota auto-ping", () => {
       max_tokens: 1,
       messages: [{ role: "user", content: "hi" }],
     });
+  });
+
+  it("pings Factory when the 5h window has expired", async () => {
+    deps.getSettings.mockResolvedValue({ factoryAutoPing: { connections: { "factory-1": true } } });
+    deps.getProviderConnections.mockImplementation(async ({ provider }) => (
+      provider === "factory"
+        ? [{ id: "factory-1", provider: "factory", authType: "oauth", accessToken: "token", providerSpecificData: { orgId: "org-1" } }]
+        : []
+    ));
+    state.resetCache["factory:factory-1"] = "2026-01-01T11:30:00.000Z";
+    getFactoryUsage.mockResolvedValue({
+      quotas: { standard_5h: { used: 100, total: 100, remaining: 0, resetAt: "2026-01-01T11:30:00.000Z" } },
+    });
+
+    await runQuotaAutoPingTick(deps, state);
+
+    expect(getFactoryUsage).toHaveBeenCalledWith("token", { orgId: "org-1" }, expect.any(Object));
+    const executor = deps.getExecutor.mock.results[0].value;
+    expect(deps.getExecutor).toHaveBeenCalledWith("factory");
+    expect(executor.execute).toHaveBeenCalledWith(expect.objectContaining({
+      model: "glm-5.3-flash",
+      stream: true,
+      credentials: expect.objectContaining({
+        accessToken: "token",
+        connectionId: "factory-1",
+        providerSpecificData: { orgId: "org-1" },
+      }),
+      body: {
+        model: "glm-5.3-flash",
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 1,
+        stream: true,
+      },
+    }));
+    expect(deps.updateProviderConnection).toHaveBeenCalledWith("factory-1", expect.objectContaining({
+      lastPingedResetAt: "2026-01-01T11:30:00.000Z",
+      lastPingedResetKey: "2026-01-01T11:30:00.000Z",
+    }));
+  });
+
+  it("does not ping Factory while the 5h window is live", async () => {
+    deps.getSettings.mockResolvedValue({ factoryAutoPing: { connections: { "factory-1": true } } });
+    deps.getProviderConnections.mockImplementation(async ({ provider }) => (
+      provider === "factory" ? [{ id: "factory-1", provider: "factory", authType: "oauth", accessToken: "token" }] : []
+    ));
+    getFactoryUsage.mockResolvedValue({
+      quotas: { standard_5h: { used: 100, total: 100, remaining: 0, resetAt: "2026-01-01T17:00:00.000Z" } },
+    });
+
+    await runQuotaAutoPingTick(deps, state);
+
+    expect(deps.getExecutor).not.toHaveBeenCalled();
+    expect(deps.updateProviderConnection).not.toHaveBeenCalled();
+    expect(state.resetCache["factory:factory-1"]).toBe("2026-01-01T17:00:00.000Z");
+  });
+
+  it("pings Factory when no window was ever started", async () => {
+    deps.getSettings.mockResolvedValue({ factoryAutoPing: { connections: { "factory-1": true } } });
+    deps.getProviderConnections.mockImplementation(async ({ provider }) => (
+      provider === "factory" ? [{ id: "factory-1", provider: "factory", authType: "oauth", accessToken: "token" }] : []
+    ));
+    getFactoryUsage.mockResolvedValue({
+      quotas: { standard_5h: { used: 0, total: 100, remaining: 100, resetAt: null } },
+    });
+
+    await runQuotaAutoPingTick(deps, state);
+
+    expect(deps.getExecutor).toHaveBeenCalledTimes(1);
+    expect(deps.updateProviderConnection).toHaveBeenCalledWith("factory-1", expect.objectContaining({
+      lastPingedResetKey: "1970-01-01T00:00:00.000Z",
+    }));
+  });
+
+  it("does not repeat a Factory ping for the same expired window", async () => {
+    deps.getSettings.mockResolvedValue({ factoryAutoPing: { connections: { "factory-1": true } } });
+    deps.getProviderConnections.mockImplementation(async ({ provider }) => (
+      provider === "factory"
+        ? [{ id: "factory-1", provider: "factory", authType: "oauth", accessToken: "token", lastPingedResetKey: "2026-01-01T11:30:00.000Z" }]
+        : []
+    ));
+    state.resetCache["factory:factory-1"] = "2026-01-01T11:30:00.000Z";
+    getFactoryUsage.mockResolvedValue({
+      quotas: { standard_5h: { used: 100, total: 100, remaining: 0, resetAt: "2026-01-01T11:30:00.000Z" } },
+    });
+
+    await runQuotaAutoPingTick(deps, state);
+
+    expect(deps.getExecutor).not.toHaveBeenCalled();
+  });
+
+  it("does not ping Factory when a weekly quota is exhausted", async () => {
+    deps.getSettings.mockResolvedValue({ factoryAutoPing: { connections: { "factory-1": true } } });
+    deps.getProviderConnections.mockImplementation(async ({ provider }) => (
+      provider === "factory" ? [{ id: "factory-1", provider: "factory", authType: "oauth", accessToken: "token" }] : []
+    ));
+    getFactoryUsage.mockResolvedValue({
+      quotas: {
+        standard_5h: { used: 100, total: 100, remaining: 0, resetAt: "2026-01-01T11:30:00.000Z" },
+        standard_weekly: { used: 100, total: 100, remaining: 0, resetAt: "2026-01-05T00:00:00.000Z" },
+      },
+    });
+
+    await runQuotaAutoPingTick(deps, state);
+
+    expect(deps.getExecutor).not.toHaveBeenCalled();
+  });
+
+  it("pings Factory when only the core 5h window is exhausted", async () => {
+    deps.getSettings.mockResolvedValue({ factoryAutoPing: { connections: { "factory-1": true } } });
+    deps.getProviderConnections.mockImplementation(async ({ provider }) => (
+      provider === "factory" ? [{ id: "factory-1", provider: "factory", authType: "oauth", accessToken: "token" }] : []
+    ));
+    getFactoryUsage.mockResolvedValue({
+      quotas: {
+        standard_5h: { used: 100, total: 100, remaining: 0, resetAt: "2026-01-01T11:30:00.000Z" },
+        core_5h: { used: 100, total: 100, remaining: 0, resetAt: "2026-01-01T12:30:00.000Z" },
+      },
+    });
+
+    await runQuotaAutoPingTick(deps, state);
+
+    expect(deps.getExecutor).toHaveBeenCalledTimes(1);
   });
 });
