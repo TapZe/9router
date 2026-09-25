@@ -4,6 +4,7 @@ import "open-sse/index.js";
 import { getSettings, getProviderConnections, updateProviderConnection } from "@/lib/localDb";
 import { getClaudeUsage } from "open-sse/services/usage/claude.js";
 import { getCodexUsage } from "open-sse/services/usage/codex.js";
+import { getFactoryUsage } from "open-sse/services/usage/factory.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { CLAUDE_CLI_SPOOF_HEADERS } from "open-sse/providers/shared.js";
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
@@ -16,12 +17,17 @@ const CLAUDE_PING_URL = "https://api.anthropic.com/v1/messages?beta=true";
 
 const providerHandlers = {
   claude: {
-    getUsage: getClaudeUsage,
+    getUsage: (connection, proxyOptions) => getClaudeUsage(connection.accessToken, proxyOptions),
     sendPing: sendClaudePing,
   },
   codex: {
-    getUsage: getCodexUsage,
+    getUsage: (connection, proxyOptions) => getCodexUsage(connection.accessToken, proxyOptions),
     sendPing: sendCodexPing,
+  },
+  factory: {
+    // Factory usage needs the connection's orgId/regional endpoint, not just the token.
+    getUsage: (connection, proxyOptions) => getFactoryUsage(connection.accessToken, connection.providerSpecificData, proxyOptions),
+    sendPing: sendFactoryPing,
   },
 };
 
@@ -77,7 +83,9 @@ function wasPingedRecently(connection, intervalMs, nowMs = Date.now()) {
 
 function isBlockingQuotaName(name, sessionKey) {
   if (name === sessionKey) return false;
-  return !String(name).toLowerCase().includes("session");
+  const n = String(name).toLowerCase();
+  // 5h/session buckets are the ping target family; only longer windows make a ping pointless.
+  return !(n.includes("session") || n.includes("5h"));
 }
 
 function hasExhaustedBlockingQuota(quotas, sessionKey) {
@@ -90,6 +98,12 @@ function shouldPingForReset(providerConfig, cachedReset, resetAt, now) {
   }
 
   const resetMs = new Date(resetAt).getTime();
+  // Factory keeps reporting the last window end after it passes; an end at or
+  // before now means no live window, so a request must start the next one.
+  if (providerConfig.pingWhenWindowInactive) {
+    return !Number.isFinite(resetMs) || now >= resetMs;
+  }
+
   return Number.isFinite(resetMs) && now >= resetMs - C.pingLeadMs;
 }
 
@@ -180,6 +194,35 @@ async function sendCodexPing(connection, providerConfig, proxyOptions, deps) {
   return true;
 }
 
+async function sendFactoryPing(connection, providerConfig, proxyOptions, deps) {
+  const executor = deps.getExecutor("factory");
+  const { response } = await executor.execute({
+    model: providerConfig.pingModel,
+    stream: true,
+    credentials: {
+      accessToken: connection.accessToken,
+      connectionId: connection.id,
+      providerSpecificData: connection.providerSpecificData,
+    },
+    proxyOptions,
+    log: console,
+    body: {
+      model: providerConfig.pingModel,
+      messages: [{ role: "user", content: providerConfig.pingText }],
+      max_tokens: providerConfig.pingMaxTokens,
+      stream: true,
+    },
+  });
+  if (!response.ok) {
+    try { await response.body?.cancel?.(); } catch { /* noop */ }
+    return false;
+  }
+
+  // Factory starts the 5h window only once the streaming response completes.
+  await drainResponseBody(response);
+  return true;
+}
+
 function shouldSkipAfterFailure(state, key, nowMs = Date.now()) {
   const failedAt = state.failureCache[key];
   return failedAt && nowMs - failedAt < C.failureCooldownMs;
@@ -208,16 +251,19 @@ async function pingConnection(conn, provider, providerConfig, handler, deps, sta
     return;
   }
 
-  const usage = await handler.getUsage(connection.accessToken, proxyOptions);
+  const usage = await handler.getUsage(connection, proxyOptions);
   const quotas = usage?.quotas || {};
   const quota = quotas?.[providerConfig.quotaKey];
-  const resetAt = quota?.resetAt;
-  if (!resetAt) return;
+  if (!quota) return;
+  const resetAt = quota.resetAt || null;
+  // A window that never started reports no resetAt at all.
+  if (!resetAt && !providerConfig.pingWhenWindowInactive) return;
 
   state.resetCache[key] = resetAt;
 
   if (providerConfig.skipWhenBlockingQuotaExhausted && hasExhaustedBlockingQuota(quotas, providerConfig.quotaKey)) return;
-  if (isQuotaExhausted(quota)) return;
+  // For window-inactive providers an exhausted expired window IS the ping target.
+  if (!providerConfig.pingWhenWindowInactive && isQuotaExhausted(quota)) return;
 
   const now = Date.now();
   const resetKey = normalizeResetKey(resetAt);

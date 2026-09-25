@@ -89,6 +89,17 @@ export const QUOTA_AUTOPING_CONFIG = {
       pingInstructions: "Reply with OK.",
       pingReasoningEffort: "none",
     },
+    factory: {
+      settingsKey: "factoryAutoPing",
+      quotaKey: "standard_5h",         // quota key returned by usage handler
+      pingWhenWindowInactive: true,    // Factory runs a 5h window only while it is active
+      skipWhenBlockingQuotaExhausted: true,
+      minPingIntervalMs: 600000,
+      // Cheapest standard-tier model: the ping must not draw from the Core allowance.
+      pingModel: "glm-5.3-flash",
+      pingText: "hi",
+      pingMaxTokens: 1,
+    },
   },
 };
 
