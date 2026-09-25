@@ -58,11 +58,13 @@ const KIRO_METHOD_LABELS = {
 const AUTO_PING_SETTINGS_KEYS = {
   claude: "claudeAutoPing",
   codex: "codexAutoPing",
+  factory: "factoryAutoPing",
 };
 
 const AUTO_PING_TOOLTIPS = {
   claude: "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.",
   codex: "Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request. Consumes a small amount of quota.",
+  factory: "Auto-starts the next 5h Factory window after reset by sending a tiny glm-5.3-flash request. Consumes a small amount of quota.",
 };
 
 function kiroMethodLabel(conn) {
@@ -135,7 +137,7 @@ export default function ProviderLimits() {
   const [loading, setLoading] = useState({});
   const [errors, setErrors] = useState({});
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [autoPingMaps, setAutoPingMaps] = useState({ claude: {}, codex: {} });
+  const [autoPingMaps, setAutoPingMaps] = useState({ claude: {}, codex: {}, factory: {} });
   const [lastUpdated, setLastUpdated] = useState(null);
   const [hasHydratedAutoRefresh, setHasHydratedAutoRefresh] = useState(false);
   const [refreshingAll, setRefreshingAll] = useState(false);
@@ -549,6 +551,7 @@ export default function ProviderLimits() {
         setAutoPingMaps({
           claude: s?.claudeAutoPing?.connections || {},
           codex: s?.codexAutoPing?.connections || {},
+          factory: s?.factoryAutoPing?.connections || {},
         });
         setQuotaVisibility(s?.quotaVisibility || {});
       })
