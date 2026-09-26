@@ -452,7 +452,45 @@ describe("quota auto-ping", () => {
 
     expect(deps.getExecutor).toHaveBeenCalledTimes(1);
     expect(deps.updateProviderConnection).toHaveBeenCalledWith("factory-1", expect.objectContaining({
-      lastPingedResetKey: "1970-01-01T00:00:00.000Z",
+      lastPingedResetAt: null,
+      lastPingedResetKey: null,
+    }));
+  });
+
+  it("pings Factory again after the second window dies without reporting windowEnd", async () => {
+    // Regression: every "no live window" report collapsed to the same epoch
+    // dedup key, so only the first restart ever fired.
+    deps.getSettings.mockResolvedValue({ factoryAutoPing: { connections: { "factory-1": true } } });
+    const conn = { id: "factory-1", provider: "factory", authType: "oauth", accessToken: "token" };
+    deps.getProviderConnections.mockImplementation(async () => [{ ...conn }]);
+    getFactoryUsage.mockResolvedValue({
+      quotas: { standard_5h: { used: 0, total: 100, remaining: 100, resetAt: null } },
+    });
+
+    // First observation: no live window → ping starts one.
+    await runQuotaAutoPingTick(deps, state);
+    expect(deps.getExecutor).toHaveBeenCalledTimes(1);
+
+    // The started window is live → no further pings while it runs.
+    vi.setSystemTime(new Date("2026-01-01T12:05:00.000Z"));
+    getFactoryUsage.mockResolvedValue({
+      quotas: { standard_5h: { used: 40, total: 100, remaining: 60, resetAt: "2026-01-01T17:00:00.000Z" } },
+    });
+    await runQuotaAutoPingTick(deps, state);
+    expect(deps.getExecutor).toHaveBeenCalledTimes(1);
+
+    // Five hours later the window dies and Factory reports no end at all → restart.
+    conn.lastPingAt = "2026-01-01T12:00:30.000Z";
+    vi.setSystemTime(new Date("2026-01-01T17:30:00.000Z"));
+    getFactoryUsage.mockResolvedValue({
+      quotas: { standard_5h: { used: 100, total: 100, remaining: 0, resetAt: null } },
+    });
+    await runQuotaAutoPingTick(deps, state);
+
+    expect(deps.getExecutor).toHaveBeenCalledTimes(2);
+    expect(deps.updateProviderConnection).toHaveBeenLastCalledWith("factory-1", expect.objectContaining({
+      lastPingedResetAt: null,
+      lastPingedResetKey: null,
     }));
   });
 

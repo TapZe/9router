@@ -266,13 +266,19 @@ async function pingConnection(conn, provider, providerConfig, handler, deps, sta
   if (!providerConfig.pingWhenWindowInactive && isQuotaExhausted(quota)) return;
 
   const now = Date.now();
-  const resetKey = normalizeResetKey(resetAt);
-  const lastPingedResetKey = connection.lastPingedResetKey || normalizeResetKey(connection.lastPingedResetAt);
+  // "No live window" has no stable key: normalizeResetKey(null) collapses to
+  // the epoch string, so keying dedup on it would permanently block the second
+  // window restart. Pacing for null keys comes from the live-window gate,
+  // minPingIntervalMs, and failure backoff instead.
+  const resetKey = resetAt ? normalizeResetKey(resetAt) : null;
+  const lastPingedResetKey = (connection.lastPingedResetKey || connection.lastPingedResetAt)
+    ? normalizeResetKey(connection.lastPingedResetKey || connection.lastPingedResetAt)
+    : null;
 
   // Claude waits for reset. Codex pings only when resetAt slides, which means the 5h window is inactive.
   if (!shouldPingForReset(providerConfig, cachedReset, resetAt, now)) return;
   if (wasPingedRecently(connection, providerConfig.minPingIntervalMs, now)) return;
-  if (lastPingedResetKey === resetKey) return;
+  if (resetKey && lastPingedResetKey === resetKey) return;
 
   const ok = await handler.sendPing(connection, providerConfig, proxyOptions, deps);
   if (!ok) {
