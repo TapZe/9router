@@ -157,16 +157,22 @@ describe("FactoryExecutor", () => {
 
   describe("resolveClaudeThinking", () => {
     it("configures summarized adaptive thinking for current Claude models", () => {
-      for (const m of ["claude-fable-5.1", "claude-fable-5", "claude-opus-5", "claude-opus-5-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5", "atlas-07-21", "aster-07-15"]) {
+      for (const m of ["claude-fable-5.1", "claude-fable-5", "claude-opus-5", "claude-opus-5-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5", "claude-sonnet-5-5", "atlas-07-21", "aster-07-15"]) {
         const config = resolveClaudeThinking(m, "medium");
         expect(config.thinking).toEqual({ type: "adaptive", display: "summarized" });
         expect(config.outputConfig).toEqual({ effort: "medium" });
       }
     });
 
-    it("honors disabled thinking except on always-adaptive Opus 5.5", () => {
+    it("honors disabled thinking except on always-adaptive Opus 5.5 and Sonnet 5.5", () => {
       expect(resolveClaudeThinking("claude-sonnet-5", "off")).toEqual({ thinking: undefined, outputConfig: undefined });
+      // Neither 5.5 model exposes an `off` effort, so a disable request keeps
+      // adaptive thinking and only drops the output effort.
       expect(resolveClaudeThinking("claude-opus-5-5", "off")).toEqual({
+        thinking: { type: "adaptive", display: "summarized" },
+        outputConfig: undefined,
+      });
+      expect(resolveClaudeThinking("claude-sonnet-5-5", "off")).toEqual({
         thinking: { type: "adaptive", display: "summarized" },
         outputConfig: undefined,
       });

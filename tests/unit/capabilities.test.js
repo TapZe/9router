@@ -22,10 +22,12 @@ describe("getCapabilitiesForModel", () => {
     expect(getCapabilitiesForModel("opencode-go", "deepseek-v4-flash").vision).toBe(false);
   });
 
-  it("uses audited Droid 0.226.1 limits and wire formats for new Factory models", () => {
+  it("uses audited Droid 0.228.1 / docs limits and wire formats for new Factory models", () => {
     const expected = {
       "claude-opus-5-5": [1000000, 128000, true, "claude-adaptive"],
       "claude-opus-5-5-fast": [1000000, 128000, true, "claude-adaptive"],
+      "claude-sonnet-5-5": [1000000, 128000, true, "claude-adaptive"],
+      "deepseek-v4.1-flash": [1040000, 131072, true, "openai"],
       "gpt-6-sol": [1050000, 128000, true, "openai"],
       "gpt-6-luna": [1050000, 128000, true, "openai"],
       "grok-4.7": [500000, 63356, true, "openai"],
@@ -64,10 +66,17 @@ describe("getCapabilitiesForModel", () => {
     const registered = factoryRegistry.models.map(({ id }) => id).sort();
     expect([...new Set(registered)]).toEqual(registered);
     expect(Object.keys(PROVIDER_CAPABILITIES.factory).sort()).toEqual(registered);
-    // Gated off in the Droid binary (deepseek_v4_1_flash, default false) and
-    // absent from docs.factory.ai/models — no hosted override, and no
-    // registration aliasing it to an older model id.
-    expect(PROVIDER_CAPABILITIES.factory["deepseek-v4.1-flash"]).toBeUndefined();
+    // Promoted 2026-09: docs.factory.ai/models publishes deepseek-v4.1-flash and
+    // Droid 0.228.1 ships binary-audited limits for it (image input, disable-able
+    // thinking, openai wire format).
+    expect(PROVIDER_CAPABILITIES.factory["deepseek-v4.1-flash"]).toMatchObject({
+      contextWindow: 1040000,
+      maxOutput: 131072,
+      vision: true,
+      reasoning: true,
+      thinkingFormat: "openai",
+      thinkingCanDisable: true,
+    });
     expect(getCapabilitiesForModel("factory", "gpt-5.5")).toMatchObject({ contextWindow: 1050000, maxOutput: 128000 });
     expect(getCapabilitiesForModel("factory", "grok-4.6")).toMatchObject({ contextWindow: 263356, maxOutput: 63356 });
     expect(getCapabilitiesForModel("factory", "glm-5.3-flash")).toMatchObject({ contextWindow: 1048576, maxOutput: 131072, vision: false, thinkingFormat: "openai" });

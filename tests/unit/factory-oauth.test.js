@@ -46,10 +46,11 @@ describe("Factory OAuth & Token Management", () => {
       expect(factoryRegistry.transport.headers["User-Agent"]).toBe(`factory-cli/${FACTORY_CLIENT_VERSION}`);
     });
 
-    it("registers Droid 0.226.1 model additions with the correct gateway formats", () => {
+    it("registers Droid 0.228.1 / docs model additions with the correct gateway formats", () => {
       const models = new Map(factoryRegistry.models.map((model) => [model.id, model]));
       const expectedFormats = {
         "claude-opus-5-5": "claude",
+        "claude-sonnet-5-5": "claude",
         "claude-opus-5-5-fast": "claude",
         "gpt-6-sol": "openai-responses",
         "gpt-6-luna": "openai-responses",
@@ -57,6 +58,7 @@ describe("Factory OAuth & Token Management", () => {
         "minimax-m3": "openai",
         "qwen3.8-max": "openai",
         "mistral-medium-3.5": "openai",
+        "deepseek-v4.1-flash": "openai",
         "garnet-07-15": "gemini",
       };
 
@@ -64,10 +66,10 @@ describe("Factory OAuth & Token Management", () => {
         expect(models.get(id)?.targetFormat, id).toBe(targetFormat);
         expect(models.get(id)?.supportedFormats).toEqual([targetFormat]);
       }
-      // Feature-gated in the Droid binary (default off) and absent from
-      // docs.factory.ai/models — must not be offered to Factory users.
-      expect(models.has("deepseek-v4.1-flash")).toBe(false);
-      expect(getProviderModels("factory").some((model) => model.id === "deepseek-v4.1-flash")).toBe(false);
+      // Promoted 2026-09: docs.factory.ai/models publishes deepseek-v4.1-flash
+      // and Droid 0.228.1 ships binary-audited limits for it — offered to users.
+      expect(models.has("deepseek-v4.1-flash")).toBe(true);
+      expect(getProviderModels("factory").some((model) => model.id === "deepseek-v4.1-flash")).toBe(true);
     });
 
     it("keeps every Factory registry format aligned with its executor gateway", () => {

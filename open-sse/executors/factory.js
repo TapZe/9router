@@ -120,7 +120,10 @@ export function resolveClaudeThinking(modelId, requestedEffort, requestedBudget)
     ? requestedEffort
     : requestedEffort === "minimal" ? "low" : "high";
   const effort = requestedLevel === "xhigh" && !supportsExtraHighEffort(m) ? "high" : requestedLevel;
-  if (disabled && (m.startsWith("claude-") || m.startsWith("atlas-") || m.startsWith("aster-")) && !m.startsWith("claude-opus-5-5")) {
+  // Claude 5.5 models expose no `off` effort — the API rejects a thinking
+  // disable, so they fall through to the adaptive branch with thinking on.
+  if (disabled && (m.startsWith("claude-") || m.startsWith("atlas-") || m.startsWith("aster-")) &&
+    !m.startsWith("claude-opus-5-5") && !m.startsWith("claude-sonnet-5-5")) {
     return { thinking: undefined, outputConfig: undefined };
   }
 

@@ -161,7 +161,7 @@ const FACTORY_LIMIT_GROUPS = [
     "claude-opus-4-8", "claude-opus-4-8-fast", "claude-opus-4-7", "claude-opus-4-7-fast",
     "claude-opus-4-6", "claude-opus-4-6-fast", "atlas-07-21", "aster-07-15",
   ]],
-  [1_000_000, 128_000, ["claude-opus-5-5", "claude-opus-5-5-fast", "claude-sonnet-5"]],
+  [1_000_000, 128_000, ["claude-opus-5-5", "claude-opus-5-5-fast", "claude-sonnet-5", "claude-sonnet-5-5"]],
   [200_000, 64_000, ["claude-opus-4-5-20251101"]],
   [995_000, 64_000, ["claude-sonnet-4-6"]],
   [200_000, 32_000, ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"]],
@@ -179,10 +179,7 @@ const FACTORY_LIMIT_GROUPS = [
   [263_356, 63_356, ["grok-4.6", "grok-4.5"]],
   [262_144, 65_536, ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6"]],
   [288_768, 32_768, ["kimi-k2.5"]],
-  // deepseek-v4.1-flash omitted from Factory groups: gated off in the Droid
-  // binary (deepseek_v4_1_flash, default false) and absent from
-  // docs.factory.ai/models, so Factory 400s on that logical id.
-  [1_040_000, 131_072, ["glm-5.3", "glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash-0731"]],
+  [1_040_000, 131_072, ["glm-5.3", "glm-5.2", "deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-flash-0731"]],
   [1_048_576, 131_072, ["glm-5.3-flash"]],
   [524_288, 131_072, ["glm-5.2-fast"]],
   [200_000, 65_536, ["glm-5.1"]],
@@ -204,7 +201,7 @@ const FACTORY_TEXT_ONLY = new Set([
   "qwen3.8-max", "deepseek-v4-pro", "deepseek-v4-flash-0731", "nemotron-3-ultra", "inkling",
 ]);
 const FACTORY_ALWAYS_THINKING = new Set([
-  "claude-opus-5-5", "claude-opus-5-5-fast", "minimax-m3", "minimax-m2.7", "minimax-m2.5",
+  "claude-opus-5-5", "claude-opus-5-5-fast", "claude-sonnet-5-5", "minimax-m3", "minimax-m2.7", "minimax-m2.5",
   "gpt-6-astra", "gpt-5.5", "gpt-5.5-pro", "gpt-5.5-fast", "gpt-5.4", "gpt-5.4-fast",
   "gpt-5.4-mini", "gpt-5.4-mini-fast", "gpt-5.3-codex", "gpt-5.3-codex-fast",
   "gpt-5.2-codex", "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5-codex",

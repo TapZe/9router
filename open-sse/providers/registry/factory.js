@@ -89,6 +89,7 @@ export default {
     { id: "claude-opus-4-6", name: "Claude Opus 4.6 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-opus-4-6-fast", name: "Claude Opus 4.6 Fast (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-opus-4-5-20251101", name: "Claude Opus 4.5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
+    { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-sonnet-5", name: "Claude Sonnet 5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
@@ -144,9 +145,9 @@ export default {
     { id: "glm-4.6", name: "GLM 4.6 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "mistral-medium-3.5", name: "Mistral Medium 3.5 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "qwen3.8-max", name: "Qwen3.8 Max (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
-    // deepseek-v4.1-flash omitted: gated off in the Droid binary
-    // (deepseek_v4_1_flash, default false) and absent from
-    // docs.factory.ai/models — Factory 400s on the unlaunched logical id.
+    // Promoted 2026-09: docs.factory.ai/models publishes deepseek-v4.1-flash and
+    // Droid 0.228.1 ships binary-audited limits (1_040_000/131_072, image input).
+    { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "deepseek-v4-flash-0731", name: "DeepSeek V4 Flash (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "nemotron-3-ultra", name: "Nemotron 3 Ultra (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
