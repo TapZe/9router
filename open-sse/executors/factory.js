@@ -673,10 +673,12 @@ export class FactoryExecutor extends BaseExecutor {
 
     if (cloned.reasoning_effort) {
       const re = String(cloned.reasoning_effort).toLowerCase();
-      if (re === "minimal") {
+      if (m === "gpt-6.1-sol" && (re === "none" || re === "off" || re === "minimal")) {
+        cloned.reasoning_effort = "low";
+      } else if (re === "minimal") {
         cloned.reasoning_effort = "low";
       } else if (re === "max") {
-        cloned.reasoning_effort = hasExtraHigh ? "xhigh" : "high";
+        cloned.reasoning_effort = m === "gpt-6.1-sol" ? "max" : hasExtraHigh ? "xhigh" : "high";
       } else if (re === "xhigh" && !hasExtraHigh) {
         cloned.reasoning_effort = "high";
       }

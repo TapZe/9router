@@ -680,6 +680,10 @@ describe("FactoryExecutor", () => {
       const gpt6 = executor.transformRequest("gpt-6-astra", { reasoning_effort: "max" }, true);
       expect(gpt6.reasoning_effort).toBe("xhigh");
 
+      const sol61 = executor.transformRequest("gpt-6.1-sol", { reasoning_effort: "max" }, true);
+      expect(sol61.reasoning_effort).toBe("max");
+      expect(executor.transformRequest("gpt-6.1-sol", { reasoning_effort: "none" }, true).reasoning_effort).toBe("low");
+
       const glm = executor.transformRequest("glm-5.3", { reasoning_effort: "xhigh" }, true);
       expect(glm.reasoning_effort).toBe("xhigh");
 

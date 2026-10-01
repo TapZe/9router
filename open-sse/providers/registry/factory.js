@@ -105,6 +105,7 @@ export default {
     // GPT / Codex / Grok family (routed to /api/llm/o/v1/responses)
     { id: "gpt-6-astra", name: "GPT-6 Astra (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-6-sol", name: "GPT-6 Sol (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6.1-sol", name: "GPT-6.1 Sol (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-6-luna", name: "GPT-6 Luna (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.6-sol", name: "GPT-5.6 Sol (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.6-sol-fast", name: "GPT-5.6 Sol Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },

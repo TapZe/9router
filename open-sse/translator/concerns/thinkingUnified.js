@@ -235,8 +235,10 @@ function stripAll(body) {
 function applyFormat(fmt, body, cfg, caps, supportedLevels, display) {
   const none = cfg.mode === "none";
   const canDisable = caps.thinkingCanDisable !== false;
-  // Model cannot disable thinking → clamp "none" to minimal effort instead.
-  const eff = none && !canDisable ? { mode: "level", level: "minimal" } : cfg;
+  // Forced-on OpenAI models can omit minimal; use the first accepted level.
+  const minimum = fmt === "openai" && supportedLevels?.length && !supportedLevels.includes("minimal")
+    ? supportedLevels[0] : "minimal";
+  const eff = none && !canDisable ? { mode: "level", level: minimum } : cfg;
 
   switch (fmt) {
     case "openai": {

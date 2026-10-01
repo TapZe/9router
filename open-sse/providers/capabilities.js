@@ -169,7 +169,7 @@ const FACTORY_LIMIT_GROUPS = [
   [260_600, 64_000, ["minimax-m2.7"]],
   [268_800, 64_000, ["minimax-m2.5"]],
   [1_050_000, 128_000, [
-    "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-sol-fast",
+    "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.6-sol-fast",
     "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.5-fast",
     "gpt-5.4", "gpt-5.4-fast",
   ]],
@@ -202,7 +202,9 @@ const FACTORY_TEXT_ONLY = new Set([
 ]);
 const FACTORY_ALWAYS_THINKING = new Set([
   "claude-opus-5-5", "claude-opus-5-5-fast", "claude-sonnet-5-5", "minimax-m3", "minimax-m2.7", "minimax-m2.5",
-  "gpt-6-astra", "gpt-5.5", "gpt-5.5-pro", "gpt-5.5-fast", "gpt-5.4", "gpt-5.4-fast",
+  "gpt-6-astra",
+  // Droid 0.230.0 only accepts low, medium, high, xhigh, or max for GPT-6.1 Sol.
+  "gpt-6.1-sol", "gpt-5.5", "gpt-5.5-pro", "gpt-5.5-fast", "gpt-5.4", "gpt-5.4-fast",
   "gpt-5.4-mini", "gpt-5.4-mini-fast", "gpt-5.3-codex", "gpt-5.3-codex-fast",
   "gpt-5.2-codex", "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5-codex",
   "grok-4.7", "grok-4.6", "grok-4.5", "glm-5.3", "glm-5.3-flash", "qwen3.8-max",

@@ -72,6 +72,15 @@ describe("extractThinking", () => {
   });
 });
 
+describe("Factory GPT-6.1 Sol thinking", () => {
+  it("preserves max and clamps unsupported disable to low", () => {
+    const max = apply("openai-responses", "gpt-6.1-sol", { reasoning_effort: "max" }, "factory");
+    const off = apply("openai-responses", "gpt-6.1-sol", { reasoning_effort: "none" }, "factory");
+    expect(max.reasoning_effort).toBe("max");
+    expect(off.reasoning_effort).toBe("low");
+  });
+});
+
 describe("applyThinking per provider format", () => {
   it("claude 4.6+ → adaptive thinking + output_config (no budget_tokens)", () => {
     const out = apply("claude", "claude-opus-4.7", { reasoning_effort: "high" }, "claude");

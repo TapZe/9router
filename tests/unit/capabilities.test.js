@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getCapabilitiesForModel, PROVIDER_CAPABILITIES } from "../../open-sse/providers/capabilities.js";
+import { getThinkingLevels } from "../../open-sse/providers/thinkingLevels.js";
 import factoryRegistry from "../../open-sse/providers/registry/factory.js";
 
 describe("getCapabilitiesForModel", () => {
@@ -28,6 +29,7 @@ describe("getCapabilitiesForModel", () => {
       "claude-opus-5-5-fast": [1000000, 128000, true, "claude-adaptive"],
       "claude-sonnet-5-5": [1000000, 128000, true, "claude-adaptive"],
       "deepseek-v4.1-flash": [1040000, 131072, true, "openai"],
+      "gpt-6.1-sol": [1050000, 128000, true, "openai"],
       "gpt-6-sol": [1050000, 128000, true, "openai"],
       "gpt-6-luna": [1050000, 128000, true, "openai"],
       "grok-4.7": [500000, 63356, true, "openai"],
@@ -45,6 +47,11 @@ describe("getCapabilitiesForModel", () => {
         reasoning: true,
         thinkingFormat,
       });
+    }
+    // Droid 0.230.0 accepts low through max, but not none or minimal.
+    expect(getCapabilitiesForModel("factory", "gpt-6.1-sol").thinkingCanDisable).toBe(false);
+    for (const provider of ["factory", "fy", "droid"]) {
+      expect(getThinkingLevels(provider, "gpt-6.1-sol")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     }
 
     expect(getCapabilitiesForModel("fy", "qwen3.8-max").contextWindow).toBe(262144);

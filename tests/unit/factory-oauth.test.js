@@ -53,6 +53,7 @@ describe("Factory OAuth & Token Management", () => {
         "claude-sonnet-5-5": "claude",
         "claude-opus-5-5-fast": "claude",
         "gpt-6-sol": "openai-responses",
+        "gpt-6.1-sol": "openai-responses",
         "gpt-6-luna": "openai-responses",
         "grok-4.7": "openai-responses",
         "minimax-m3": "openai",
