@@ -46,12 +46,13 @@ describe("Factory OAuth & Token Management", () => {
       expect(factoryRegistry.transport.headers["User-Agent"]).toBe(`factory-cli/${FACTORY_CLIENT_VERSION}`);
     });
 
-    it("registers Droid 0.228.1 / docs model additions with the correct gateway formats", () => {
+    it("registers Droid 0.240.0 / docs model additions with the correct gateway formats", () => {
       const models = new Map(factoryRegistry.models.map((model) => [model.id, model]));
       const expectedFormats = {
         "claude-opus-5-5": "claude",
         "claude-sonnet-5-5": "claude",
         "claude-opus-5-5-fast": "claude",
+        "claude-haiku-5-5": "claude",
         "gpt-6-sol": "openai-responses",
         "gpt-6.1-sol": "openai-responses",
         "gpt-6-luna": "openai-responses",
@@ -59,6 +60,7 @@ describe("Factory OAuth & Token Management", () => {
         "minimax-m3": "openai",
         "qwen3.8-max": "openai",
         "mistral-medium-3.5": "openai",
+        "mistral-large-4": "openai",
         "deepseek-v4.1-flash": "openai",
         "garnet-07-15": "gemini",
       };

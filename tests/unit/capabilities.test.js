@@ -23,11 +23,12 @@ describe("getCapabilitiesForModel", () => {
     expect(getCapabilitiesForModel("opencode-go", "deepseek-v4-flash").vision).toBe(false);
   });
 
-  it("uses audited Droid 0.228.1 / docs limits and wire formats for new Factory models", () => {
+  it("uses audited Droid 0.240.0 / docs limits and wire formats for new Factory models", () => {
     const expected = {
       "claude-opus-5-5": [1000000, 128000, true, "claude-adaptive"],
       "claude-opus-5-5-fast": [1000000, 128000, true, "claude-adaptive"],
       "claude-sonnet-5-5": [1000000, 128000, true, "claude-adaptive"],
+      "claude-haiku-5-5": [1000000, 128000, true, "claude-adaptive"],
       "deepseek-v4.1-flash": [1040000, 131072, true, "openai"],
       "gpt-6.1-sol": [1050000, 128000, true, "openai"],
       "gpt-6-sol": [1050000, 128000, true, "openai"],
@@ -36,6 +37,7 @@ describe("getCapabilitiesForModel", () => {
       "minimax-m3": [512000, 64000, true, "openai"],
       "qwen3.8-max": [262144, 131072, false, "openai"],
       "mistral-medium-3.5": [256000, 64000, true, "openai"],
+      "mistral-large-4": [588288, 64000, true, "openai"],
       "garnet-07-15": [1065536, 65536, true, "gemini-level"],
     };
 
@@ -86,7 +88,7 @@ describe("getCapabilitiesForModel", () => {
     });
     expect(getCapabilitiesForModel("factory", "gpt-5.5")).toMatchObject({ contextWindow: 1050000, maxOutput: 128000 });
     expect(getCapabilitiesForModel("factory", "grok-4.6")).toMatchObject({ contextWindow: 263356, maxOutput: 63356 });
-    expect(getCapabilitiesForModel("factory", "glm-5.3-flash")).toMatchObject({ contextWindow: 1048576, maxOutput: 131072, vision: false, thinkingFormat: "openai" });
+    expect(getCapabilitiesForModel("factory", "glm-5.3-flash")).toMatchObject({ contextWindow: 1048576, maxOutput: 131072, vision: true, thinkingFormat: "openai" });
     expect(getCapabilitiesForModel("factory", "kimi-k3").thinkingFormat).toBe("openai");
     expect(getCapabilitiesForModel("factory", "minimax-m2.7").thinkingFormat).toBe("claude-budget");
     expect(getCapabilitiesForModel("factory", "atlas-07-21").thinkingFormat).toBe("claude-adaptive");

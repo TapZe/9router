@@ -161,7 +161,7 @@ const FACTORY_LIMIT_GROUPS = [
     "claude-opus-4-8", "claude-opus-4-8-fast", "claude-opus-4-7", "claude-opus-4-7-fast",
     "claude-opus-4-6", "claude-opus-4-6-fast", "atlas-07-21", "aster-07-15",
   ]],
-  [1_000_000, 128_000, ["claude-opus-5-5", "claude-opus-5-5-fast", "claude-sonnet-5", "claude-sonnet-5-5"]],
+  [1_000_000, 128_000, ["claude-opus-5-5", "claude-opus-5-5-fast", "claude-sonnet-5", "claude-sonnet-5-5", "claude-haiku-5-5"]],
   [200_000, 64_000, ["claude-opus-4-5-20251101"]],
   [995_000, 64_000, ["claude-sonnet-4-6"]],
   [200_000, 32_000, ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"]],
@@ -187,6 +187,7 @@ const FACTORY_LIMIT_GROUPS = [
   [223_344, 25_344, ["glm-4.7"]],
   [328_000, 128_000, ["glm-4.6"]],
   [256_000, 64_000, ["mistral-medium-3.5"]],
+  [588_288, 64_000, ["mistral-large-4"]],
   [262_144, 131_072, ["qwen3.8-max"]],
   [202_000, 65_536, ["nemotron-3-ultra"]],
   [1_040_000, 32_768, ["inkling"]],
@@ -197,8 +198,8 @@ const FACTORY_LIMIT_GROUPS = [
 ];
 const FACTORY_TEXT_ONLY = new Set([
   "minimax-m2.7", "minimax-m2.5", "gpt-5.3-codex", "gpt-5.3-codex-fast",
-  "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.2-fast", "glm-5.1", "glm-5", "glm-4.7", "glm-4.6",
-  "qwen3.8-max", "deepseek-v4-pro", "deepseek-v4-flash-0731", "nemotron-3-ultra", "inkling",
+  "glm-5.3", "glm-5.2", "glm-5.2-fast", "glm-5.1", "glm-5", "glm-4.7", "glm-4.6",
+  "qwen3.8-max", "deepseek-v4-pro", "deepseek-v4-flash-0731", "nemotron-3-ultra",
 ]);
 const FACTORY_ALWAYS_THINKING = new Set([
   "claude-opus-5-5", "claude-opus-5-5-fast", "claude-sonnet-5-5", "minimax-m3", "minimax-m2.7", "minimax-m2.5",

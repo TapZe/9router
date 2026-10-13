@@ -59,6 +59,7 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("nemotron-3-ultra")).toBe("openai-completions");
       expect(resolveTargetGateway("qwen3.8-max")).toBe("openai-completions");
       expect(resolveTargetGateway("mistral-medium-3.5")).toBe("openai-completions");
+      expect(resolveTargetGateway("mistral-large-4")).toBe("openai-completions");
       expect(resolveTargetGateway("minimax-m3")).toBe("openai-completions");
     });
 

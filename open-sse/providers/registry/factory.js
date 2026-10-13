@@ -93,6 +93,7 @@ export default {
     { id: "claude-sonnet-5", name: "Claude Sonnet 5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
+    { id: "claude-haiku-5-5", name: "Claude Haiku 5.5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "atlas-07-21", name: "Atlas 07-21 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "aster-07-15", name: "Aster 07-15 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
@@ -144,6 +145,7 @@ export default {
     { id: "glm-5", name: "GLM 5 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "glm-4.7", name: "GLM 4.7 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "glm-4.6", name: "GLM 4.6 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
+    { id: "mistral-large-4", name: "Mistral Large 4 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "mistral-medium-3.5", name: "Mistral Medium 3.5 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "qwen3.8-max", name: "Qwen3.8 Max (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     // Promoted 2026-09: docs.factory.ai/models publishes deepseek-v4.1-flash and

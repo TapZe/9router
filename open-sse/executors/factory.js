@@ -200,6 +200,7 @@ export function supportsExtraHighEffort(modelId) {
     m.startsWith("claude-opus-4-7") ||
     m.startsWith("claude-sonnet-5") ||
     m.startsWith("claude-fable-5") ||
+    m.startsWith("claude-haiku-5") ||
     m.startsWith("atlas-") ||
     m.startsWith("aster-") ||
     m.startsWith("qwen")
