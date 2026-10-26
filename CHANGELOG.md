@@ -1,3 +1,8 @@
+# Unreleased
+
+## Features
+- **Factory**: add seven Droid 0.249.0 models, including GPT-6 fast variants, DeepSeek V4.1 Flash 1017, MiniMax M3.1 Flash, Muse Spark 1.2, and Beam 1.0; route Beam through Baseten and MiniMax M3.1 through chat completions. GPT-6.1 Sol Ultrafast requires Factory high-cost opt-in.
+
 # v0.5.86 (2026-09-23)
 
 ## Features

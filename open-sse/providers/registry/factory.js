@@ -98,16 +98,20 @@ export default {
     { id: "atlas-07-21", name: "Atlas 07-21 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "aster-07-15", name: "Aster 07-15 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
 
-    // MiniMax M3 uses chat completions; M2.x stays on Anthropic-compatible Messages.
+    // MiniMax M3 and M3.1 Flash use chat completions; M2.x stays on Anthropic-compatible Messages.
     { id: "minimax-m3", name: "MiniMax M3 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
+    { id: "minimax-m3.1-flash", name: "MiniMax M3.1 Flash (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "minimax-m2.7", name: "MiniMax M2.7 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "minimax-m2.5", name: "MiniMax M2.5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
 
     // GPT / Codex / Grok family (routed to /api/llm/o/v1/responses)
     { id: "gpt-6-astra", name: "GPT-6 Astra (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-6-sol", name: "GPT-6 Sol (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6-sol-fast", name: "GPT-6 Sol Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-6.1-sol", name: "GPT-6.1 Sol (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6.1-sol-ultrafast", name: "GPT-6.1 Sol Ultrafast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-6-luna", name: "GPT-6 Luna (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6-luna-fast", name: "GPT-6 Luna Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.6-sol", name: "GPT-5.6 Sol (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.6-sol-fast", name: "GPT-5.6 Sol Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.6-terra", name: "GPT-5.6 Terra (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
@@ -151,10 +155,13 @@ export default {
     // Promoted 2026-09: docs.factory.ai/models publishes deepseek-v4.1-flash and
     // Droid 0.228.1 ships binary-audited limits (1_040_000/131_072, image input).
     { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
+    { id: "deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash 1017 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "deepseek-v4-flash-0731", name: "DeepSeek V4 Flash (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "nemotron-3-ultra", name: "Nemotron 3 Ultra (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "inkling", name: "Inkling (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
+    { id: "muse-spark-1.2", name: "Muse Spark 1.2 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
+    { id: "beam-1.0", name: "Beam 1.0 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
 
     // Google Gemini family (routed to /api/llm/g/v1/generate)
     { id: "garnet-07-15", name: "Garnet 07-15 Preview (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },

@@ -37,6 +37,13 @@ const CODEX_GPT_5_6_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh
 // Model-name pattern overrides (glob, first match wins) — more precise than format default.
 const PATTERN_THINKING = [
   { provider: "factory", pattern: "gpt-6.1-sol", levels: ["low", "medium", "high", "xhigh", "max"] },
+  { provider: "factory", pattern: "gpt-6.1-sol-ultrafast", levels: ["low", "medium", "high", "xhigh", "max"] },
+  { provider: "factory", pattern: "gpt-6-sol-fast", levels: ["none", "low", "medium", "high", "xhigh", "max"] },
+  { provider: "factory", pattern: "gpt-6-luna-fast", levels: ["none", "low", "medium", "high", "xhigh", "max"] },
+  { provider: "factory", pattern: "minimax-m3.1-flash", levels: ["low", "medium", "high", "xhigh", "max"] },
+  { provider: "factory", pattern: "deepseek-v4.1-flash-1017", levels: ["none", "low", "high", "max"] },
+  { provider: "factory", pattern: "muse-spark-1.2", levels: ["low", "medium", "high", "xhigh"] },
+  { provider: "factory", pattern: "beam-1.0", levels: ["low", "medium", "high", "xhigh", "max"] },
   { provider: "codex", pattern: "*gpt-6*", levels: CODEX_GPT_5_6_LEVELS },
   { provider: "codex", pattern: "*gpt-5.6-sol*", levels: [...CODEX_GPT_5_6_LEVELS, "ultra"] },
   { provider: "codex", pattern: "*gpt-5.6-terra*", levels: [...CODEX_GPT_5_6_LEVELS, "ultra"] },

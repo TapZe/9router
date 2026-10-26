@@ -60,6 +60,41 @@ describe("getCapabilitiesForModel", () => {
     expect(getCapabilitiesForModel("droid", "grok-4.7").maxOutput).toBe(63356);
   });
 
+  it("registers seven Droid 0.249.0 models with hosted limits and modalities", () => {
+    const expected = {
+      "minimax-m3.1-flash": { contextWindow: 1000000, maxOutput: 131072, vision: true, thinkingFormat: "openai", thinkingCanDisable: false },
+      "gpt-6-sol-fast": { contextWindow: 1050000, maxOutput: 128000, vision: true, thinkingFormat: "openai" },
+      "gpt-6.1-sol-ultrafast": { contextWindow: 1050000, maxOutput: 128000, vision: true, thinkingFormat: "openai", thinkingCanDisable: false },
+      "gpt-6-luna-fast": { contextWindow: 1050000, maxOutput: 128000, vision: true, thinkingFormat: "openai" },
+      "deepseek-v4.1-flash-1017": { contextWindow: 1040000, maxOutput: 131072, vision: true, thinkingFormat: "openai", thinkingCanDisable: true },
+      "muse-spark-1.2": { contextWindow: 1040000, maxOutput: 131072, vision: false, thinkingFormat: "openai", thinkingCanDisable: false },
+      "beam-1.0": { contextWindow: 1048576, maxOutput: 32768, vision: false, thinkingFormat: "openai", thinkingCanDisable: false },
+    };
+    for (const [model, caps] of Object.entries(expected)) {
+      expect(getCapabilitiesForModel("factory", model), model).toMatchObject({ reasoning: true, ...caps });
+    }
+  });
+
+  it("exposes exactly the binary-selectable effort levels for each new Factory model", () => {
+    const levels = {
+      "gpt-6.1-sol-ultrafast": ["low", "medium", "high", "xhigh", "max"],
+      "gpt-6-sol-fast": ["none", "low", "medium", "high", "xhigh", "max"],
+      "gpt-6-luna-fast": ["none", "low", "medium", "high", "xhigh", "max"],
+      "minimax-m3.1-flash": ["low", "medium", "high", "xhigh", "max"],
+      "deepseek-v4.1-flash-1017": ["none", "low", "high", "max"],
+      "muse-spark-1.2": ["low", "medium", "high", "xhigh"],
+      "beam-1.0": ["low", "medium", "high", "xhigh", "max"],
+    };
+    for (const [model, expected] of Object.entries(levels)) {
+      expect(getThinkingLevels("factory", model), model).toEqual(expected);
+    }
+  });
+
+  it("does not expose binary-unreleased Nemotron 3.5 Super", () => {
+    expect(PROVIDER_CAPABILITIES.factory["nemotron-3.5-super"]).toBeUndefined();
+    expect(factoryRegistry.models.some((model) => model.id === "nemotron-3.5-super")).toBe(false);
+  });
+
   it("uses corrected Factory limits for Fable 5.1 and Gemini 3.8", () => {
     expect(getCapabilitiesForModel("factory", "claude-fable-5.1")).toMatchObject({
       contextWindow: 995000,

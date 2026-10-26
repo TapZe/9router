@@ -45,6 +45,9 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("gpt-5.3-codex")).toBe("openai-responses");
       expect(resolveTargetGateway("gpt-5-codex")).toBe("openai-responses");
       expect(resolveTargetGateway("grok-4.6")).toBe("openai-responses");
+      expect(resolveTargetGateway("gpt-6-sol-fast")).toBe("openai-responses");
+      expect(resolveTargetGateway("gpt-6.1-sol-ultrafast")).toBe("openai-responses");
+      expect(resolveTargetGateway("gpt-6-luna-fast")).toBe("openai-responses");
       expect(resolveTargetGateway("grok-4.7")).toBe("openai-responses");
       expect(resolveTargetGateway("grok-4.5")).toBe("openai-responses");
     });
@@ -61,6 +64,10 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("mistral-medium-3.5")).toBe("openai-completions");
       expect(resolveTargetGateway("mistral-large-4")).toBe("openai-completions");
       expect(resolveTargetGateway("minimax-m3")).toBe("openai-completions");
+      expect(resolveTargetGateway("minimax-m3.1-flash")).toBe("openai-completions");
+      expect(resolveTargetGateway("muse-spark-1.2")).toBe("openai-completions");
+      expect(resolveTargetGateway("beam-1.0")).toBe("openai-completions");
+      expect(resolveTargetGateway("deepseek-v4.1-flash-1017")).toBe("openai-completions");
     });
 
     it("routes Gemini models to Google Generative AI gateway", () => {
@@ -112,6 +119,13 @@ describe("FactoryExecutor", () => {
 
     it("returns mistral for Mistral models", () => {
       expect(upstreamProviderFor("mistral-medium-3.5")).toBe("mistral");
+    });
+
+    it("returns baseten for Beam and fireworks for the other new open models", () => {
+      expect(upstreamProviderFor("beam-1.0")).toBe("baseten");
+      expect(upstreamProviderFor("muse-spark-1.2")).toBe("fireworks");
+      expect(upstreamProviderFor("minimax-m3.1-flash")).toBe("fireworks");
+      expect(upstreamProviderFor("deepseek-v4.1-flash-1017")).toBe("fireworks");
     });
   });
 
@@ -304,6 +318,13 @@ describe("FactoryExecutor", () => {
 
       expect(headers["x-session-id"]).toBeDefined();
       expect(headers["x-assistant-message-id"]).toBeDefined();
+    });
+
+    it("sends chat-completions headers with x-api-provider baseten for Beam", () => {
+      const headers = executor.buildHeaders({ accessToken: "tok" }, true, "", "beam-1.0");
+      expect(headers["x-api-provider"]).toBe("baseten");
+      expect(headers["anthropic-beta"]).toBeUndefined();
+      expect(headers["OpenAI-Platform"]).toBeUndefined();
     });
   });
 
@@ -687,6 +708,18 @@ describe("FactoryExecutor", () => {
 
       const glm = executor.transformRequest("glm-5.3", { reasoning_effort: "xhigh" }, true);
       expect(glm.reasoning_effort).toBe("xhigh");
+
+      // Always-on models have no "off" wire value, so disable requests floor to low.
+      expect(executor.transformRequest("beam-1.0", { reasoning_effort: "none" }, true).reasoning_effort).toBe("low");
+      expect(executor.transformRequest("muse-spark-1.2", { reasoning_effort: "off" }, true).reasoning_effort).toBe("low");
+      expect(executor.transformRequest("minimax-m3.1-flash", { reasoning_effort: "none" }, true).reasoning_effort).toBe("low");
+      expect(executor.transformRequest("muse-spark-1.2", { reasoning_effort: "max" }, true).reasoning_effort).toBe("xhigh");
+      // Ultrafast rejects disable; "max" must survive where the gateway accepts it.
+      expect(executor.transformRequest("gpt-6.1-sol-ultrafast", { reasoning_effort: "max" }, true).reasoning_effort).toBe("max");
+      expect(executor.transformRequest("beam-1.0", { reasoning_effort: "max" }, true).reasoning_effort).toBe("max");
+      expect(executor.transformRequest("deepseek-v4.1-flash-1017", { reasoning_effort: "max" }, true).reasoning_effort).toBe("max");
+      expect(executor.transformRequest("gpt-6-sol-fast", { reasoning_effort: "max" }, true).reasoning_effort).toBe("max");
+      expect(executor.transformRequest("gpt-6-luna-fast", { reasoning_effort: "max" }, true).reasoning_effort).toBe("max");
 
       const grok = executor.transformRequest("grok-4.6", { reasoning_effort: "max" }, true);
       expect(grok.reasoning_effort).toBe("xhigh");

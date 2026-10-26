@@ -42,6 +42,16 @@ export function randomTraceparent() {
 // Server-generated item ID prefixes from OpenAI Responses that cause 404 with store=false
 const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
 
+// Always-on models reject "none"/"off"; the upstream floor is "low".
+const NO_DISABLE_LOW_EFFORT = new Set([
+  "gpt-6.1-sol", "gpt-6.1-sol-ultrafast", "minimax-m3.1-flash", "muse-spark-1.2", "beam-1.0",
+]);
+// Models whose hosted gateway accepts "max" as-is; everything else downgrades it.
+const MAX_EFFORT_MODELS = new Set([
+  "gpt-6.1-sol", "gpt-6.1-sol-ultrafast", "gpt-6-sol-fast", "gpt-6-luna-fast",
+  "deepseek-v4.1-flash-1017", "minimax-m3.1-flash", "beam-1.0",
+]);
+
 export function embeddedToolCallFromName(name) {
   if (typeof name !== "string" || !name.trimStart().startsWith("{")) {
     return null;
@@ -67,7 +77,7 @@ export function embeddedToolCallFromName(name) {
 
 export function resolveTargetGateway(modelId) {
   const m = String(modelId || "").toLowerCase();
-  if (m.startsWith("claude-") || (m.startsWith("minimax-") && m !== "minimax-m3") || m.startsWith("atlas-") || m.startsWith("aster-")) {
+  if (m.startsWith("claude-") || (m.startsWith("minimax-") && m !== "minimax-m3" && m !== "minimax-m3.1-flash") || m.startsWith("atlas-") || m.startsWith("aster-")) {
     return "anthropic";
   }
   if (m.startsWith("gemini-") || m.startsWith("garnet-")) {
@@ -95,6 +105,9 @@ export function upstreamProviderFor(modelId) {
   }
   if (m.startsWith("mistral-")) {
     return "mistral";
+  }
+  if (m === "beam-1.0") {
+    return "baseten";
   }
   return "fireworks";
 }
@@ -195,6 +208,9 @@ export function supportsExtraHighEffort(modelId) {
     m.startsWith("gpt6") ||
     m.startsWith("gpt-5.6") ||
     m.startsWith("glm-5.3") ||
+    m === "minimax-m3.1-flash" ||
+    m === "muse-spark-1.2" ||
+    m === "beam-1.0" ||
     m.startsWith("claude-opus-5") ||
     m.startsWith("claude-opus-4-8") ||
     m.startsWith("claude-opus-4-7") ||
@@ -674,12 +690,12 @@ export class FactoryExecutor extends BaseExecutor {
 
     if (cloned.reasoning_effort) {
       const re = String(cloned.reasoning_effort).toLowerCase();
-      if (m === "gpt-6.1-sol" && (re === "none" || re === "off" || re === "minimal")) {
+      if (NO_DISABLE_LOW_EFFORT.has(m) && (re === "none" || re === "off")) {
         cloned.reasoning_effort = "low";
       } else if (re === "minimal") {
         cloned.reasoning_effort = "low";
       } else if (re === "max") {
-        cloned.reasoning_effort = m === "gpt-6.1-sol" ? "max" : hasExtraHigh ? "xhigh" : "high";
+        cloned.reasoning_effort = MAX_EFFORT_MODELS.has(m) ? "max" : hasExtraHigh ? "xhigh" : "high";
       } else if (re === "xhigh" && !hasExtraHigh) {
         cloned.reasoning_effort = "high";
       }
