@@ -825,8 +825,6 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
-      default:
-        // Generic fallback for unknown providers
       case "minimax-code":
       case "minimax-code-global":
         // Service already returns dashboard-shaped rows: a credits balance

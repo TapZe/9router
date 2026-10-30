@@ -311,7 +311,7 @@ async function pingConnection(conn, provider, providerConfig, handler, deps, sta
   delete state.failureCache[key];
   const pingedAt = new Date().toISOString();
   await deps.updateProviderConnection(connection.id, {
-    ...(resetAt ? { lastPingedResetAt: resetAt, lastPingedResetKey: resetKey } : {}),
+    ...(!slotPending ? { lastPingedResetAt: resetAt, lastPingedResetKey: resetKey } : (resetAt ? { lastPingedResetAt: resetAt, lastPingedResetKey: resetKey } : {})),
     ...(slotPending ? { lastPingedSlotKey: dueSlot.key } : {}),
     lastPingAt: pingedAt,
     updatedAt: pingedAt,

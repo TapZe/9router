@@ -543,6 +543,8 @@ describe("quota auto-ping", () => {
     await runQuotaAutoPingTick(deps, state);
 
     expect(deps.getExecutor).toHaveBeenCalledTimes(1);
+  });
+
   describe("anchored schedule", () => {
     const schedule = {
       enabled: true,

@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const originalHome = process.env.HOME;
+const originalUserProfile = process.env.USERPROFILE;
 const originalDataDir = process.env.DATA_DIR;
 const testDir = mkdtempSync(join(tmpdir(), "9router-factory-autoimport-"));
 process.env.HOME = testDir;
+process.env.USERPROFILE = testDir;
 process.env.DATA_DIR = testDir;
 const { DATA_FILE } = await import("../../src/lib/db/paths.js");
 if (DATA_FILE !== join(testDir, "db", "data.sqlite") || global._dbAdapter?.instance || global._dbAdapter?.initPromise) {
@@ -21,9 +23,15 @@ const { default: factoryProvider } = await import("../../src/lib/oauth/providers
 afterAll(() => {
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;
+  if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = originalUserProfile;
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
-  rmSync(testDir, { recursive: true, force: true });
+  try {
+    rmSync(testDir, { recursive: true, force: true, maxRetries: 3 });
+  } catch {
+    // Ignore Windows file lock on temp directory teardown
+  }
 });
 
 describe("Factory Droid Local Auto-Import", () => {
