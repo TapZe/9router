@@ -166,6 +166,7 @@ const OAUTH_TEST_CONFIG = {
       };
     },
     refreshable: true,
+  },
   // Muse Code subscription — probe /v1/models with the minted LLM|… key
   "muse": {
     url: "https://api.meta.ai/v1/models",
