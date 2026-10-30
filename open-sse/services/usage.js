@@ -4,12 +4,13 @@
 
 import { getGitHubUsage } from "./usage/github.js";
 import { getGeminiUsage, getAntigravityUsage } from "./usage/google.js";
-import { getClaudeUsage } from "./usage/claude.js";
+import { getClaudeUsage, consumeClaudeResetGrant } from "./usage/claude.js";
 import { getCodexUsage, consumeCodexRateLimitResetCredit, getCodexRateLimitResetCredits } from "./usage/codex.js";
 
-export { consumeCodexRateLimitResetCredit, getCodexRateLimitResetCredits };
+export { consumeCodexRateLimitResetCredit, getCodexRateLimitResetCredits, consumeClaudeResetGrant };
 import { getKiroUsage } from "./usage/kiro.js";
 import { getMiniMaxUsage } from "./usage/minimax.js";
+import { getMiniMaxCodeUsage } from "./minimaxCodeUsage.js";
 import { getCodeBuddyCnUsage, getCodeBuddyIntlUsage } from "./usage/codebuddy-cn.js";
 import { getGrokCliUsage } from "./usage/grok-cli.js";
 import { getKimiUsage } from "./usage/kimi.js";
@@ -20,6 +21,7 @@ import { getGroqUsage } from "./usage/groq.js";
 import { getZedUsage } from "./usage/zed.js";
 import { getXiaomiMimoUsage } from "./usage/xiaomi-mimo.js";
 import { getFactoryUsage } from "./usage/factory.js";
+import { getCursorUsage } from "./usage/cursor.js";
 import { resolveQoderCredentials } from "./qoderModels.js";
 import { getGlmUsage } from "./usage/glm.js";
 import { getCommandCodeUsage } from "./usage/commandcode.js";
@@ -47,10 +49,14 @@ const USAGE_HANDLERS = {
   "qoder-cn": (c) => getQoderUsageFor(c),
   iflow: (c) => getIflowUsage(c.accessToken),
   ollama: (c) => getOllamaUsage(c.apiKey, c.providerSpecificData, c.proxyOptions),
-  glm: (c) => getGlmUsage(c.apiKey, c.provider, c.proxyOptions),
-  "glm-cn": (c) => getGlmUsage(c.apiKey, c.provider, c.proxyOptions),
+  // OAuth connections store the coding-plan key on accessToken (no apiKey)
+  glm: (c) => getGlmUsage(c.apiKey || c.accessToken, c.provider, c.proxyOptions),
+  "glm-cn": (c) => getGlmUsage(c.apiKey || c.accessToken, c.provider, c.proxyOptions),
   minimax: (c) => getMiniMaxUsage(c.apiKey, c.provider, c.proxyOptions),
   "minimax-cn": (c) => getMiniMaxUsage(c.apiKey, c.provider, c.proxyOptions),
+  // MiniMax Code (mcode) credits lane — signed account API + plan windows
+  "minimax-code": (c) => getMiniMaxCodeUsage(c),
+  "minimax-code-global": (c) => getMiniMaxCodeUsage(c),
   "vercel-ai-gateway": (c) => getVercelAiGatewayUsage(c.apiKey, c.proxyOptions),
   "codebuddy-cn": (c) => getCodeBuddyCnUsage(c.accessToken, c.apiKey, c.providerSpecificData, c.proxyOptions),
   "codebuddy-intl": (c) => getCodeBuddyIntlUsage(c.accessToken, c.apiKey, c.providerSpecificData, c.proxyOptions),
@@ -64,6 +70,7 @@ const USAGE_HANDLERS = {
   "xiaomi-mimo": (c) => getXiaomiMimoUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
   commandcode: (c) => getCommandCodeUsage(c.apiKey, c.proxyOptions),
   factory: (c) => getFactoryUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
+  cursor: (c) => getCursorUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
 };
 
 // Qoder intl/CN share one usage path: PATs must be exchanged to a job token
