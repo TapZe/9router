@@ -1,6 +1,7 @@
 import { PROVIDERS, PROVIDER_OAUTH } from "../../config/providers.js";
 import { OAUTH_ENDPOINTS, GITHUB_COPILOT, buildKimiHeaders } from "../../config/appConstants.js";
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
+import { OAUTH_REFRESH_TIMEOUT_MS } from "../../config/runtimeConfig.js";
 import { dedupRefresh } from "./dedup.js";
 import { buildExternalIdpRefreshParams } from "../../../src/lib/oauth/kiroExternalIdp.js";
 
@@ -273,6 +274,7 @@ export async function refreshCodexToken(refreshToken, log) {
           grant_type: "refresh_token",
           refresh_token: refreshToken,
         }),
+        signal: AbortSignal.timeout(OAUTH_REFRESH_TIMEOUT_MS),
       });
 
       if (!response.ok) {
@@ -743,9 +745,11 @@ export async function refreshFactoryToken(refreshToken, credentials, log) {
 
     const maxAttempts = 3;
     let lastError = null;
+    const signal = AbortSignal.timeout(OAUTH_REFRESH_TIMEOUT_MS);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        signal.throwIfAborted();
         const response = await fetch(tokenUrl, {
           method: "POST",
           headers: {
@@ -753,6 +757,7 @@ export async function refreshFactoryToken(refreshToken, credentials, log) {
             Accept: "application/json",
           },
           body: params,
+          signal,
         });
 
         if (!response.ok) {
@@ -857,6 +862,10 @@ export async function refreshFactoryToken(refreshToken, credentials, log) {
         };
       } catch (err) {
         lastError = err;
+        if (signal.aborted) {
+          log?.warn?.("TOKEN_REFRESH", "Factory token refresh deadline exceeded");
+          return null;
+        }
         if (attempt < maxAttempts) {
           log?.warn?.("TOKEN_REFRESH", `Network error refreshing Factory token (${err.message}), retrying attempt ${attempt + 1}/${maxAttempts}...`);
           await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
