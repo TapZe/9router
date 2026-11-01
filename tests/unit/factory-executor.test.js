@@ -622,6 +622,37 @@ describe("FactoryExecutor", () => {
       expect(assistantTurn.id).toBeUndefined();
     });
 
+    it("preserves structured input_text array content in developer/system turns without dropping instructions", () => {
+      const body = {
+        input: [
+          { role: "developer", content: [{ type: "input_text", text: "You are omp coding assistant with safety rules." }] },
+          { role: "user", content: [{ type: "input_text", text: "Refactor this code." }] },
+        ],
+      };
+      const transformed = executor.transformRequest("gpt-6.1-sol", body, true);
+
+      expect(transformed.instructions).toContain("You are omp coding assistant with safety rules.");
+      expect(transformed.instructions).toContain(FACTORY_DROID_SYSTEM_PROMPT);
+      expect(transformed.input.length).toBe(1);
+      expect(transformed.input[0].role).toBe("user");
+    });
+
+    it("combines multiple developer/system turns from input array into instructions", () => {
+      const body = {
+        input: [
+          { role: "system", content: "Primary system instruction." },
+          { role: "developer", content: [{ type: "input_text", text: "Secondary developer guidance." }] },
+          { role: "user", content: [{ type: "input_text", text: "Do task." }] },
+        ],
+      };
+      const transformed = executor.transformRequest("gpt-6.1-sol", body, true);
+
+      expect(transformed.instructions).toContain("Primary system instruction.");
+      expect(transformed.instructions).toContain("Secondary developer guidance.");
+      expect(transformed.instructions).toContain(FACTORY_DROID_SYSTEM_PROMPT);
+      expect(transformed.input.length).toBe(1);
+    });
+
     it("sets reasoning_history to interleaved for DeepSeek and preserved for others", () => {
       const ds = executor.transformRequest("deepseek-v4-pro", { messages: [] });
       expect(ds.reasoning_history).toBe("interleaved");

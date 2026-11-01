@@ -7,13 +7,8 @@ import {
 
 export const FACTORY_DROID_SYSTEM_PROMPT =
   "You are Droid, an AI software engineering agent built by Factory.\n" +
-  "You are operating as an autonomous engineering agent inside this coding harness.\n" +
-  "EXECUTION DIRECTIVES:\n" +
-  "1. Your primary objective is to autonomously execute the user's software engineering tasks directly using the provided tools.\n" +
-  "2. Do not debate identity, environments, or tool availability. Focus exclusively on task execution.\n" +
-  "3. Whenever a task involves inspecting files, exploring repositories, running commands, or modifying code, you MUST invoke the appropriate tools immediately on your first turn.\n" +
-  "4. NEVER output conversational commentary, promises, or preambles of what you will do before calling tools (do NOT say 'I will inspect...', 'Let me read...', or 'I need to check...'). Call the tools directly.\n" +
-  "5. Always ground all analysis, planning, and answers in actual file contents and tool outputs rather than assumptions.";
+  "Help the user with software engineering tasks using the provided tools.\n" +
+  "Ground all analysis, planning, and answers in actual file contents and tool outputs.";
 
 export const FACTORY_CLIENT_VERSION = "0.226.1";
 export const FACTORY_OPENAI_PLATFORM_ORG = "org-bHuLtG1fGmYk5YaOihAAXFBw";
@@ -223,6 +218,23 @@ export function supportsExtraHighEffort(modelId) {
   );
 }
 
+export function extractTextContent(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object") {
+          return item.text || item.content || "";
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  return "";
+}
+
 export class FactoryExecutor extends BaseExecutor {
   constructor(provider = "factory") {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
@@ -394,7 +406,10 @@ export class FactoryExecutor extends BaseExecutor {
 
     const stripCompeting = (str) => {
       if (typeof str !== "string") return str;
-      return str.replace(/You are Claude Code[^.\n]*\./gi, "").trim();
+      return str
+        .replace(/You are Claude Code[^.\n]*[.\n]/gi, "")
+        .replace(/You are Claude Code/gi, "")
+        .trim();
     };
 
     if (gateway === "anthropic") {
@@ -453,16 +468,20 @@ export class FactoryExecutor extends BaseExecutor {
       // OpenAI Responses format requires system prompt in top-level `instructions`
       cloned.store = false;
 
-      if (typeof cloned.instructions === "string") {
+      if (typeof cloned.instructions === "string" && cloned.instructions.trim()) {
         const clean = stripCompeting(cloned.instructions);
         cloned.instructions = clean.includes(DROID_PROMPT_PREFIX)
           ? clean
           : (clean ? `${FACTORY_DROID_SYSTEM_PROMPT}\n\n${clean}` : FACTORY_DROID_SYSTEM_PROMPT);
       } else if (Array.isArray(cloned.input)) {
-        const sysTurn = cloned.input.find(
-          (turn) => (turn.role === "system" || turn.role === "developer") && typeof turn.content === "string",
+        const sysTurns = cloned.input.filter(
+          (turn) => turn && (turn.role === "system" || turn.role === "developer"),
         );
-        const clean = sysTurn ? stripCompeting(sysTurn.content) : "";
+        const combined = sysTurns
+          .map((turn) => extractTextContent(turn.content))
+          .filter(Boolean)
+          .join("\n\n");
+        const clean = stripCompeting(combined);
         cloned.instructions = clean.includes(DROID_PROMPT_PREFIX)
           ? clean
           : (clean ? `${FACTORY_DROID_SYSTEM_PROMPT}\n\n${clean}` : FACTORY_DROID_SYSTEM_PROMPT);
@@ -493,10 +512,11 @@ export class FactoryExecutor extends BaseExecutor {
         let systemText = "";
         for (const msg of cloned.messages) {
           if (msg.role === "system") {
-            systemText += (systemText ? "\n\n" : "") + (typeof msg.content === "string" ? msg.content : "");
+            const txt = extractTextContent(msg.content);
+            systemText += (systemText ? "\n\n" : "") + txt;
           } else {
             const role = msg.role === "assistant" ? "model" : "user";
-            const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+            const text = extractTextContent(msg.content);
             contents.push({ role, parts: [{ text }] });
           }
         }
