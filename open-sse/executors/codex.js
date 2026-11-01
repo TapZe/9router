@@ -463,8 +463,12 @@ export class CodexExecutor extends BaseExecutor {
     // Ensure streaming is enabled (Codex API requires it)
     body.stream = true;
 
-    // If no instructions provided, inject default Codex instructions
-    if (!responsesLite && !convertedLitePrefix && (!body.instructions || body.instructions.trim() === "")) {
+    const inputHasInstructions = Array.isArray(body.input) && body.input.some(
+      item => item?.role === "developer" && item?.type !== "additional_tools" && item?.content
+    );
+
+    // If no instructions provided and input has none, inject default Codex instructions
+    if (!responsesLite && !convertedLitePrefix && (!body.instructions || body.instructions.trim() === "") && !inputHasInstructions) {
       body.instructions = CODEX_DEFAULT_INSTRUCTIONS;
     }
 
@@ -485,7 +489,7 @@ export class CodexExecutor extends BaseExecutor {
       const hasLitePrefix = input.some((item) => item?.type === "additional_tools");
       if (!hasLitePrefix) {
         const instructions = typeof body.instructions === "string" && body.instructions.trim()
-          ? body.instructions : CODEX_DEFAULT_INSTRUCTIONS;
+          ? body.instructions : (inputHasInstructions ? "" : CODEX_DEFAULT_INSTRUCTIONS);
         const prefix = [{ type: "additional_tools", role: "developer", tools: Array.isArray(body.tools) ? body.tools : [] }];
         if (instructions) {
           prefix.push({ type: "message", role: "developer", content: [{ type: "input_text", text: instructions }] });

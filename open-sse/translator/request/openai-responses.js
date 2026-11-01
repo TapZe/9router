@@ -339,17 +339,15 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
   };
 
   // Extract system message as instructions
-  let hasSystemMessage = false;
+  const systemTexts = [];
   const messages = body.messages || [];
 
   for (const msg of messages) {
     if (msg.role === ROLE.SYSTEM || msg.role === ROLE.DEVELOPER) {
-      // Use the first instruction-bearing message as instructions.
+      // Collect all instruction-bearing messages as instructions.
       // OpenAI recommends role="developer" for GPT-5/Codex as the system-level prompt.
-      if (!hasSystemMessage) {
-        result.instructions = extractInstructionsText(msg.content);
-        hasSystemMessage = true;
-      }
+      const text = extractInstructionsText(msg.content);
+      if (text && text.trim()) systemTexts.push(text.trim());
       continue; // Skip instruction messages in input
     }
 
@@ -420,10 +418,8 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
     }
   }
 
-  // If no system message, leave instructions empty (will be filled by executor)
-  if (!hasSystemMessage) {
-    result.instructions = "";
-  }
+  // Set combined instructions from all system/developer messages
+  result.instructions = systemTexts.join("\n\n");
 
   // Convert tools format
   if (body.tools && Array.isArray(body.tools)) {
