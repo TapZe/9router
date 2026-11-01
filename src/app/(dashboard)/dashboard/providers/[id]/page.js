@@ -27,17 +27,11 @@ import CustomConfigCard from "./CustomConfigCard";
 import AutoPingScheduleModal from "./AutoPingScheduleModal";
 import WebLoginButton, { WEB_LOGIN_PROVIDERS } from "../components/WebLoginButton.js";
 import MinimaxLeaseButton from "../components/MinimaxLeaseButton.js";
-import { getScheduleSlotLabels } from "@/shared/services/quotaPingSchedule";
+import { AUTO_PING_SETTINGS_KEYS, getScheduleSlotLabels } from "@/shared/services/quotaPingSchedule";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
 const MCODE_LEASE_PROVIDERS = new Set(["minimax-code", "minimax-code-global"]);
-
-const AUTO_PING_SETTINGS_KEYS = {
-  claude: "claudeAutoPing",
-  codex: "codexAutoPing",
-  factory: "factoryAutoPing",
-};
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -451,28 +445,38 @@ export default function ProviderDetailPage() {
     saveThinkingConfig(mode);
   };
 
-  const saveAutoPing = async (next) => {
-    const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
-    if (!autoPingSettingsKey) return;
-
-    setAutoPing(next);
+  const handleSaveAutoPing = async (connectionId, { reactive, schedule }) => {
     try {
-      await fetch("/api/settings", {
+      const res = await fetch("/api/settings/auto-ping", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ [autoPingSettingsKey]: next }),
+        body: JSON.stringify({
+          provider: providerId,
+          connectionId,
+          reactive,
+          schedule,
+        }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to save auto-ping config");
+      }
+      const updatedConfig = await res.json();
+      setAutoPing((prev) => ({
+        ...prev,
+        connections: {
+          ...(prev?.connections || {}),
+          [connectionId]: updatedConfig?.connections?.[connectionId] ?? reactive,
+        },
+        schedules: {
+          ...(prev?.schedules || {}),
+          [connectionId]: updatedConfig?.schedules?.[connectionId] ?? schedule,
+        },
+      }));
     } catch (error) {
       console.log("Error saving auto-ping config:", error);
+      alert(error.message || "Failed to save auto-ping config");
     }
-  };
-
-  const handleSaveAutoPing = (connectionId, { reactive, schedule }) => {
-    saveAutoPing({
-      ...autoPing,
-      connections: { ...autoPing.connections, [connectionId]: reactive },
-      schedules: { ...autoPing.schedules, [connectionId]: schedule },
-    });
   };
 
   useEffect(() => {

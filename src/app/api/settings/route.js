@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSettings, updateSettings } from "@/lib/localDb";
+import { AUTO_PING_SETTINGS_KEYS } from "@/shared/services/quotaPingSchedule";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import bcrypt from "bcryptjs";
@@ -38,6 +39,16 @@ export async function GET() {
 export async function PATCH(request) {
   try {
     const body = await request.json();
+
+    // Auto-ping configurations must use the dedicated atomic endpoint
+    for (const key of Object.values(AUTO_PING_SETTINGS_KEYS)) {
+      if (Object.hasOwn(body, key)) {
+        return NextResponse.json(
+          { error: `${key} is deprecated on /api/settings. Use PATCH /api/settings/auto-ping for per-account auto-ping updates.` },
+          { status: 400, headers: SETTINGS_RESPONSE_HEADERS },
+        );
+      }
+    }
 
     // Strip protected secrets before any internal handling sets them
     for (const key of PROTECTED_SETTING_KEYS) delete body[key];
@@ -94,19 +105,6 @@ export async function PATCH(request) {
       Object.prototype.hasOwnProperty.call(body, "comboStrategies")
     ) {
       resetComboRotation();
-    }
-
-    if (
-      Object.prototype.hasOwnProperty.call(body, "claudeAutoPing") ||
-      Object.prototype.hasOwnProperty.call(body, "codexAutoPing") ||
-      Object.prototype.hasOwnProperty.call(body, "factoryAutoPing")
-    ) {
-      // Keep the scheduler absent when no account opted in; load its provider graph only on demand.
-      import("@/shared/services/quotaAutoPing")
-        .then(({ configureQuotaAutoPing }) => {
-          configureQuotaAutoPing(settings);
-        })
-        .catch((error) => console.warn("[AutoPing] settings update failed:", error.message));
     }
 
     const { password, oidcClientSecret, ...safeSettings } = settings;

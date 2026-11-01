@@ -42,7 +42,7 @@ import {
 import Card from "@/shared/components/Card";
 import { ConfirmModal, EditConnectionModal } from "@/shared/components";
 import AutoPingScheduleModal from "@/app/(dashboard)/dashboard/providers/[id]/AutoPingScheduleModal";
-import { getScheduleSlotLabels } from "@/shared/services/quotaPingSchedule";
+import { AUTO_PING_SETTINGS_KEYS, getScheduleSlotLabels } from "@/shared/services/quotaPingSchedule";
 import { USAGE_SUPPORTED_PROVIDERS, AI_PROVIDERS } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
@@ -56,12 +56,6 @@ const KIRO_METHOD_LABELS = {
   github: "GitHub",
   imported: "Imported Token",
   api_key: "API Key",
-};
-
-const AUTO_PING_SETTINGS_KEYS = {
-  claude: "claudeAutoPing",
-  codex: "codexAutoPing",
-  factory: "factoryAutoPing",
 };
 
 const AUTO_PING_TOOLTIPS = {
@@ -618,36 +612,41 @@ export default function ProviderLimits() {
   }, []);
 
   const handleSaveAutoPing = useCallback(async (connectionId, provider, { reactive, schedule }) => {
-    const settingsKey = AUTO_PING_SETTINGS_KEYS[provider];
-    if (!settingsKey) return;
-
-    const previous = autoPingConfigs;
-    const prevCfg = autoPingConfigs[provider] || {};
-    const nextProviderCfg = {
-      ...prevCfg,
-      connections: { ...(prevCfg.connections || {}), [connectionId]: reactive },
-      schedules: { ...(prevCfg.schedules || {}), [connectionId]: schedule },
-    };
-    const nextConfigs = { ...autoPingConfigs, [provider]: nextProviderCfg };
-    setAutoPingConfigs(nextConfigs);
-
     try {
-      const r = await fetch("/api/settings", { cache: "no-store" });
-      const s = r.ok ? await r.json() : {};
-      const fullCfg = {
-        ...(s[settingsKey] || {}),
-        connections: nextProviderCfg.connections,
-        schedules: nextProviderCfg.schedules,
-      };
-      await fetch("/api/settings", {
+      const res = await fetch("/api/settings/auto-ping", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ [settingsKey]: fullCfg }),
+        body: JSON.stringify({
+          provider,
+          connectionId,
+          reactive,
+          schedule,
+        }),
       });
-    } catch {
-      setAutoPingConfigs(previous);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to save auto-ping config");
+      }
+      const updatedConfig = await res.json();
+      setAutoPingConfigs((prev) => ({
+        ...prev,
+        [provider]: {
+          ...(prev[provider] || {}),
+          connections: {
+            ...(prev[provider]?.connections || {}),
+            [connectionId]: updatedConfig?.connections?.[connectionId] ?? reactive,
+          },
+          schedules: {
+            ...(prev[provider]?.schedules || {}),
+            [connectionId]: updatedConfig?.schedules?.[connectionId] ?? schedule,
+          },
+        },
+      }));
+    } catch (error) {
+      console.error("Error saving auto-ping config:", error);
+      alert(error.message || "Failed to save auto-ping config");
     }
-  }, [autoPingConfigs]);
+  }, []);
 
   const updateQuotaVisibility = useCallback(async (nextVisibility, previousVisibility) => {
     setQuotaVisibility(nextVisibility);

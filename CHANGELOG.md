@@ -3,6 +3,12 @@
 ## Features
 - **Factory**: add seven Droid 0.249.0 models, including GPT-6 fast variants, DeepSeek V4.1 Flash 1017, MiniMax M3.1 Flash, Muse Spark 1.2, and Beam 1.0; route Beam through Baseten and MiniMax M3.1 through chat completions. GPT-6.1 Sol Ultrafast requires Factory high-cost opt-in.
 
+## Fixes
+- **Auto-ping**: isolate provider scans and per-account attempts so a stalled Codex or Factory request cannot hold up other accounts; cancel attempts after 60 seconds, retain in-flight ownership until late work settles, and preserve the 15-minute failure cooldown.
+- **Auto-ping quotas**: gate Codex on its normal weekly/monthly limits and Factory Standard-window pings on Standard weekly/monthly limits, without suppressing them for unrelated Review, Spark, or Core quotas.
+- **Auto-ping settings**: save each account's reset/schedule options atomically through `PATCH /api/settings/auto-ping`; migrate both dashboard controls and reject obsolete whole-provider updates on `/api/settings` to prevent stale-tab overwrites.
+- **OAuth refresh**: bound shared Codex and Factory refresh requests, including response bodies and Factory retries, with a refresh-owned 30-second deadline (`OAUTH_REFRESH_TIMEOUT_MS`); a canceled auto-ping waiter does not discard rotated credentials.
+
 # v0.5.112 (2026-10-28)
 
 ## Features
