@@ -18,16 +18,16 @@ const CLAUDE_PING_URL = "https://api.anthropic.com/v1/messages?beta=true";
 
 const providerHandlers = {
   claude: {
-    getUsage: (connection, proxyOptions) => getClaudeUsage(connection.accessToken, proxyOptions),
+    getUsage: (connection, proxyOptions, signal) => getClaudeUsage(connection.accessToken, proxyOptions, { signal }),
     sendPing: sendClaudePing,
   },
   codex: {
-    getUsage: (connection, proxyOptions) => getCodexUsage(connection.accessToken, proxyOptions),
+    getUsage: (connection, proxyOptions, signal) => getCodexUsage(connection.accessToken, proxyOptions, signal),
     sendPing: sendCodexPing,
   },
   factory: {
     // Factory usage needs the connection's orgId/regional endpoint, not just the token.
-    getUsage: (connection, proxyOptions) => getFactoryUsage(connection.accessToken, connection.providerSpecificData, proxyOptions),
+    getUsage: (connection, proxyOptions, signal) => getFactoryUsage(connection.accessToken, connection.providerSpecificData, proxyOptions, signal),
     sendPing: sendFactoryPing,
   },
 };
@@ -35,9 +35,10 @@ const providerHandlers = {
 // Survive Next.js hot reload and keep one scheduler per server process.
 const g = (global.__quotaAutoPing ??= {
   interval: null,
-  running: false,
   resetCache: {},
   failureCache: {},
+  inFlightConnections: new Set(),
+  inFlightScans: new Set(),
 });
 
 function cacheKey(provider, connectionId) {
@@ -82,15 +83,9 @@ function wasPingedRecently(connection, intervalMs, nowMs = Date.now()) {
   return Number.isFinite(lastPingAtMs) && nowMs - lastPingAtMs < intervalMs;
 }
 
-function isBlockingQuotaName(name, sessionKey) {
-  if (name === sessionKey) return false;
-  const n = String(name).toLowerCase();
-  // 5h/session buckets are the ping target family; only longer windows make a ping pointless.
-  return !(n.includes("session") || n.includes("5h"));
-}
-
-function hasExhaustedBlockingQuota(quotas, sessionKey) {
-  return Object.entries(quotas || {}).some(([name, quota]) => isBlockingQuotaName(name, sessionKey) && isQuotaExhausted(quota));
+function hasExhaustedBlockingQuota(quotas, providerConfig) {
+  if (!quotas || !Array.isArray(providerConfig?.blockingQuotaKeys)) return false;
+  return providerConfig.blockingQuotaKeys.some((key) => isQuotaExhausted(quotas[key]));
 }
 
 function shouldPingForReset(providerConfig, cachedReset, resetAt, now) {
@@ -123,7 +118,17 @@ function buildProxyOptions(cfg) {
   };
 }
 
-async function sendClaudePing(connection, providerConfig, proxyOptions, deps) {
+function withTimeout(promise, ms, desc = "Operation") {
+  if (!ms || ms <= 0) return promise;
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${desc} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
+}
+
+async function sendClaudePing(connection, providerConfig, proxyOptions, deps, signal) {
+  if (signal?.aborted) return false;
   const res = await deps.proxyAwareFetch(CLAUDE_PING_URL, {
     method: "POST",
     headers: {
@@ -136,8 +141,9 @@ async function sendClaudePing(connection, providerConfig, proxyOptions, deps) {
       max_tokens: providerConfig.pingMaxTokens,
       messages: [{ role: "user", content: providerConfig.pingText }],
     }),
+    ...(signal ? { signal } : {}),
   }, proxyOptions);
-  return res.ok;
+  return res.ok && !signal?.aborted;
 }
 
 function buildCodexPingInput(text) {
@@ -148,26 +154,63 @@ function buildCodexPingInput(text) {
   }];
 }
 
-async function drainResponseBody(response) {
-  if (typeof response?.text === "function") {
-    await response.text();
-    return;
+async function drainResponseBody(response, signal) {
+  if (signal?.aborted) {
+    try { await response?.body?.cancel?.(); } catch {}
+    throw signal.reason || new Error("This operation was aborted");
   }
 
   const reader = response?.body?.getReader?.();
-  if (!reader) return;
-
-  try {
-    while (true) {
-      const { done } = await reader.read();
-      if (done) return;
+  if (reader) {
+    const onAbort = () => {
+      try { reader.cancel?.().catch?.(() => {}); } catch {}
+    };
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
     }
-  } finally {
-    reader.releaseLock?.();
+    try {
+      while (true) {
+        if (signal?.aborted) {
+          throw signal.reason || new Error("This operation was aborted");
+        }
+        const { done } = await reader.read();
+        if (done) return;
+      }
+    } finally {
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      reader.releaseLock?.();
+    }
+  }
+
+  if (typeof response?.text === "function") {
+    let onAbort;
+    const abortPromise = signal
+      ? new Promise((_, reject) => {
+          if (signal.aborted) reject(signal.reason || new Error("This operation was aborted"));
+          else {
+            onAbort = () => reject(signal.reason || new Error("This operation was aborted"));
+            signal.addEventListener("abort", onAbort, { once: true });
+          }
+        })
+      : null;
+    try {
+      if (abortPromise) {
+        await Promise.race([response.text(), abortPromise]);
+      } else {
+        await response.text();
+      }
+    } finally {
+      if (signal && onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
+    }
   }
 }
 
-async function sendCodexPing(connection, providerConfig, proxyOptions, deps) {
+async function sendCodexPing(connection, providerConfig, proxyOptions, deps, signal) {
+  if (signal?.aborted) return false;
   const executor = deps.getExecutor("codex");
   const { response } = await executor.execute({
     model: providerConfig.pingModel,
@@ -179,6 +222,7 @@ async function sendCodexPing(connection, providerConfig, proxyOptions, deps) {
     },
     proxyOptions,
     log: console,
+    signal,
     body: {
       model: providerConfig.pingModel,
       input: buildCodexPingInput(providerConfig.pingText),
@@ -190,17 +234,22 @@ async function sendCodexPing(connection, providerConfig, proxyOptions, deps) {
       stream: true,
     },
   });
-  if (!response.ok) {
-    try { await response.body?.cancel?.(); } catch { /* noop */ }
+  if (signal?.aborted) {
+    try { await response?.body?.cancel?.(); } catch {}
+    return false;
+  }
+  if (!response?.ok) {
+    try { await response?.body?.cancel?.(); } catch {}
     return false;
   }
 
   // Codex only starts the 5h window after the streaming response completes.
-  await drainResponseBody(response);
-  return true;
+  await drainResponseBody(response, signal);
+  return !signal?.aborted;
 }
 
-async function sendFactoryPing(connection, providerConfig, proxyOptions, deps) {
+async function sendFactoryPing(connection, providerConfig, proxyOptions, deps, signal) {
+  if (signal?.aborted) return false;
   const executor = deps.getExecutor("factory");
   const { response } = await executor.execute({
     model: providerConfig.pingModel,
@@ -212,6 +261,7 @@ async function sendFactoryPing(connection, providerConfig, proxyOptions, deps) {
     },
     proxyOptions,
     log: console,
+    signal,
     body: {
       model: providerConfig.pingModel,
       messages: [{ role: "user", content: providerConfig.pingText }],
@@ -219,14 +269,18 @@ async function sendFactoryPing(connection, providerConfig, proxyOptions, deps) {
       stream: true,
     },
   });
-  if (!response.ok) {
-    try { await response.body?.cancel?.(); } catch { /* noop */ }
+  if (signal?.aborted) {
+    try { await response?.body?.cancel?.(); } catch {}
+    return false;
+  }
+  if (!response?.ok) {
+    try { await response?.body?.cancel?.(); } catch {}
     return false;
   }
 
   // Factory starts the 5h window only once the streaming response completes.
-  await drainResponseBody(response);
-  return true;
+  await drainResponseBody(response, signal);
+  return !signal?.aborted;
 }
 
 function shouldSkipAfterFailure(state, key, nowMs = Date.now()) {
@@ -235,48 +289,134 @@ function shouldSkipAfterFailure(state, key, nowMs = Date.now()) {
 }
 
 async function pingConnection(conn, provider, providerConfig, handler, deps, state = g, schedule = null, reactive = true) {
+  state.inFlightConnections ??= new Set();
   const key = cacheKey(provider, conn.id);
+  if (state.inFlightConnections.has(key)) return;
+  state.inFlightConnections.add(key);
 
-  // resetAt is stable for time-based windows; Codex polls every tick because inactive windows slide forward.
-  // A schedule needs a fresh look every tick, since its slots do not depend on resetAt.
-  const cachedReset = state.resetCache[key];
-  if (!schedule && !providerConfig.pingWhenResetAtSlides && cachedReset && Date.now() < new Date(cachedReset).getTime() - C.refreshAheadMs) return;
+  const attemptTimeoutMs = C.attemptTimeoutMs;
+  const controller = new AbortController();
 
-  // Avoid hammering provider auth/quota endpoints if a ping failed recently.
-  if (shouldSkipAfterFailure(state, key)) return;
+  let timer = null;
+  let onTimeoutAbort;
+  const callerTimeoutPromise = new Promise((resolve) => {
+    if (attemptTimeoutMs > 0) {
+      timer = setTimeout(() => {
+        controller.abort(new Error(`AutoPing attempt timed out after ${attemptTimeoutMs}ms`));
+        if (state.failureCache) state.failureCache[key] = Date.now();
+        resolve();
+      }, attemptTimeoutMs);
+    }
+    onTimeoutAbort = () => {
+      if (state.failureCache) state.failureCache[key] = Date.now();
+      resolve();
+    };
+    controller.signal.addEventListener("abort", onTimeoutAbort, { once: true });
+  });
 
-  const proxyCfg = await deps.resolveConnectionProxyConfig(conn.providerSpecificData);
-  const proxyOptions = buildProxyOptions(proxyCfg);
+  const attemptPromise = (async () => {
+    try {
+      await doPingConnection(conn, provider, providerConfig, handler, deps, state, schedule, reactive, controller, key);
+    } catch (e) {
+      if (state.failureCache) state.failureCache[key] = Date.now();
+      console.warn(`[AutoPing] ${provider}:${conn.id}: ${e.message}`);
+    } finally {
+      clearTimeout(timer);
+      if (onTimeoutAbort) {
+        controller.signal.removeEventListener("abort", onTimeoutAbort);
+      }
+      state.inFlightConnections?.delete(key);
+    }
+  })();
 
-  let connection = conn;
-  try {
-    const r = await deps.refreshAndUpdateCredentials(connection, false, proxyOptions);
-    connection = r.connection;
-  } catch (e) {
-    state.failureCache[key] = Date.now();
-    console.warn(`[AutoPing] ${provider}:${conn.id}: refresh failed: ${e.message}`);
+  await Promise.race([attemptPromise, callerTimeoutPromise]);
+}
+
+async function doPingConnection(conn, provider, providerConfig, handler, deps, state, schedule, reactive, controller, key) {
+  const signal = controller.signal;
+  if (signal.aborted) {
+    if (state.failureCache) state.failureCache[key] = Date.now();
     return;
   }
 
-  const usage = await handler.getUsage(connection, proxyOptions);
+  const cachedReset = state.resetCache?.[key];
+  if (!schedule && !providerConfig.pingWhenResetAtSlides && cachedReset && Date.now() < new Date(cachedReset).getTime() - C.refreshAheadMs) return;
+
+  if (shouldSkipAfterFailure(state, key)) return;
+
+  const proxyCfg = await deps.resolveConnectionProxyConfig(conn.providerSpecificData);
+  if (signal.aborted) {
+    if (state.failureCache) state.failureCache[key] = Date.now();
+    return;
+  }
+  const proxyOptions = buildProxyOptions(proxyCfg);
+
+  let connection = conn;
+  let onRefreshAbort;
+  const abortPromise = new Promise((_, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason || new Error("Attempt aborted"));
+    } else {
+      onRefreshAbort = () => reject(signal.reason || new Error("Attempt aborted"));
+      signal.addEventListener("abort", onRefreshAbort, { once: true });
+    }
+  });
+
+  try {
+    const refreshPromise = deps.refreshAndUpdateCredentials(connection, false, proxyOptions);
+    const r = await Promise.race([refreshPromise, abortPromise]);
+    if (signal.aborted) {
+      if (state.failureCache) state.failureCache[key] = Date.now();
+      return;
+    }
+    connection = r.connection;
+  } catch (e) {
+    if (state.failureCache) state.failureCache[key] = Date.now();
+    if (!signal.aborted) {
+      console.warn(`[AutoPing] ${provider}:${conn.id}: refresh failed: ${e.message}`);
+    }
+    return;
+  } finally {
+    if (onRefreshAbort) {
+      signal.removeEventListener("abort", onRefreshAbort);
+    }
+  }
+
+  if (signal.aborted) {
+    if (state.failureCache) state.failureCache[key] = Date.now();
+    return;
+  }
+
+  let usage;
+  try {
+    usage = await handler.getUsage(connection, proxyOptions, signal);
+  } catch (e) {
+    if (state.failureCache) state.failureCache[key] = Date.now();
+    if (!signal.aborted) {
+      console.warn(`[AutoPing] ${provider}:${conn.id}: usage fetch failed: ${e.message}`);
+    }
+    return;
+  }
+
+  if (signal.aborted) {
+    if (state.failureCache) state.failureCache[key] = Date.now();
+    return;
+  }
+
   const quotas = usage?.quotas || {};
   const quota = quotas?.[providerConfig.quotaKey];
   if (!quota) return;
   const resetAt = quota.resetAt || null;
-  // A window that never started reports no resetAt at all.
   if (!resetAt && !providerConfig.pingWhenWindowInactive) return;
 
-  if (resetAt) state.resetCache[key] = resetAt;
+  if (resetAt && state.resetCache) state.resetCache[key] = resetAt;
 
-  if (providerConfig.skipWhenBlockingQuotaExhausted && hasExhaustedBlockingQuota(quotas, providerConfig.quotaKey)) return;
-  // For window-inactive providers an exhausted expired window IS the ping target.
+  if (providerConfig.skipWhenBlockingQuotaExhausted && hasExhaustedBlockingQuota(quotas, providerConfig)) return;
   if (!providerConfig.pingWhenWindowInactive && isQuotaExhausted(quota)) return;
 
   const now = Date.now();
   const resetKey = resetAt ? normalizeResetKey(resetAt) : null;
 
-  // Anchored schedule runs alongside the reactive path: it fires on its own wall-clock
-  // slots, whether or not the provider reported a reset.
   const dueSlot = schedule ? getDuePingSlot(schedule, now) : null;
   const slotPending = Boolean(dueSlot) && connection.lastPingedSlotKey !== dueSlot.key;
 
@@ -286,29 +426,43 @@ async function pingConnection(conn, provider, providerConfig, handler, deps, sta
     if (!reactive) return;
     if (!resetAt && !providerConfig.pingWhenWindowInactive) return;
 
-    // "No live window" has no stable key: normalizeResetKey(null) collapses to
-    // the epoch string, so keying dedup on it would permanently block the second
-    // window restart. Pacing for null keys comes from the live-window gate,
-    // minPingIntervalMs, and failure backoff instead.
     const lastPingedResetKey = (connection.lastPingedResetKey || connection.lastPingedResetAt)
       ? normalizeResetKey(connection.lastPingedResetKey || connection.lastPingedResetAt)
       : null;
 
-    // Claude waits for reset. Codex pings only when resetAt slides, which means the 5h window is inactive.
     if (!shouldPingForReset(providerConfig, cachedReset, resetAt, now)) return;
     if (wasPingedRecently(connection, providerConfig.minPingIntervalMs, now)) return;
     if (resetKey && lastPingedResetKey === resetKey) return;
   }
 
-  const ok = await handler.sendPing(connection, providerConfig, proxyOptions, deps);
+  if (signal.aborted) {
+    if (state.failureCache) state.failureCache[key] = Date.now();
+    return;
+  }
+
+  let ok = false;
+  try {
+    ok = await handler.sendPing(connection, providerConfig, proxyOptions, deps, signal);
+  } catch (e) {
+    if (state.failureCache) state.failureCache[key] = Date.now();
+    if (!signal.aborted) {
+      console.warn(`[AutoPing] ${provider}:${connection.id}: ping exception: ${e.message}`);
+    }
+    return;
+  }
+
+  if (signal.aborted) {
+    if (state.failureCache) state.failureCache[key] = Date.now();
+    return;
+  }
+
   if (!ok) {
-    // Do not mark reset/slot as pinged unless upstream accepted the tiny request.
-    state.failureCache[key] = Date.now();
+    if (state.failureCache) state.failureCache[key] = Date.now();
     console.warn(`[AutoPing] ${provider}:${connection.id}: ping failed (${slotPending ? `slot ${dueSlot.key}` : `reset ${resetAt}`})`);
     return;
   }
 
-  delete state.failureCache[key];
+  if (state.failureCache) delete state.failureCache[key];
   const pingedAt = new Date().toISOString();
   await deps.updateProviderConnection(connection.id, {
     ...(!slotPending ? { lastPingedResetAt: resetAt, lastPingedResetKey: resetKey } : (resetAt ? { lastPingedResetAt: resetAt, lastPingedResetKey: resetKey } : {})),
@@ -332,41 +486,66 @@ function createDefaultDeps() {
 }
 
 export async function runQuotaAutoPingTick(deps = createDefaultDeps(), state = g) {
-  if (state.running) return;
-  state.running = true;
+  state.resetCache ??= {};
+  state.failureCache ??= {};
+  state.inFlightConnections ??= new Set();
+  state.inFlightScans ??= new Set();
+
+  const scanTimeoutMs = C.scanTimeoutMs;
+
   try {
-    const settings = await deps.getSettings();
+    const settings = await withTimeout(deps.getSettings(), scanTimeoutMs, "getSettings");
 
-    for (const [provider, providerConfig] of Object.entries(C.providers)) {
-      const handler = providerHandlers[provider];
-      if (!handler) continue;
+    await Promise.allSettled(
+      Object.entries(C.providers).map(async ([provider, providerConfig]) => {
+        const handler = providerHandlers[provider];
+        if (!handler) return;
 
-      const enabledMap = settings?.[providerConfig.settingsKey]?.connections || {};
-      const scheduleMap = settings?.[providerConfig.settingsKey]?.schedules || {};
-      if (Object.keys(enabledMap).length === 0 && Object.keys(scheduleMap).length === 0) continue;
+        const enabledMap = settings?.[providerConfig.settingsKey]?.connections || {};
+        const scheduleMap = settings?.[providerConfig.settingsKey]?.schedules || {};
+        if (Object.keys(enabledMap).length === 0 && Object.keys(scheduleMap).length === 0) return;
 
-      const conns = await deps.getProviderConnections({ provider, isActive: true });
-      // A schedule stands on its own: an account can run only on its slots, with the
-      // reactive ping left off.
-      const targets = conns.filter((conn) => (
-        conn.authType === "oauth"
-        && (enabledMap[conn.id] === true || normalizePingSchedule(scheduleMap[conn.id]) !== null)
-      ));
-      for (const conn of targets) {
+        if (state.inFlightScans.has(provider)) return;
+        state.inFlightScans.add(provider);
+
+        let targets = [];
         try {
-          const schedule = getConnectionSchedule(settings, providerConfig, conn.id);
-          const reactive = enabledMap[conn.id] === true;
-          await pingConnection(conn, provider, providerConfig, handler, deps, state, schedule, reactive);
+          const conns = await withTimeout(
+            deps.getProviderConnections({ provider, isActive: true }),
+            scanTimeoutMs,
+            `getProviderConnections(${provider})`
+          );
+
+          targets = (conns || []).filter((conn) => (
+            conn.authType === "oauth"
+            && (enabledMap[conn.id] === true || normalizePingSchedule(scheduleMap[conn.id]) !== null)
+          ));
         } catch (e) {
-          state.failureCache[cacheKey(provider, conn.id)] = Date.now();
-          console.warn(`[AutoPing] ${provider}:${conn.id}: ${e.message}`);
+          console.warn(`[AutoPing] ${provider} scan error:`, e.message);
+          return;
+        } finally {
+          state.inFlightScans.delete(provider);
         }
-      }
-    }
+
+        await Promise.allSettled(
+          targets.map(async (conn) => {
+            const connKey = cacheKey(provider, conn.id);
+            if (state.inFlightConnections.has(connKey)) return;
+
+            try {
+              const schedule = getConnectionSchedule(settings, providerConfig, conn.id);
+              const reactive = enabledMap[conn.id] === true;
+              await pingConnection(conn, provider, providerConfig, handler, deps, state, schedule, reactive);
+            } catch (e) {
+              if (state.failureCache) state.failureCache[connKey] = Date.now();
+              console.warn(`[AutoPing] ${provider}:${conn.id}: ${e.message}`);
+            }
+          })
+        );
+      })
+    );
   } catch (e) {
     console.warn("[AutoPing] tick error:", e.message);
-  } finally {
-    state.running = false;
   }
 }
 

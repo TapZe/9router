@@ -122,6 +122,25 @@ describe("Factory Usage Service", () => {
     expect(result.error).toBe("Connection refused");
   });
 
+  it("aborts billing limits request when signal is aborted and returns error without quotas", async () => {
+    proxyAwareFetch.mockImplementation(async (url, opts) => {
+      if (opts?.signal?.aborted) {
+        const err = new Error("This operation was aborted");
+        err.name = "AbortError";
+        throw err;
+      }
+      return jsonResponse(SAMPLE_LIMITS_RESPONSE);
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await getFactoryUsage("test-token", { orgId: "org-1" }, null, controller.signal);
+
+    expect(result.quotas).toBeUndefined();
+    expect(result.error).toMatch(/abort/i);
+  });
+
   it("dispatches through getUsageForProvider", async () => {
     proxyAwareFetch.mockResolvedValue(jsonResponse(SAMPLE_LIMITS_RESPONSE));
 

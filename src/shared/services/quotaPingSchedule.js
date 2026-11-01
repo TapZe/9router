@@ -5,6 +5,12 @@
 // 09:30 / 14:30 / 19:30 local time — the overnight gap is what re-aligns the
 // next day back onto the 09:30 anchor, since 24h is not a multiple of 5h.
 
+export const AUTO_PING_SETTINGS_KEYS = Object.freeze({
+  claude: "claudeAutoPing",
+  codex: "codexAutoPing",
+  factory: "factoryAutoPing",
+});
+
 export function getLocalTimezone() {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";

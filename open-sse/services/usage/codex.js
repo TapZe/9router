@@ -104,7 +104,7 @@ function getCodexSparkRateLimit(data) {
   }) || null;
 }
 
-export async function getCodexUsage(accessToken, proxyOptions = null) {
+export async function getCodexUsage(accessToken, proxyOptions = null, signal = null) {
   try {
     const response = await proxyAwareFetch(CODEX_CONFIG.usageUrl, {
       method: "GET",
@@ -112,8 +112,8 @@ export async function getCodexUsage(accessToken, proxyOptions = null) {
         "Authorization": `Bearer ${accessToken}`,
         "Accept": "application/json",
       },
+      ...(signal ? { signal } : {}),
     }, proxyOptions);
-
     if (!response.ok) {
       return { message: `Codex connected. Usage API temporarily unavailable (${response.status}).` };
     }

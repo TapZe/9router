@@ -16,6 +16,7 @@ import {
 import { getMitmStatus, startMitm, loadEncryptedPassword, initDbHooks, restoreToolDNS, removeAllDNSEntriesSync } from "@/mitm/manager";
 import { syncToJson as syncMitmAliasCache } from "@/lib/mitmAliasCache";
 import { killAllBridges } from "@/lib/mcp/stdioSseBridge";
+import { AUTO_PING_SETTINGS_KEYS } from "@/shared/services/quotaPingSchedule";
 
 // Inject correct paths and DB hooks into manager.js (CJS) from ESM context
 (function bootstrapMitm() {
@@ -123,10 +124,11 @@ async function runHeavyStartup() {
 // Cheap local check: keeps the scheduler module (and its provider graph) unloaded
 // when nothing opted in. An enabled schedule counts on its own.
 function hasQuotaAutoPingEnabled(settings) {
-  return [settings?.claudeAutoPing, settings?.codexAutoPing, settings?.factoryAutoPing].some((config) => (
-    Object.values(config?.connections || {}).some(Boolean)
-    || Object.values(config?.schedules || {}).some((schedule) => schedule?.enabled === true)
-  ));
+  return Object.values(AUTO_PING_SETTINGS_KEYS).some((settingsKey) => {
+    const config = settings?.[settingsKey];
+    return Object.values(config?.connections || {}).some(Boolean)
+      || Object.values(config?.schedules || {}).some((schedule) => schedule?.enabled === true);
+  });
 }
 
 async function autoStartMitm(settings) {

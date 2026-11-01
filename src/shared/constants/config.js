@@ -1,5 +1,5 @@
 import pkg from "../../../package.json" with { type: "json" };
-
+import { AUTO_PING_SETTINGS_KEYS } from "../services/quotaPingSchedule.js";
 // App configuration
 export const APP_CONFIG = {
   name: "9Router Proxy",
@@ -68,17 +68,20 @@ export const QUOTA_AUTOPING_CONFIG = {
   pingLeadMs: 5000,                     // fire once reset passes (within tolerance)
   refreshAheadMs: 300000,               // refetch usage when within 5min of reset
   failureCooldownMs: 900000,            // avoid failed ping spam while upstream/auth is unhealthy
+  scanTimeoutMs: 10000,                 // bound settings and provider enumeration lookups
+  attemptTimeoutMs: 60000,              // bound each ping attempt end-to-end
   providers: {
     claude: {
-      settingsKey: "claudeAutoPing",    // preserve existing settings contract
+      settingsKey: AUTO_PING_SETTINGS_KEYS.claude,    // preserve existing settings contract
       quotaKey: "session (5h)",         // quota key returned by usage handler
       pingModel: "claude-haiku-4-5-20251001",
       pingText: "hi",
       pingMaxTokens: 1,
     },
     codex: {
-      settingsKey: "codexAutoPing",
+      settingsKey: AUTO_PING_SETTINGS_KEYS.codex,
       quotaKey: "session",
+      blockingQuotaKeys: ["weekly", "monthly"],
       pingWhenResetAtSlides: true,
       resetAtDriftMs: 30000,
       minPingIntervalMs: 600000,
@@ -90,12 +93,14 @@ export const QUOTA_AUTOPING_CONFIG = {
       pingReasoningEffort: "none",
     },
     factory: {
-      settingsKey: "factoryAutoPing",
+      settingsKey: AUTO_PING_SETTINGS_KEYS.factory,
       quotaKey: "standard_5h",         // quota key returned by usage handler
+      blockingQuotaKeys: ["standard_weekly", "standard_monthly"],
       pingWhenWindowInactive: true,    // Factory runs a 5h window only while it is active
       skipWhenBlockingQuotaExhausted: true,
       minPingIntervalMs: 600000,
-      // Cheapest standard-tier model: the ping must not draw from the Core allowance.
+      // Factory consumes Standard quota first before drawing from Core allowance.
+      // Standard 5h window is kept warm with glm-5.3-flash, blocking only on standard weekly/monthly exhaustion.
       pingModel: "glm-5.3-flash",
       pingText: "hi",
       pingMaxTokens: 1,

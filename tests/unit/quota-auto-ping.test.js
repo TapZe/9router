@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("open-sse/index.js", () => ({}), { virtual: true });
 
@@ -22,6 +22,8 @@ vi.mock("@/shared/constants/config", () => ({
     pingLeadMs: 5000,
     refreshAheadMs: 300000,
     failureCooldownMs: 900000,
+    scanTimeoutMs: 10000,
+    attemptTimeoutMs: 60000,
     providers: {
       claude: {
         settingsKey: "claudeAutoPing",
@@ -33,6 +35,7 @@ vi.mock("@/shared/constants/config", () => ({
       codex: {
         settingsKey: "codexAutoPing",
         quotaKey: "session",
+        blockingQuotaKeys: ["weekly", "monthly"],
         pingWhenResetAtSlides: true,
         resetAtDriftMs: 30000,
         minPingIntervalMs: 600000,
@@ -45,6 +48,7 @@ vi.mock("@/shared/constants/config", () => ({
       factory: {
         settingsKey: "factoryAutoPing",
         quotaKey: "standard_5h",
+        blockingQuotaKeys: ["standard_weekly", "standard_monthly"],
         pingWhenWindowInactive: true,
         skipWhenBlockingQuotaExhausted: true,
         minPingIntervalMs: 600000,
@@ -125,6 +129,10 @@ describe("quota auto-ping", () => {
     vi.setSystemTime(new Date("2026-01-01T12:00:00.000Z"));
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("does not ping Codex when setting is absent", async () => {
     deps.getSettings.mockResolvedValue({});
 
@@ -134,23 +142,47 @@ describe("quota auto-ping", () => {
     expect(deps.proxyAwareFetch).not.toHaveBeenCalled();
   });
 
-  it("starts the scheduler only when an account opts in", () => {
+  it("keeps opted-in Factory accounts running when Codex is disabled and stops after the last opt-out", async () => {
     vi.useFakeTimers();
+    const localDb = await import("@/lib/localDb");
+    const network = await import("@/lib/network/connectionProxy");
+    const credentials = await import("@/app/api/usage/[connectionId]/route.js");
+    const connection = { id: "factory-1", provider: "factory", authType: "oauth", accessToken: "test-token" };
+    let settings = {};
+    localDb.getSettings.mockImplementation(async () => settings);
+    localDb.getProviderConnections.mockImplementation(async ({ provider }) => provider === "factory" ? [connection] : []);
+    localDb.updateProviderConnection.mockImplementation(async (id, patch) => Object.assign(connection, patch));
+    network.resolveConnectionProxyConfig.mockResolvedValue({});
+    credentials.refreshAndUpdateCredentials.mockImplementation(async (conn) => ({ connection: conn }));
+    getFactoryUsage.mockResolvedValue({
+      quotas: { standard_5h: { used: 0, total: 100, remaining: 100, resetAt: null } },
+    });
+    const execute = vi.fn().mockResolvedValue({ response: { ok: true, text: async () => "OK" } });
+    getExecutor.mockReturnValue({ execute });
 
-    configureQuotaAutoPing({ codexAutoPing: { connections: {} } });
-    expect(vi.getTimerCount()).toBe(0);
+    try {
+      configureQuotaAutoPing(settings);
+      await vi.advanceTimersByTimeAsync(600000);
+      expect(execute).not.toHaveBeenCalled();
 
-    configureQuotaAutoPing({ codexAutoPing: { connections: { "codex-1": true } } });
-    expect(vi.getTimerCount()).toBe(1);
-  });
+      settings = { factoryAutoPing: { connections: { "factory-1": true } } };
+      configureQuotaAutoPing(settings);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(execute).toHaveBeenCalledTimes(1);
 
-  it("stops the scheduler when the last account opts out", () => {
-    vi.useFakeTimers();
-    configureQuotaAutoPing({ claudeAutoPing: { connections: { "claude-1": true } } });
+      settings = { ...settings, codexAutoPing: { connections: { "codex-1": false } } };
+      configureQuotaAutoPing(settings);
+      await vi.advanceTimersByTimeAsync(600001);
+      expect(execute).toHaveBeenCalledTimes(2);
 
-    configureQuotaAutoPing({ claudeAutoPing: { connections: { "claude-1": false } } });
-
-    expect(vi.getTimerCount()).toBe(0);
+      settings = { factoryAutoPing: { connections: { "factory-1": false } } };
+      configureQuotaAutoPing(settings);
+      await vi.advanceTimersByTimeAsync(1200000);
+      expect(execute).toHaveBeenCalledTimes(2);
+    } finally {
+      configureQuotaAutoPing({});
+      await vi.advanceTimersByTimeAsync(0);
+    }
   });
 
   it("does not ping Codex on the first resetAt observation", async () => {
@@ -399,7 +431,7 @@ describe("quota auto-ping", () => {
 
     await runQuotaAutoPingTick(deps, state);
 
-    expect(getFactoryUsage).toHaveBeenCalledWith("token", { orgId: "org-1" }, expect.any(Object));
+    expect(getFactoryUsage).toHaveBeenCalledWith("token", { orgId: "org-1" }, expect.any(Object), expect.any(AbortSignal));
     const executor = deps.getExecutor.mock.results[0].value;
     expect(deps.getExecutor).toHaveBeenCalledWith("factory");
     expect(executor.execute).toHaveBeenCalledWith(expect.objectContaining({
@@ -734,6 +766,587 @@ describe("quota auto-ping", () => {
       await runQuotaAutoPingTick(deps, state);
 
       expect(deps.getExecutor).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("concurrency, isolation, cancellation, and quota policy regressions", () => {
+    it("allows Factory to ping promptly when Codex stream stalls", async () => {
+      vi.useFakeTimers();
+      deps.getSettings.mockResolvedValue({
+        codexAutoPing: { connections: { "codex-1": true } },
+        factoryAutoPing: { connections: { "factory-1": true } },
+      });
+      deps.getProviderConnections.mockImplementation(async ({ provider }) => {
+        if (provider === "codex") {
+          return [{ id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token-codex" }];
+        }
+        if (provider === "factory") {
+          return [{ id: "factory-1", provider: "factory", authType: "oauth", accessToken: "token-factory", providerSpecificData: { orgId: "org-1" } }];
+        }
+        return [];
+      });
+
+      state.resetCache["codex:codex-1"] = "2026-01-01T17:00:00.000Z";
+      getCodexUsage.mockResolvedValue({
+        quotas: { session: { used: 1, total: 100, remaining: 99, resetAt: "2026-01-01T17:01:00.000Z" } },
+      });
+
+      state.resetCache["factory:factory-1"] = "2026-01-01T11:30:00.000Z";
+      getFactoryUsage.mockResolvedValue({
+        quotas: { standard_5h: { used: 100, total: 100, remaining: 0, resetAt: "2026-01-01T11:30:00.000Z" } },
+      });
+
+      let streamController;
+      const stalledStream = new ReadableStream({
+        start(controller) {
+          streamController = controller;
+        },
+      });
+
+      const codexExecutor = {
+        execute: vi.fn().mockResolvedValue({
+          response: {
+            ok: true,
+            body: stalledStream,
+          },
+        }),
+      };
+
+      const factoryExecutor = {
+        execute: vi.fn().mockResolvedValue({
+          response: {
+            ok: true,
+            text: vi.fn().mockResolvedValue("ok"),
+          },
+        }),
+      };
+
+      deps.getExecutor.mockImplementation((provider) => {
+        if (provider === "codex") return codexExecutor;
+        if (provider === "factory") return factoryExecutor;
+        return { execute: vi.fn() };
+      });
+
+      let tickPromise;
+      try {
+        tickPromise = runQuotaAutoPingTick(deps, state);
+
+        // Allow microtasks to execute
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+        // Factory ping MUST have executed promptly even while Codex stream is stalled
+        expect(factoryExecutor.execute).toHaveBeenCalledTimes(1);
+        expect(deps.updateProviderConnection).toHaveBeenCalledWith("factory-1", expect.objectContaining({
+          lastPingedResetAt: "2026-01-01T11:30:00.000Z",
+        }));
+      } finally {
+        try { streamController?.close(); } catch {}
+        await vi.advanceTimersByTimeAsync(60001);
+        if (tickPromise) await tickPromise.catch(() => {});
+      }
+    });
+
+    it("never allows the same connection to overlap across concurrent ticks while permitting free accounts to proceed", async () => {
+      deps.getSettings.mockResolvedValue({
+        codexAutoPing: { connections: { "codex-1": true, "codex-2": true } },
+      });
+      deps.getProviderConnections.mockResolvedValue([
+        { id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token-1" },
+        { id: "codex-2", provider: "codex", authType: "oauth", accessToken: "token-2" },
+      ]);
+
+      state.resetCache["codex:codex-1"] = "2026-01-01T17:00:00.000Z";
+      state.resetCache["codex:codex-2"] = "2026-01-01T17:00:00.000Z";
+      getCodexUsage.mockImplementation(async () => ({
+        quotas: { session: { used: 1, total: 100, remaining: 99, resetAt: "2026-01-01T17:01:00.000Z" } },
+      }));
+
+      let resolveConn1Started;
+      const conn1Started = new Promise((resolve) => { resolveConn1Started = resolve; });
+
+      let resolveConn1Blocked;
+      const conn1Blocked = new Promise((resolve) => { resolveConn1Blocked = resolve; });
+
+      const executedConns = [];
+      deps.getExecutor.mockReturnValue({
+        execute: vi.fn().mockImplementation(async ({ credentials }) => {
+          executedConns.push(credentials.connectionId);
+          if (credentials.connectionId === "codex-1") {
+            resolveConn1Started();
+            await conn1Blocked;
+          }
+          return { response: { ok: true, text: vi.fn().mockResolvedValue("ok") } };
+        }),
+      });
+
+      let tick1;
+      let tick2;
+      try {
+        // Tick 1 runs; wait until codex-1 is inside execute
+        tick1 = runQuotaAutoPingTick(deps, state);
+        await conn1Started;
+
+        // Tick 2 runs while codex-1 is in-flight
+        tick2 = runQuotaAutoPingTick(deps, state);
+        await tick2;
+
+        // codex-1 should only have been started once across both ticks
+        expect(executedConns.filter((id) => id === "codex-1").length).toBe(1);
+        // Free account codex-2 should have been executed
+        expect(executedConns).toContain("codex-2");
+      } finally {
+        resolveConn1Blocked?.();
+        if (tick1) await tick1.catch(() => {});
+        if (tick2) await tick2.catch(() => {});
+      }
+
+      expect(executedConns.filter((id) => id === "codex-1").length).toBe(1);
+    });
+
+    it("aborts stalled attempt after timeout and ignores late success from uncooperative transport", async () => {
+      vi.useFakeTimers();
+      deps.getSettings.mockResolvedValue({
+        codexAutoPing: { connections: { "codex-1": true } },
+      });
+      deps.getProviderConnections.mockResolvedValue([
+        { id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token-1" },
+      ]);
+
+      state.resetCache["codex:codex-1"] = "2026-01-01T17:00:00.000Z";
+      getCodexUsage.mockResolvedValue({
+        quotas: { session: { used: 1, total: 100, remaining: 99, resetAt: "2026-01-01T17:01:00.000Z" } },
+      });
+
+      let capturedSignal;
+      let resolveExecute;
+      const executePromise = new Promise((resolve) => {
+        resolveExecute = resolve;
+      });
+
+      deps.getExecutor.mockReturnValue({
+        execute: vi.fn().mockImplementation(async (opts) => {
+          capturedSignal = opts.signal;
+          await executePromise;
+          return { response: { ok: true, text: vi.fn().mockResolvedValue("ok") } };
+        }),
+      });
+
+      let tickPromise;
+      try {
+        tickPromise = runQuotaAutoPingTick(deps, state);
+
+        // Advance time past the 60s attempt timeout
+        await vi.advanceTimersByTimeAsync(60001);
+
+        // The signal passed to executor must be aborted
+        expect(capturedSignal?.aborted).toBe(true);
+
+        // Uncooperative transport finishes LATE after abort
+        resolveExecute();
+        await tickPromise;
+
+        // Stalled work must NOT persist success
+        expect(deps.updateProviderConnection).not.toHaveBeenCalled();
+      } finally {
+        resolveExecute?.();
+        if (tickPromise) await tickPromise.catch(() => {});
+      }
+    });
+
+    it("continues to scan other providers when enumeration fails in one provider", async () => {
+      deps.getSettings.mockResolvedValue({
+        codexAutoPing: { connections: { "codex-1": true } },
+        factoryAutoPing: { connections: { "factory-1": true } },
+      });
+
+      deps.getProviderConnections.mockImplementation(async ({ provider }) => {
+        if (provider === "codex") {
+          throw new Error("DB enumeration error for codex");
+        }
+        if (provider === "factory") {
+          return [{ id: "factory-1", provider: "factory", authType: "oauth", accessToken: "token-factory", providerSpecificData: { orgId: "org-1" } }];
+        }
+        return [];
+      });
+
+      state.resetCache["factory:factory-1"] = "2026-01-01T11:30:00.000Z";
+      getFactoryUsage.mockResolvedValue({
+        quotas: { standard_5h: { used: 100, total: 100, remaining: 0, resetAt: "2026-01-01T11:30:00.000Z" } },
+      });
+
+      const factoryExecutor = {
+        execute: vi.fn().mockResolvedValue({
+          response: { ok: true, text: vi.fn().mockResolvedValue("ok") },
+        }),
+      };
+      deps.getExecutor.mockImplementation((provider) => {
+        if (provider === "factory") return factoryExecutor;
+        return { execute: vi.fn() };
+      });
+
+      await runQuotaAutoPingTick(deps, state);
+
+      expect(deps.getProviderConnections).toHaveBeenCalledWith({ provider: "factory", isActive: true });
+      expect(factoryExecutor.execute).toHaveBeenCalledTimes(1);
+      expect(deps.updateProviderConnection).toHaveBeenCalledWith("factory-1", expect.objectContaining({
+        lastPingedResetAt: "2026-01-01T11:30:00.000Z",
+      }));
+    });
+
+    it("does not suppress Codex ping when unrelated review or spark quota is exhausted", async () => {
+      deps.getSettings.mockResolvedValue({ codexAutoPing: { connections: { "codex-1": true } } });
+      deps.getProviderConnections.mockResolvedValue([
+        { id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token-1" },
+      ]);
+      state.resetCache["codex:codex-1"] = "2026-01-01T17:00:00.000Z";
+      getCodexUsage.mockResolvedValue({
+        quotas: {
+          session: { used: 1, total: 100, remaining: 99, resetAt: "2026-01-01T17:01:00.000Z" },
+          review_weekly: { used: 100, total: 100, remaining: 0 },
+          spark_weekly: { used: 100, total: 100, remaining: 0 },
+        },
+      });
+
+      const executor = { execute: vi.fn().mockResolvedValue({ response: { ok: true, text: vi.fn().mockResolvedValue("ok") } }) };
+      deps.getExecutor.mockReturnValue(executor);
+
+      await runQuotaAutoPingTick(deps, state);
+
+      expect(executor.execute).toHaveBeenCalledTimes(1);
+      expect(deps.updateProviderConnection).toHaveBeenCalledWith("codex-1", expect.objectContaining({
+        lastPingedResetAt: "2026-01-01T17:01:00.000Z",
+      }));
+    });
+
+    it("does not suppress Factory ping when unrelated Core quotas are exhausted", async () => {
+      deps.getSettings.mockResolvedValue({ factoryAutoPing: { connections: { "factory-1": true } } });
+      deps.getProviderConnections.mockResolvedValue([
+        { id: "factory-1", provider: "factory", authType: "oauth", accessToken: "token-1", providerSpecificData: { orgId: "org-1" } },
+      ]);
+      state.resetCache["factory:factory-1"] = "2026-01-01T11:30:00.000Z";
+      getFactoryUsage.mockResolvedValue({
+        quotas: {
+          standard_5h: { used: 100, total: 100, remaining: 0, resetAt: "2026-01-01T11:30:00.000Z" },
+          core_weekly: { used: 100, total: 100, remaining: 0 },
+          core_monthly: { used: 100, total: 100, remaining: 0 },
+        },
+      });
+
+      const executor = { execute: vi.fn().mockResolvedValue({ response: { ok: true, text: vi.fn().mockResolvedValue("ok") } }) };
+      deps.getExecutor.mockReturnValue(executor);
+
+      await runQuotaAutoPingTick(deps, state);
+
+      expect(executor.execute).toHaveBeenCalledTimes(1);
+      expect(deps.updateProviderConnection).toHaveBeenCalledWith("factory-1", expect.objectContaining({
+        lastPingedResetAt: "2026-01-01T11:30:00.000Z",
+      }));
+    });
+
+    it("stops waiting on slow refresh without continuing aborted ping or breaking credential persistence", async () => {
+      vi.useFakeTimers();
+      deps.getSettings.mockResolvedValue({
+        codexAutoPing: { connections: { "codex-1": true } },
+      });
+      deps.getProviderConnections.mockResolvedValue([
+        { id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token-1" },
+      ]);
+
+      let refreshResolved = false;
+      let resolveRefresh;
+      const refreshPromise = new Promise((resolve) => {
+        resolveRefresh = () => {
+          refreshResolved = true;
+          resolve({ connection: { id: "codex-1", provider: "codex", accessToken: "rotated-token" }, refreshed: true });
+        };
+      });
+      deps.refreshAndUpdateCredentials.mockImplementation(() => refreshPromise);
+
+      let tickPromise;
+      try {
+        tickPromise = runQuotaAutoPingTick(deps, state);
+
+        // Advance time past attempt timeout
+        await vi.advanceTimersByTimeAsync(60001);
+        await tickPromise;
+
+        // Usage and Executor should not be called since refresh timed out
+        expect(getCodexUsage).not.toHaveBeenCalled();
+        expect(deps.getExecutor).not.toHaveBeenCalled();
+
+        // Refresh itself safely resolves later in background
+        resolveRefresh();
+        await refreshPromise;
+        expect(refreshResolved).toBe(true);
+
+        // The aborted ping must not continue or persist a late ping marker
+        expect(deps.updateProviderConnection).not.toHaveBeenCalled();
+      } finally {
+        resolveRefresh?.();
+        if (tickPromise) await tickPromise.catch(() => {});
+      }
+    });
+
+    it("releases provider scan lock after enumeration so a free account succeeds on next tick while first account is hung", async () => {
+      let codexConnections = [
+        { id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token-1" },
+      ];
+      deps.getSettings.mockResolvedValue({
+        codexAutoPing: { connections: { "codex-1": true, "codex-2": true } },
+      });
+      deps.getProviderConnections.mockImplementation(async ({ provider }) => (
+        provider === "codex" ? [...codexConnections] : []
+      ));
+
+      state.resetCache["codex:codex-1"] = "2026-01-01T17:00:00.000Z";
+      state.resetCache["codex:codex-2"] = "2026-01-01T17:00:00.000Z";
+      getCodexUsage.mockResolvedValue({
+        quotas: { session: { used: 1, total: 100, remaining: 99, resetAt: "2026-01-01T17:01:00.000Z" } },
+      });
+
+      let resolveConn1Blocked;
+      const conn1Blocked = new Promise((resolve) => { resolveConn1Blocked = resolve; });
+
+      const executedConns = [];
+      deps.getExecutor.mockReturnValue({
+        execute: vi.fn().mockImplementation(async ({ credentials }) => {
+          executedConns.push(credentials.connectionId);
+          if (credentials.connectionId === "codex-1") {
+            await conn1Blocked;
+          }
+          return { response: { ok: true, text: vi.fn().mockResolvedValue("ok") } };
+        }),
+      });
+
+      let tick1;
+      let tick2;
+      try {
+        // Tick 1 runs with codex-1, which hangs in execute
+        tick1 = runQuotaAutoPingTick(deps, state);
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+
+        // While codex-1 is still hung in Tick 1, codex-2 becomes available on Tick 2
+        codexConnections.push({ id: "codex-2", provider: "codex", authType: "oauth", accessToken: "token-2" });
+
+        // Tick 2 runs: scan lock must NOT be held by codex-1's running attempt!
+        tick2 = runQuotaAutoPingTick(deps, state);
+        await tick2;
+
+        // codex-2 should have been executed on tick 2!
+        expect(executedConns).toContain("codex-2");
+      } finally {
+        resolveConn1Blocked?.();
+        if (tick1) await tick1.catch(() => {});
+        if (tick2) await tick2.catch(() => {});
+      }
+    });
+
+    it("settles tick by 60s timeout before uncooperative execute finishes, retains account lock until settle, and suppresses late success", async () => {
+      vi.useFakeTimers();
+      deps.getSettings.mockResolvedValue({
+        codexAutoPing: { connections: { "codex-1": true, "codex-2": true } },
+      });
+      deps.getProviderConnections.mockResolvedValue([
+        { id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token-1" },
+        { id: "codex-2", provider: "codex", authType: "oauth", accessToken: "token-2" },
+      ]);
+
+      state.resetCache["codex:codex-1"] = "2026-01-01T17:00:00.000Z";
+      state.resetCache["codex:codex-2"] = "2026-01-01T17:00:00.000Z";
+      getCodexUsage.mockResolvedValue({
+        quotas: { session: { used: 1, total: 100, remaining: 99, resetAt: "2026-01-01T17:01:00.000Z" } },
+      });
+
+      let resolveUncooperativeExecute;
+      const uncooperativePromise = new Promise((resolve) => {
+        resolveUncooperativeExecute = resolve;
+      });
+
+      let responseCancelCalled = false;
+      const uncooperativeResponse = {
+        ok: true,
+        text: vi.fn().mockResolvedValue("ok"),
+        body: {
+          cancel: vi.fn().mockImplementation(async () => {
+            responseCancelCalled = true;
+          }),
+        },
+      };
+
+      let codex1ExecuteCount = 0;
+      let codex2ExecuteCount = 0;
+      deps.getExecutor.mockReturnValue({
+        execute: vi.fn().mockImplementation(async ({ credentials }) => {
+          if (credentials.connectionId === "codex-1") {
+            codex1ExecuteCount++;
+            await uncooperativePromise;
+            return { response: uncooperativeResponse };
+          }
+          if (credentials.connectionId === "codex-2") {
+            codex2ExecuteCount++;
+            return { response: { ok: true, text: vi.fn().mockResolvedValue("ok") } };
+          }
+          return { response: { ok: true, text: vi.fn().mockResolvedValue("ok") } };
+        }),
+      });
+
+      let tick1;
+      let tick2;
+      try {
+        tick1 = runQuotaAutoPingTick(deps, state);
+
+        // Advance 60s: attempt timeout fires
+        await vi.advanceTimersByTimeAsync(60001);
+
+        // Tick 1 MUST settle within 60s even though execute is still unresolved!
+        let tick1Settled = false;
+        tick1.then(() => { tick1Settled = true; });
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+        expect(tick1Settled).toBe(true);
+
+        // codex-1 account lock must still be retained because uncooperative operation is still pending in background
+        expect(state.inFlightConnections.has("codex:codex-1")).toBe(true);
+
+        // Tick 2 runs: must NOT restart codex-1 (no overlap), but free accounts can proceed
+        tick2 = runQuotaAutoPingTick(deps, state);
+        await tick2;
+        expect(codex1ExecuteCount).toBe(1);
+        expect(codex2ExecuteCount).toBe(1);
+
+        // Now the uncooperative execute finally resolves late
+        resolveUncooperativeExecute();
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+
+        // Late response must not persist success
+        expect(deps.updateProviderConnection).not.toHaveBeenCalledWith("codex-1", expect.anything());
+
+        // Account lock is released after background settle
+        expect(state.inFlightConnections.has("codex:codex-1")).toBe(false);
+      } finally {
+        resolveUncooperativeExecute?.();
+        if (tick1) await tick1.catch(() => {});
+        if (tick2) await tick2.catch(() => {});
+      }
+    });
+
+    it("records failureCache on timeout, blocks immediate retry during 15m cooldown, and succeeds after cooldown expires", async () => {
+      vi.useFakeTimers();
+      deps.getSettings.mockResolvedValue({
+        codexAutoPing: { connections: { "codex-1": true } },
+      });
+      deps.getProviderConnections.mockResolvedValue([
+        { id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token-1" },
+      ]);
+      state.resetCache["codex:codex-1"] = "2026-01-01T17:00:00.000Z";
+
+      let usageCount = 0;
+      let resolveStalledUsage;
+      const usagePromise = new Promise((resolve) => {
+        resolveStalledUsage = resolve;
+      });
+
+      getCodexUsage.mockImplementation(async (token, proxyOptions, signal) => {
+        usageCount++;
+        if (usageCount === 1) {
+          signal?.addEventListener?.("abort", () => resolveStalledUsage());
+          await usagePromise;
+          const err = new Error("This operation was aborted");
+          err.name = "AbortError";
+          throw err;
+        }
+        return {
+          quotas: { session: { used: 1, total: 100, remaining: 99, resetAt: "2026-01-01T17:01:00.000Z" } },
+        };
+      });
+
+      const executor = { execute: vi.fn().mockResolvedValue({ response: { ok: true, text: vi.fn().mockResolvedValue("ok") } }) };
+      deps.getExecutor.mockReturnValue(executor);
+
+      let tick1;
+      let tick2;
+      let tick3;
+      try {
+        tick1 = runQuotaAutoPingTick(deps, state);
+
+        // Advance 60s: attempt timeout fires
+        await vi.advanceTimersByTimeAsync(60001);
+        await tick1;
+
+        // failureCache must be recorded on timeout!
+        expect(state.failureCache["codex:codex-1"]).toBeTypeOf("number");
+
+        // Immediate subsequent tick (1 minute later, within 15m cooldown)
+        await vi.advanceTimersByTimeAsync(60000);
+        tick2 = runQuotaAutoPingTick(deps, state);
+        await tick2;
+
+        // Retry must be blocked by cooldown (usageCount remains 1)
+        expect(usageCount).toBe(1);
+
+        // Advance past 15m failureCooldownMs (900000ms total from failure)
+        await vi.advanceTimersByTimeAsync(900000);
+        tick3 = runQuotaAutoPingTick(deps, state);
+        await tick3;
+
+        // Usage and ping succeed after cooldown
+        expect(usageCount).toBe(2);
+        expect(executor.execute).toHaveBeenCalledTimes(1);
+        expect(deps.updateProviderConnection).toHaveBeenCalledWith("codex-1", expect.objectContaining({
+          lastPingedResetAt: "2026-01-01T17:01:00.000Z",
+        }));
+      } finally {
+        resolveStalledUsage?.();
+        if (tick1) await tick1.catch(() => {});
+        if (tick2) await tick2.catch(() => {});
+        if (tick3) await tick3.catch(() => {});
+      }
+    });
+
+    it("cancels response body stream on abort and suppresses success marker", async () => {
+      vi.useFakeTimers();
+      deps.getSettings.mockResolvedValue({
+        codexAutoPing: { connections: { "codex-1": true } },
+      });
+      deps.getProviderConnections.mockResolvedValue([
+        { id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token-1" },
+      ]);
+      state.resetCache["codex:codex-1"] = "2026-01-01T17:00:00.000Z";
+      getCodexUsage.mockResolvedValue({
+        quotas: { session: { used: 1, total: 100, remaining: 99, resetAt: "2026-01-01T17:01:00.000Z" } },
+      });
+
+      let readerCancelCalled = false;
+      let streamController;
+      const stream = new ReadableStream({
+        start(controller) { streamController = controller; },
+        cancel() { readerCancelCalled = true; },
+      });
+
+      // A real Response has BOTH .text() and .body
+      const realResponseLike = {
+        ok: true,
+        text: vi.fn().mockResolvedValue("stream-text-body"),
+        body: stream,
+      };
+
+      deps.getExecutor.mockReturnValue({
+        execute: vi.fn().mockResolvedValue({ response: realResponseLike }),
+      });
+
+      let tickPromise;
+      try {
+        tickPromise = runQuotaAutoPingTick(deps, state);
+
+        // Advance 60s to trigger abort
+        await vi.advanceTimersByTimeAsync(60001);
+        await tickPromise;
+
+        // Body stream cancellation must have been triggered on abort and no success recorded
+        expect(readerCancelCalled).toBe(true);
+        expect(deps.updateProviderConnection).not.toHaveBeenCalled();
+      } finally {
+        try { streamController?.close(); } catch {}
+        if (tickPromise) await tickPromise.catch(() => {});
+      }
     });
   });
 });

@@ -19,7 +19,7 @@ function formatFactoryWindow(window) {
   };
 }
 
-export async function getFactoryUsage(accessToken, providerSpecificData = null, proxyOptions = null) {
+export async function getFactoryUsage(accessToken, providerSpecificData = null, proxyOptions = null, signal = null) {
   if (!accessToken) {
     return { error: "Missing access token" };
   }
@@ -41,7 +41,9 @@ export async function getFactoryUsage(accessToken, providerSpecificData = null, 
   }
 
   try {
-    const res = await proxyAwareFetch(url, { headers, signal: AbortSignal.timeout(10000) }, proxyOptions);
+    const timeoutSignal = AbortSignal.timeout(10000);
+    const effectiveSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+    const res = await proxyAwareFetch(url, { headers, signal: effectiveSignal }, proxyOptions);
     if (!res.ok) {
       return { error: `Factory billing API error: HTTP ${res.status}` };
     }
