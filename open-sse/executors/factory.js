@@ -70,8 +70,13 @@ export function embeddedToolCallFromName(name) {
   }
 }
 
+export function cleanModelId(modelId) {
+  let m = String(modelId || "").toLowerCase().trim();
+  return m.replace(/^(prd\/)?(fy|factory|droid)\//, "");
+}
+
 export function resolveTargetGateway(modelId) {
-  const m = String(modelId || "").toLowerCase();
+  const m = cleanModelId(modelId);
   if (m.startsWith("claude-") || (m.startsWith("minimax-") && m !== "minimax-m3" && m !== "minimax-m3.1-flash") || m.startsWith("atlas-") || m.startsWith("aster-")) {
     return "anthropic";
   }
@@ -85,7 +90,7 @@ export function resolveTargetGateway(modelId) {
 }
 
 export function upstreamProviderFor(modelId) {
-  const m = String(modelId || "").toLowerCase();
+  const m = cleanModelId(modelId);
   if (m.startsWith("claude-") || m.startsWith("atlas-") || m.startsWith("aster-")) {
     return "anthropic";
   }
@@ -119,7 +124,7 @@ export function resolveFactoryApiBase(credentials = null) {
 }
 
 export function resolveClaudeThinking(modelId, requestedEffort, requestedBudget) {
-  const m = String(modelId || "").toLowerCase();
+  const m = cleanModelId(modelId);
   const disabled = requestedEffort === "off" || requestedEffort === "none";
   const explicitBudget = Number.isFinite(requestedBudget) && requestedBudget > 0
     ? requestedBudget
@@ -195,7 +200,7 @@ export function resolveClaudeThinking(modelId, requestedEffort, requestedBudget)
 }
 
 export function supportsExtraHighEffort(modelId) {
-  const m = String(modelId || "").toLowerCase();
+  const m = cleanModelId(modelId);
   return (
     m === "grok-4.6" ||
     m === "grok-4.7" ||
@@ -320,7 +325,7 @@ export class FactoryExecutor extends BaseExecutor {
     if (!body || typeof body !== "object") return body;
     const cloned = { ...body };
     const gateway = resolveTargetGateway(model);
-    const m = String(model || "").toLowerCase();
+    const m = cleanModelId(model);
 
     if (gateway !== "google") {
       cloned.stream = !!stream;
@@ -708,16 +713,30 @@ export class FactoryExecutor extends BaseExecutor {
     // 5. Reasoning effort normalization across gateways
     const hasExtraHigh = supportsExtraHighEffort(m);
 
-    if (cloned.reasoning_effort) {
-      const re = String(cloned.reasoning_effort).toLowerCase();
+    const rawEffort = cloned.reasoning?.effort || cloned.reasoning_effort;
+    if (rawEffort) {
+      const re = String(rawEffort).toLowerCase();
+      let normalized = re;
       if (NO_DISABLE_LOW_EFFORT.has(m) && (re === "none" || re === "off")) {
-        cloned.reasoning_effort = "low";
+        normalized = "low";
       } else if (re === "minimal") {
-        cloned.reasoning_effort = "low";
+        normalized = "low";
       } else if (re === "max") {
-        cloned.reasoning_effort = MAX_EFFORT_MODELS.has(m) ? "max" : hasExtraHigh ? "xhigh" : "high";
+        normalized = MAX_EFFORT_MODELS.has(m) ? "max" : hasExtraHigh ? "xhigh" : "high";
       } else if (re === "xhigh" && !hasExtraHigh) {
-        cloned.reasoning_effort = "high";
+        normalized = "high";
+      }
+
+      if (gateway === "openai-responses") {
+        cloned.reasoning = {
+          ...(typeof cloned.reasoning === "object" ? cloned.reasoning : {}),
+          effort: normalized,
+        };
+        delete cloned.reasoning_effort;
+        delete cloned.temperature;
+        delete cloned.top_p;
+      } else {
+        cloned.reasoning_effort = normalized;
       }
     }
 

@@ -729,13 +729,15 @@ describe("FactoryExecutor", () => {
     });
 
     it("normalizes reasoning effort: allows xhigh for supported models and clamps for others", () => {
-      // Supported models keep xhigh / max -> xhigh
+      // Supported models keep xhigh / max -> xhigh; Responses API moves it to reasoning.effort
       const gpt6 = executor.transformRequest("gpt-6-astra", { reasoning_effort: "max" }, true);
-      expect(gpt6.reasoning_effort).toBe("xhigh");
+      expect(gpt6.reasoning?.effort ?? gpt6.reasoning_effort).toBe("xhigh");
+      expect(gpt6.reasoning_effort).toBeUndefined();
 
       const sol61 = executor.transformRequest("gpt-6.1-sol", { reasoning_effort: "max" }, true);
-      expect(sol61.reasoning_effort).toBe("max");
-      expect(executor.transformRequest("gpt-6.1-sol", { reasoning_effort: "none" }, true).reasoning_effort).toBe("low");
+      expect(sol61.reasoning?.effort ?? sol61.reasoning_effort).toBe("max");
+      const sol61none = executor.transformRequest("gpt-6.1-sol", { reasoning_effort: "none" }, true);
+      expect(sol61none.reasoning?.effort ?? sol61none.reasoning_effort).toBe("low");
 
       const glm = executor.transformRequest("glm-5.3", { reasoning_effort: "xhigh" }, true);
       expect(glm.reasoning_effort).toBe("xhigh");
@@ -746,25 +748,28 @@ describe("FactoryExecutor", () => {
       expect(executor.transformRequest("minimax-m3.1-flash", { reasoning_effort: "none" }, true).reasoning_effort).toBe("low");
       expect(executor.transformRequest("muse-spark-1.2", { reasoning_effort: "max" }, true).reasoning_effort).toBe("xhigh");
       // Ultrafast rejects disable; "max" must survive where the gateway accepts it.
-      expect(executor.transformRequest("gpt-6.1-sol-ultrafast", { reasoning_effort: "max" }, true).reasoning_effort).toBe("max");
+      const ultrafast = executor.transformRequest("gpt-6.1-sol-ultrafast", { reasoning_effort: "max" }, true);
+      expect(ultrafast.reasoning?.effort ?? ultrafast.reasoning_effort).toBe("max");
       expect(executor.transformRequest("beam-1.0", { reasoning_effort: "max" }, true).reasoning_effort).toBe("max");
       expect(executor.transformRequest("deepseek-v4.1-flash-1017", { reasoning_effort: "max" }, true).reasoning_effort).toBe("max");
-      expect(executor.transformRequest("gpt-6-sol-fast", { reasoning_effort: "max" }, true).reasoning_effort).toBe("max");
-      expect(executor.transformRequest("gpt-6-luna-fast", { reasoning_effort: "max" }, true).reasoning_effort).toBe("max");
+      const solfast = executor.transformRequest("gpt-6-sol-fast", { reasoning_effort: "max" }, true);
+      expect(solfast.reasoning?.effort ?? solfast.reasoning_effort).toBe("max");
+      const lunafast = executor.transformRequest("gpt-6-luna-fast", { reasoning_effort: "max" }, true);
+      expect(lunafast.reasoning?.effort ?? lunafast.reasoning_effort).toBe("max");
 
       const grok = executor.transformRequest("grok-4.6", { reasoning_effort: "max" }, true);
-      expect(grok.reasoning_effort).toBe("xhigh");
+      expect(grok.reasoning?.effort ?? grok.reasoning_effort).toBe("xhigh");
 
       const grok47 = executor.transformRequest("grok-4.7", { reasoning_effort: "max" }, true);
-      expect(grok47.reasoning_effort).toBe("xhigh");
+      expect(grok47.reasoning?.effort ?? grok47.reasoning_effort).toBe("xhigh");
 
       // Non-supported models clamp xhigh / max -> high
       const gpt54 = executor.transformRequest("gpt-5.4", { reasoning_effort: "max" }, true);
-      expect(gpt54.reasoning_effort).toBe("high");
+      expect(gpt54.reasoning?.effort ?? gpt54.reasoning_effort).toBe("high");
 
       // minimal -> low
       const min = executor.transformRequest("gpt-5.4", { reasoning_effort: "minimal" }, true);
-      expect(min.reasoning_effort).toBe("low");
+      expect(min.reasoning?.effort ?? min.reasoning_effort).toBe("low");
 
       // Verify supportsExtraHighEffort helper directly
       expect(supportsExtraHighEffort("grok-4.6")).toBe(true);
