@@ -48,6 +48,8 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("gpt-6-sol-fast")).toBe("openai-responses");
       expect(resolveTargetGateway("gpt-6.1-sol-ultrafast")).toBe("openai-responses");
       expect(resolveTargetGateway("gpt-6-luna-fast")).toBe("openai-responses");
+      expect(resolveTargetGateway("gpt-6.1-terra")).toBe("openai-responses");
+      expect(resolveTargetGateway("muse-spark-1.3")).toBe("openai-responses");
       expect(resolveTargetGateway("grok-4.7")).toBe("openai-responses");
       expect(resolveTargetGateway("grok-4.5")).toBe("openai-responses");
     });
@@ -66,8 +68,10 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("minimax-m3")).toBe("openai-completions");
       expect(resolveTargetGateway("minimax-m3.1-flash")).toBe("openai-completions");
       expect(resolveTargetGateway("muse-spark-1.2")).toBe("openai-completions");
+      expect(resolveTargetGateway("nemotron-3.5-super")).toBe("openai-completions");
       expect(resolveTargetGateway("beam-1.0")).toBe("openai-completions");
       expect(resolveTargetGateway("deepseek-v4.1-flash-1017")).toBe("openai-completions");
+      expect(resolveTargetGateway("muse-spark-open")).toBe("openai-completions");
     });
 
     it("routes Gemini models to Google Generative AI gateway", () => {
@@ -78,6 +82,7 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("gemini-3-flash-preview")).toBe("google");
       expect(resolveTargetGateway("gemini-3-pro-preview")).toBe("google");
       expect(resolveTargetGateway("garnet-07-15")).toBe("google");
+      expect(resolveTargetGateway("gemini-4-argon")).toBe("google");
     });
   });
 
@@ -93,12 +98,14 @@ describe("FactoryExecutor", () => {
       expect(upstreamProviderFor("gemini-3-flash-preview")).toBe("google");
       expect(upstreamProviderFor("gemini-3.1-pro-preview")).toBe("google");
       expect(upstreamProviderFor("garnet-07-15")).toBe("google");
+      expect(upstreamProviderFor("gemini-4-argon")).toBe("google");
     });
 
     it("returns openai for GPT and Codex models", () => {
       expect(upstreamProviderFor("gpt-6-astra")).toBe("openai");
       expect(upstreamProviderFor("gpt-5.6-sol")).toBe("openai");
       expect(upstreamProviderFor("gpt-5.3-codex")).toBe("openai");
+      expect(upstreamProviderFor("gpt-6.1-terra")).toBe("openai");
     });
 
     it("returns xai for Grok models", () => {
@@ -121,9 +128,12 @@ describe("FactoryExecutor", () => {
       expect(upstreamProviderFor("mistral-medium-3.5")).toBe("mistral");
     });
 
-    it("returns baseten for Beam and fireworks for the other new open models", () => {
+    it("returns baseten for Beam and Muse Spark Open and fireworks for the other new open models", () => {
       expect(upstreamProviderFor("beam-1.0")).toBe("baseten");
+      expect(upstreamProviderFor("muse-spark-open")).toBe("baseten");
+      expect(upstreamProviderFor("nemotron-3.5-super")).toBe("baseten");
       expect(upstreamProviderFor("muse-spark-1.2")).toBe("fireworks");
+      expect(upstreamProviderFor("muse-spark-1.3")).toBe("google");
       expect(upstreamProviderFor("minimax-m3.1-flash")).toBe("fireworks");
       expect(upstreamProviderFor("deepseek-v4.1-flash-1017")).toBe("fireworks");
     });
@@ -262,8 +272,8 @@ describe("FactoryExecutor", () => {
       };
       const headers = executor.buildHeaders(creds, true, "", "claude-fable-5.1");
 
-      expect(headers["X-Client-Version"]).toBe("0.226.1");
-      expect(headers["User-Agent"]).toBe("factory-cli/0.226.1");
+      expect(headers["X-Client-Version"]).toBe("1.2.0");
+      expect(headers["User-Agent"]).toBe("factory-cli/1.2.0");
       expect(headers["Authorization"]).toBe("Bearer workos-token-123");
       expect(headers["X-Factory-Org-Id"]).toBe("RFmWaCAuH8jTGM21tL5k");
       expect(headers["x-provider-routing-source"]).toBe("registry_default");
@@ -745,13 +755,28 @@ describe("FactoryExecutor", () => {
       // Always-on models have no "off" wire value, so disable requests floor to low.
       expect(executor.transformRequest("beam-1.0", { reasoning_effort: "none" }, true).reasoning_effort).toBe("low");
       expect(executor.transformRequest("muse-spark-1.2", { reasoning_effort: "off" }, true).reasoning_effort).toBe("low");
+      const muse13off = executor.transformRequest("muse-spark-1.3", { reasoning_effort: "off" }, true);
+      expect(muse13off.reasoning?.effort ?? muse13off.reasoning_effort).toBe("low");
+      const muse13none = executor.transformRequest("muse-spark-1.3", { reasoning_effort: "none" }, true);
+      expect(muse13none.reasoning?.effort ?? muse13none.reasoning_effort).toBe("low");
+      expect(executor.transformRequest("nemotron-3.5-super", { reasoning_effort: "off" }, true).reasoning_effort).toBe("off");
+      expect(executor.transformRequest("nemotron-3.5-super", { reasoning_effort: "none" }, true).reasoning_effort).toBe("none");
+      expect(executor.transformRequest("muse-spark-open", { reasoning_effort: "off" }, true).reasoning_effort).toBe("off");
+      expect(executor.transformRequest("muse-spark-open", { reasoning_effort: "none" }, true).reasoning_effort).toBe("none");
       expect(executor.transformRequest("minimax-m3.1-flash", { reasoning_effort: "none" }, true).reasoning_effort).toBe("low");
       expect(executor.transformRequest("muse-spark-1.2", { reasoning_effort: "max" }, true).reasoning_effort).toBe("xhigh");
+      const muse13max = executor.transformRequest("muse-spark-1.3", { reasoning_effort: "max" }, true);
+      expect(muse13max.reasoning?.effort ?? muse13max.reasoning_effort).toBe("xhigh");
       // Ultrafast rejects disable; "max" must survive where the gateway accepts it.
       const ultrafast = executor.transformRequest("gpt-6.1-sol-ultrafast", { reasoning_effort: "max" }, true);
       expect(ultrafast.reasoning?.effort ?? ultrafast.reasoning_effort).toBe("max");
       expect(executor.transformRequest("beam-1.0", { reasoning_effort: "max" }, true).reasoning_effort).toBe("max");
       expect(executor.transformRequest("deepseek-v4.1-flash-1017", { reasoning_effort: "max" }, true).reasoning_effort).toBe("max");
+      expect(executor.transformRequest("muse-spark-open", { reasoning_effort: "max" }, true).reasoning_effort).toBe("max");
+      const terra = executor.transformRequest("gpt-6.1-terra", { reasoning_effort: "max" }, true);
+      expect(terra.reasoning?.effort ?? terra.reasoning_effort).toBe("max");
+      const terranone = executor.transformRequest("gpt-6.1-terra", { reasoning_effort: "none" }, true);
+      expect(terranone.reasoning?.effort ?? terranone.reasoning_effort).toBe("none");
       const solfast = executor.transformRequest("gpt-6-sol-fast", { reasoning_effort: "max" }, true);
       expect(solfast.reasoning?.effort ?? solfast.reasoning_effort).toBe("max");
       const lunafast = executor.transformRequest("gpt-6-luna-fast", { reasoning_effort: "max" }, true);
@@ -780,6 +805,10 @@ describe("FactoryExecutor", () => {
       expect(supportsExtraHighEffort("gpt-5.6-sol")).toBe(true);
       expect(supportsExtraHighEffort("claude-opus-5")).toBe(true);
       expect(supportsExtraHighEffort("claude-fable-5.1")).toBe(true);
+      expect(supportsExtraHighEffort("muse-spark-1.3")).toBe(true);
+      expect(supportsExtraHighEffort("gpt-6.1-terra")).toBe(true);
+      expect(supportsExtraHighEffort("muse-spark-open")).toBe(true);
+      expect(supportsExtraHighEffort("nemotron-3.5-super")).toBe(false);
       expect(supportsExtraHighEffort("gpt-5.4")).toBe(false);
       expect(supportsExtraHighEffort("claude-sonnet-4-6")).toBe(false);
     });

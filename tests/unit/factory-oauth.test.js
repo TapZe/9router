@@ -62,14 +62,19 @@ describe("Factory OAuth & Token Management", () => {
         "gpt-6-sol-fast": "openai-responses",
         "gpt-6.1-sol-ultrafast": "openai-responses",
         "gpt-6-luna-fast": "openai-responses",
+        "gpt-6.1-terra": "openai-responses",
         "deepseek-v4.1-flash-1017": "openai",
         "muse-spark-1.2": "openai",
+        "muse-spark-1.3": "openai-responses",
+        "muse-spark-open": "openai",
+        "nemotron-3.5-super": "openai",
         "beam-1.0": "openai",
         "qwen3.8-max": "openai",
         "mistral-medium-3.5": "openai",
         "mistral-large-4": "openai",
         "deepseek-v4.1-flash": "openai",
         "garnet-07-15": "gemini",
+        "gemini-4-argon": "gemini",
       };
 
       for (const [id, targetFormat] of Object.entries(expectedFormats)) {
@@ -90,6 +95,13 @@ describe("Factory OAuth & Token Management", () => {
         expect(getModelTargetFormat("factory", id), id).toBe(targetFormat);
         expect(resolveTargetGateway(id), id).toBe(gateways[targetFormat]);
       }
+    });
+    it("does not include flex SKUs, router aliases, or unreleased models in Factory registry", () => {
+      const modelIds = new Set(factoryRegistry.models.map((m) => m.id));
+      expect(modelIds.has("auto")).toBe(false);
+      expect(modelIds.has("auto-fast")).toBe(false);
+      expect(modelIds.has("gpt-6-sol-flex")).toBe(false);
+      expect(modelIds.has("gpt-6-astra-ultrafast")).toBe(false);
     });
   });
 

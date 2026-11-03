@@ -68,6 +68,7 @@ describe("getCapabilitiesForModel", () => {
       "gpt-6-luna-fast": { contextWindow: 1050000, maxOutput: 128000, vision: true, thinkingFormat: "openai" },
       "deepseek-v4.1-flash-1017": { contextWindow: 1040000, maxOutput: 131072, vision: true, thinkingFormat: "openai", thinkingCanDisable: true },
       "muse-spark-1.2": { contextWindow: 1040000, maxOutput: 131072, vision: false, thinkingFormat: "openai", thinkingCanDisable: false },
+      "muse-spark-1.3": { contextWindow: 1040000, maxOutput: 131072, vision: false, thinkingFormat: "openai", thinkingCanDisable: false },
       "beam-1.0": { contextWindow: 1048576, maxOutput: 32768, vision: false, thinkingFormat: "openai", thinkingCanDisable: false },
     };
     for (const [model, caps] of Object.entries(expected)) {
@@ -80,9 +81,13 @@ describe("getCapabilitiesForModel", () => {
       "gpt-6.1-sol-ultrafast": ["low", "medium", "high", "xhigh", "max"],
       "gpt-6-sol-fast": ["none", "low", "medium", "high", "xhigh", "max"],
       "gpt-6-luna-fast": ["none", "low", "medium", "high", "xhigh", "max"],
+      "gpt-6.1-terra": ["none", "low", "medium", "high", "xhigh", "max"],
       "minimax-m3.1-flash": ["low", "medium", "high", "xhigh", "max"],
       "deepseek-v4.1-flash-1017": ["none", "low", "high", "max"],
       "muse-spark-1.2": ["low", "medium", "high", "xhigh"],
+      "muse-spark-1.3": ["low", "medium", "high", "xhigh"],
+      "muse-spark-open": ["none", "low", "medium", "high", "xhigh", "max"],
+      "gemini-4-argon": ["low", "medium", "high"],
       "beam-1.0": ["low", "medium", "high", "xhigh", "max"],
     };
     for (const [model, expected] of Object.entries(levels)) {
@@ -90,9 +95,48 @@ describe("getCapabilitiesForModel", () => {
     }
   });
 
-  it("does not expose binary-unreleased Nemotron 3.5 Super", () => {
-    expect(PROVIDER_CAPABILITIES.factory["nemotron-3.5-super"]).toBeUndefined();
-    expect(factoryRegistry.models.some((model) => model.id === "nemotron-3.5-super")).toBe(false);
+  it("registers Droid 1.2.0 Nemotron 3.5 Super with hosted limits and modalities", () => {
+    expect(getCapabilitiesForModel("factory", "nemotron-3.5-super")).toMatchObject({
+      contextWindow: 1000000,
+      maxOutput: 65536,
+      vision: true,
+      reasoning: true,
+      thinkingFormat: "openai",
+      thinkingCanDisable: true,
+    });
+    expect(getThinkingLevels("factory", "nemotron-3.5-super")).toEqual(["none", "high"]);
+    expect(factoryRegistry.models.some((model) => model.id === "nemotron-3.5-super")).toBe(true);
+  });
+  it("registers Droid 1.2.0 GPT-6.1 Terra, Muse Spark Open, and Gemini 4 Argon with hosted limits and modalities", () => {
+    expect(getCapabilitiesForModel("factory", "gpt-6.1-terra")).toMatchObject({
+      contextWindow: 1050000,
+      maxOutput: 128000,
+      vision: true,
+      reasoning: true,
+      thinkingFormat: "openai",
+      thinkingCanDisable: true,
+    });
+    expect(getThinkingLevels("factory", "gpt-6.1-terra")).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+
+    expect(getCapabilitiesForModel("factory", "muse-spark-open")).toMatchObject({
+      contextWindow: 1040000,
+      maxOutput: 131072,
+      vision: true,
+      reasoning: true,
+      thinkingFormat: "openai",
+      thinkingCanDisable: true,
+    });
+    expect(getThinkingLevels("factory", "muse-spark-open")).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+
+    expect(getCapabilitiesForModel("factory", "gemini-4-argon")).toMatchObject({
+      contextWindow: 1000000,
+      maxOutput: 65536,
+      vision: true,
+      reasoning: true,
+      thinkingFormat: "gemini-level",
+      thinkingCanDisable: false,
+    });
+    expect(getThinkingLevels("factory", "gemini-4-argon")).toEqual(["low", "medium", "high"]);
   });
 
   it("uses corrected Factory limits for Fable 5.1 and Gemini 3.8", () => {

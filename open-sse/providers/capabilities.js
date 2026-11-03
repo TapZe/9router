@@ -250,7 +250,7 @@ const FACTORY_LIMIT_GROUPS = [
   [268_800, 64_000, ["minimax-m2.5"]],
   [1_050_000, 128_000, [
     "gpt-6-astra", "gpt-6-sol", "gpt-6-sol-fast", "gpt-6-luna", "gpt-6-luna-fast", "gpt-6.1-sol",
-    "gpt-6.1-sol-ultrafast", "gpt-5.6-sol", "gpt-5.6-sol-fast",
+    "gpt-6.1-sol-ultrafast", "gpt-6.1-terra", "gpt-5.6-sol", "gpt-5.6-sol-fast",
     "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.5-fast",
     "gpt-5.4", "gpt-5.4-fast",
   ]],
@@ -260,7 +260,7 @@ const FACTORY_LIMIT_GROUPS = [
   [263_356, 63_356, ["grok-4.6", "grok-4.5"]],
   [262_144, 65_536, ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6"]],
   [288_768, 32_768, ["kimi-k2.5"]],
-  [1_040_000, 131_072, ["glm-5.3", "glm-5.2", "deepseek-v4.1-flash", "deepseek-v4.1-flash-1017", "deepseek-v4-pro", "deepseek-v4-flash-0731", "muse-spark-1.2"]],
+  [1_040_000, 131_072, ["glm-5.3", "glm-5.2", "deepseek-v4.1-flash", "deepseek-v4.1-flash-1017", "deepseek-v4-pro", "deepseek-v4-flash-0731", "muse-spark-1.2", "muse-spark-1.3", "muse-spark-open"]],
   [1_048_576, 131_072, ["glm-5.3-flash"]],
   [1_000_000, 131_072, ["minimax-m3.1-flash"]],
   [1_048_576, 32_768, ["beam-1.0"]],
@@ -273,6 +273,7 @@ const FACTORY_LIMIT_GROUPS = [
   [588_288, 64_000, ["mistral-large-4"]],
   [262_144, 131_072, ["qwen3.8-max"]],
   [202_000, 65_536, ["nemotron-3-ultra"]],
+  [1_000_000, 65_536, ["nemotron-3.5-super", "gemini-4-argon"]],
   [1_040_000, 32_768, ["inkling"]],
   [1_065_536, 65_536, [
     "garnet-07-15", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
@@ -283,7 +284,7 @@ const FACTORY_TEXT_ONLY = new Set([
   "minimax-m2.7", "minimax-m2.5", "gpt-5.3-codex", "gpt-5.3-codex-fast",
   "glm-5.3", "glm-5.2", "glm-5.2-fast", "glm-5.1", "glm-5", "glm-4.7", "glm-4.6",
   "qwen3.8-max", "deepseek-v4-pro", "deepseek-v4-flash-0731", "nemotron-3-ultra",
-  "muse-spark-1.2", "beam-1.0",
+  "muse-spark-1.2", "muse-spark-1.3", "beam-1.0",
 ]);
 const FACTORY_ALWAYS_THINKING = new Set([
   "claude-opus-5-5", "claude-opus-5-5-fast", "claude-sonnet-5-5", "minimax-m3", "minimax-m3.1-flash",
@@ -293,9 +294,9 @@ const FACTORY_ALWAYS_THINKING = new Set([
   "gpt-5.4-mini", "gpt-5.4-mini-fast", "gpt-5.3-codex", "gpt-5.3-codex-fast",
   "gpt-5.2-codex", "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5-codex",
   "grok-4.7", "grok-4.6", "grok-4.5", "glm-5.3", "glm-5.3-flash", "qwen3.8-max",
-  "garnet-07-15", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
+  "garnet-07-15", "gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
   "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
-  "muse-spark-1.2", "beam-1.0",
+  "muse-spark-1.2", "muse-spark-1.3", "beam-1.0",
 ]);
 const FACTORY_BUDGET_MODELS = new Set([
   "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001",

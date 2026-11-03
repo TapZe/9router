@@ -25,8 +25,8 @@ export default {
     format: "openai",
     headers: {
       "X-Factory-Client": "cli",
-      "X-Client-Version": "0.226.1",
-      "User-Agent": "factory-cli/0.226.1",
+      "X-Client-Version": "1.2.0",
+      "User-Agent": "factory-cli/1.2.0",
     },
     usage: {
       url: "https://api.factory.ai/api/billing/limits",
@@ -110,6 +110,7 @@ export default {
     { id: "gpt-6-sol-fast", name: "GPT-6 Sol Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-6.1-sol", name: "GPT-6.1 Sol (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-6.1-sol-ultrafast", name: "GPT-6.1 Sol Ultrafast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6.1-terra", name: "GPT-6.1 Terra (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-6-luna", name: "GPT-6 Luna (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-6-luna-fast", name: "GPT-6 Luna Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.6-sol", name: "GPT-5.6 Sol (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
@@ -159,11 +160,15 @@ export default {
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "deepseek-v4-flash-0731", name: "DeepSeek V4 Flash (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "nemotron-3-ultra", name: "Nemotron 3 Ultra (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
+    { id: "nemotron-3.5-super", name: "Nemotron 3.5 Super (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "inkling", name: "Inkling (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "muse-spark-1.2", name: "Muse Spark 1.2 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
+    { id: "muse-spark-1.3", name: "Muse Spark 1.3 (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "muse-spark-open", name: "Muse Spark Open (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "beam-1.0", name: "Beam 1.0 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
 
     // Google Gemini family (routed to /api/llm/g/v1/generate)
+    { id: "gemini-4-argon", name: "Gemini 4 Argon (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "garnet-07-15", name: "Garnet 07-15 Preview (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "gemini-3.7-flash", name: "Gemini 3.7 Flash (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },

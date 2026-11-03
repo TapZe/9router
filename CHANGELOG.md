@@ -1,7 +1,9 @@
 # Unreleased
 
 ## Features
+- **Factory**: bump client version to 1.2.0; add `gpt-6.1-terra` (OpenAI Responses) and `muse-spark-open` (routed through Baseten); add `gemini-4-argon` (Google Generative AI).
 - **Factory**: add seven Droid 0.249.0 models, including GPT-6 fast variants, DeepSeek V4.1 Flash 1017, MiniMax M3.1 Flash, Muse Spark 1.2, and Beam 1.0; route Beam through Baseten and MiniMax M3.1 through chat completions. GPT-6.1 Sol Ultrafast requires Factory high-cost opt-in.
+- **Factory**: add Muse Spark 1.3 and Nemotron 3.5 Super from Droid 1.2.0.
 
 ## Fixes
 - **Auto-ping**: isolate provider scans and per-account attempts so a stalled Codex or Factory request cannot hold up other accounts; cancel attempts after 60 seconds, retain in-flight ownership until late work settles, and preserve the 15-minute failure cooldown.

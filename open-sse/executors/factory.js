@@ -10,7 +10,7 @@ export const FACTORY_DROID_SYSTEM_PROMPT =
   "Help the user with software engineering tasks using the provided tools.\n" +
   "Ground all analysis, planning, and answers in actual file contents and tool outputs.";
 
-export const FACTORY_CLIENT_VERSION = "0.226.1";
+export const FACTORY_CLIENT_VERSION = "1.2.0";
 export const FACTORY_OPENAI_PLATFORM_ORG = "org-bHuLtG1fGmYk5YaOihAAXFBw";
 export const ANTHROPIC_VERSION = "2023-06-01";
 export const ANTHROPIC_BETAS = "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14";
@@ -39,12 +39,12 @@ const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
 
 // Always-on models reject "none"/"off"; the upstream floor is "low".
 const NO_DISABLE_LOW_EFFORT = new Set([
-  "gpt-6.1-sol", "gpt-6.1-sol-ultrafast", "minimax-m3.1-flash", "muse-spark-1.2", "beam-1.0",
+  "gpt-6.1-sol", "gpt-6.1-sol-ultrafast", "minimax-m3.1-flash", "muse-spark-1.2", "muse-spark-1.3", "beam-1.0",
 ]);
 // Models whose hosted gateway accepts "max" as-is; everything else downgrades it.
 const MAX_EFFORT_MODELS = new Set([
-  "gpt-6.1-sol", "gpt-6.1-sol-ultrafast", "gpt-6-sol-fast", "gpt-6-luna-fast",
-  "deepseek-v4.1-flash-1017", "minimax-m3.1-flash", "beam-1.0",
+  "gpt-6.1-sol", "gpt-6.1-sol-ultrafast", "gpt-6.1-terra", "gpt-6-sol-fast", "gpt-6-luna-fast",
+  "deepseek-v4.1-flash-1017", "minimax-m3.1-flash", "beam-1.0", "muse-spark-open",
 ]);
 
 export function embeddedToolCallFromName(name) {
@@ -83,7 +83,7 @@ export function resolveTargetGateway(modelId) {
   if (m.startsWith("gemini-") || m.startsWith("garnet-")) {
     return "google";
   }
-  if (m.startsWith("gpt-") || m.startsWith("gpt6") || m.endsWith("-codex") || m.startsWith("grok-")) {
+  if (m.startsWith("gpt-") || m.startsWith("gpt6") || m.endsWith("-codex") || m.startsWith("grok-") || m === "muse-spark-1.3") {
     return "openai-responses";
   }
   return "openai-completions";
@@ -106,8 +106,11 @@ export function upstreamProviderFor(modelId) {
   if (m.startsWith("mistral-")) {
     return "mistral";
   }
-  if (m === "beam-1.0") {
+  if (m === "beam-1.0" || m === "muse-spark-open" || m === "nemotron-3.5-super") {
     return "baseten";
+  }
+  if (m === "muse-spark-1.3") {
+    return "google";
   }
   return "fireworks";
 }
@@ -210,7 +213,10 @@ export function supportsExtraHighEffort(modelId) {
     m.startsWith("glm-5.3") ||
     m === "minimax-m3.1-flash" ||
     m === "muse-spark-1.2" ||
+    m === "muse-spark-1.3" ||
+    m === "muse-spark-open" ||
     m === "beam-1.0" ||
+    m === "gpt-6.1-terra" ||
     m.startsWith("claude-opus-5") ||
     m.startsWith("claude-opus-4-8") ||
     m.startsWith("claude-opus-4-7") ||
