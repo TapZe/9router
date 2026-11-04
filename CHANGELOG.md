@@ -6,6 +6,7 @@
 - **Factory**: add Muse Spark 1.3 and Nemotron 3.5 Super from Droid 1.2.0.
 
 ## Fixes
+- **Providers**: keep account up/down as one adjacent swap by restamping the visible list to 1-based ranks in a single reorder transaction, including pools where every API-key row still has priority 1.
 - **Auto-ping**: isolate provider scans and per-account attempts so a stalled Codex or Factory request cannot hold up other accounts; cancel attempts after 60 seconds, retain in-flight ownership until late work settles, and preserve the 15-minute failure cooldown.
 - **Auto-ping quotas**: gate Codex on its normal weekly/monthly limits and Factory Standard-window pings on Standard weekly/monthly limits, without suppressing them for unrelated Review, Spark, or Core quotas.
 - **Auto-ping settings**: save each account's reset/schedule options atomically through `PATCH /api/settings/auto-ping`; migrate both dashboard controls and reject obsolete whole-provider updates on `/api/settings` to prevent stale-tab overwrites.

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
+import { swapConnectionOrder, swappedPriorityWrites } from "@/shared/utils/swapConnectionOrder";
 import PropTypes from "prop-types";
 import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
 import WebLoginButton from "./WebLoginButton";
@@ -344,14 +345,18 @@ export default function ConnectionsCard({ providerId, isOAuth, loginProviderId =
   };
 
   const handleSwapPriority = async (i1, i2) => {
-    const next = [...connections];
-    [next[i1], next[i2]] = [next[i2], next[i1]];
+    const next = swapConnectionOrder(connections, i1, i2);
+    if (!next) return;
     setConnections(next);
     try {
-      await Promise.all([
-        fetch(`/api/providers/${next[i1].id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ priority: i1 }) }),
-        fetch(`/api/providers/${next[i2].id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ priority: i2 }) }),
-      ]);
+      const res = await fetch("/api/providers/reorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: swappedPriorityWrites(next),
+        }),
+      });
+      if (!res.ok) await fetch_();
     } catch { await fetch_(); }
   };
 

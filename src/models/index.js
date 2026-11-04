@@ -4,6 +4,7 @@ export {
   getProviderConnectionById,
   createProviderConnection,
   updateProviderConnection,
+  setProviderConnectionPriorities,
   deleteProviderConnection,
   getProviderNodes,
   getProviderNodeById,

@@ -290,6 +290,54 @@ export async function updateProviderConnection(id, data) {
   return result;
 }
 
+export async function setProviderConnectionPriorities(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return { ok: false, error: "No priority updates" };
+  }
+
+  const db = await getAdapter();
+  let error = null;
+  let connections = null;
+
+  db.transaction(() => {
+    const prepared = [];
+    let provider = null;
+
+    for (const entry of entries) {
+      const id = typeof entry?.id === "string" ? entry.id : "";
+      const priority = entry?.priority;
+      if (!id || !Number.isInteger(priority) || priority < 1) {
+        error = "Invalid priority update";
+        return;
+      }
+      const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
+      if (!row) {
+        error = "Connection not found";
+        return;
+      }
+      const existing = rowToConn(row);
+      if (provider && existing.provider !== provider) {
+        error = "Connections must belong to the same provider";
+        return;
+      }
+      provider = existing.provider;
+      prepared.push({ existing, priority });
+    }
+
+    const now = new Date().toISOString();
+    connections = prepared.map(({ existing, priority }) => {
+      const merged = { ...existing, priority, updatedAt: now };
+      upsert(db, merged);
+      return merged;
+    });
+    reorderInTx(db, provider);
+  });
+
+  if (error) return { ok: false, error };
+  return { ok: true, connections };
+}
+
+
 export async function deleteProviderConnection(id) {
   const db = await getAdapter();
   let ok = false;
