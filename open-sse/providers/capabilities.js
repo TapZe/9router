@@ -255,7 +255,7 @@ const FACTORY_LIMIT_GROUPS = [
     "gpt-5.4", "gpt-5.4-fast",
   ]],
   [400_000, 128_000, ["gpt-5.4-mini", "gpt-5.4-mini-fast", "gpt-5.2", "gpt-5.3-codex", "gpt-5.3-codex-fast", "gpt-5.2-codex"]],
-  [400_000, 32_768, ["gpt-5.1", "gpt-5", "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5-codex"]],
+  [400_000, 32_768, ["gpt-5.1-codex-max"]],
   [500_000, 63_356, ["grok-4.7"]],
   [263_356, 63_356, ["grok-4.6", "grok-4.5"]],
   [262_144, 65_536, ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6"]],
@@ -292,7 +292,7 @@ const FACTORY_ALWAYS_THINKING = new Set([
   // Droid 0.230.0 only accepts low, medium, high, xhigh, or max for GPT-6.1 Sol.
   "gpt-6.1-sol", "gpt-6.1-sol-ultrafast", "gpt-5.5", "gpt-5.5-pro", "gpt-5.5-fast", "gpt-5.4", "gpt-5.4-fast",
   "gpt-5.4-mini", "gpt-5.4-mini-fast", "gpt-5.3-codex", "gpt-5.3-codex-fast",
-  "gpt-5.2-codex", "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5-codex",
+  "gpt-5.2-codex", "gpt-5.1-codex-max",
   "grok-4.7", "grok-4.6", "grok-4.5", "glm-5.3", "glm-5.3-flash", "qwen3.8-max",
   "garnet-07-15", "gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
   "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
