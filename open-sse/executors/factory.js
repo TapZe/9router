@@ -82,10 +82,31 @@ export function resolveTargetGateway(modelId) {
   return "openai-completions";
 }
 
-// Droid's table picks the provider. The prefix rules cover models it does not list.
-export function upstreamProviderFor(modelId) {
+const INFERENCE_REGIONS = ["global", "eu", "us"];
+
+// Droid uses whoami's inferenceRegion when it is valid, else sends an eu org to
+// eu and every other org to global. Connections saved before inferenceRegion
+// was stored keep eu through their EU API endpoint.
+export function factoryInferenceRegion(credentials) {
+  const data = credentials?.providerSpecificData || {};
+  if (INFERENCE_REGIONS.includes(data.inferenceRegion)) {
+    return data.inferenceRegion;
+  }
+  let endpointHost = null;
+  try {
+    endpointHost = new URL(data.apiEndpoint).hostname.toLowerCase();
+  } catch {
+    // No saved endpoint, or not a URL
+  }
+  return data.region === "eu" || endpointHost === "api.eu.factory.ai" ? "eu" : "global";
+}
+
+// Droid's table picks the provider for the region, and the global one when it
+// lists none there. The prefix rules cover models it does not list.
+export function upstreamProviderFor(modelId, region = "global") {
   const m = cleanModelId(modelId);
-  const droidProvider = FACTORY_DROID_MODELS[m]?.providers.global;
+  const providers = FACTORY_DROID_MODELS[m]?.providers;
+  const droidProvider = providers?.[region] ?? providers?.global;
   if (droidProvider) {
     return droidProvider;
   }
@@ -278,7 +299,7 @@ export class FactoryExecutor extends BaseExecutor {
     }
 
     const gateway = resolveTargetGateway(model);
-    headers["x-api-provider"] = upstreamProviderFor(model);
+    headers["x-api-provider"] = upstreamProviderFor(model, factoryInferenceRegion(credentials));
     headers["x-provider-routing-source"] = "registry_default";
     headers["traceparent"] = randomTraceparent();
 

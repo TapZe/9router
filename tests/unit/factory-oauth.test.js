@@ -231,6 +231,20 @@ describe("Factory OAuth & Token Management", () => {
       expect(mapped.providerSpecificData.orgId).toBe("org_whoami_2");
       expect(mapped.providerSpecificData.region).toBe("eu");
       expect(mapped.providerSpecificData.apiEndpoint).toBe("https://api.eu.factory.ai");
+      expect(mapped.providerSpecificData.inferenceRegion).toBeNull();
+    });
+
+    it("stores the inference region whoami reports", async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ org_id: "org_1", region: "global", inferenceRegion: "us" }),
+      });
+
+      const extra = await factory.postExchange({ access_token: "eyJhbGciOiJSUzI1NiJ9.e30.sig" });
+      const mapped = factory.mapTokens({ access_token: "tok" }, extra);
+
+      expect(extra.inferenceRegion).toBe("us");
+      expect(mapped.providerSpecificData.inferenceRegion).toBe("us");
     });
   });
 
