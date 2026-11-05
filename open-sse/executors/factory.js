@@ -67,18 +67,12 @@ export function cleanModelId(modelId) {
   return m.replace(/^(prd\/)?(fy|factory|droid)\//, "");
 }
 
+// Droid's table gives each model's API. An id it does not have gets the chat
+// gateway, which only names the URL of the unknown model error.
+const GATEWAY_FOR_API = { anthropic: "anthropic", google: "google", responses: "openai-responses", completions: "openai-completions" };
+
 export function resolveTargetGateway(modelId) {
-  const m = cleanModelId(modelId);
-  if (m.startsWith("claude-") || (m.startsWith("minimax-") && m !== "minimax-m3" && m !== "minimax-m3.1-flash") || m.startsWith("atlas-") || m.startsWith("aster-")) {
-    return "anthropic";
-  }
-  if (m.startsWith("gemini-") || m.startsWith("garnet-")) {
-    return "google";
-  }
-  if (m.startsWith("gpt-") || m.startsWith("gpt6") || m.endsWith("-codex") || m.startsWith("grok-") || m === "muse-spark-1.3") {
-    return "openai-responses";
-  }
-  return "openai-completions";
+  return GATEWAY_FOR_API[FACTORY_DROID_MODELS[cleanModelId(modelId)]?.api] ?? "openai-completions";
 }
 
 const INFERENCE_REGIONS = ["global", "eu", "us"];
@@ -100,31 +94,10 @@ export function factoryInferenceRegion(credentials) {
   return data.region === "eu" || endpointHost === "api.eu.factory.ai" ? "eu" : "global";
 }
 
-// Droid's table picks the provider for the region. A listed model with no
-// provider there gets null, since Droid has no provider for that turn. The
-// prefix rules cover models it does not list.
+// Droid's table picks the provider for the region. A model with no provider
+// there, or an id Droid does not have, gets null.
 export function upstreamProviderFor(modelId, region = "global") {
-  const m = cleanModelId(modelId);
-  const droid = FACTORY_DROID_MODELS[m];
-  if (droid) {
-    return droid.providers[region] ?? null;
-  }
-  if (m.startsWith("claude-") || m.startsWith("atlas-") || m.startsWith("aster-")) {
-    return "anthropic";
-  }
-  if (m.startsWith("gemini-") || m.startsWith("garnet-")) {
-    return "google";
-  }
-  if (m.startsWith("gpt-") || m.startsWith("gpt6") || m.endsWith("-codex")) {
-    return "openai";
-  }
-  if (m.startsWith("grok-")) {
-    return "xai";
-  }
-  if (m.startsWith("mistral-")) {
-    return "mistral";
-  }
-  return "fireworks";
+  return FACTORY_DROID_MODELS[cleanModelId(modelId)]?.providers[region] ?? null;
 }
 
 export function resolveFactoryApiBase(credentials = null) {

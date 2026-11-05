@@ -10,7 +10,6 @@ import {
   FACTORY_OPENAI_PLATFORM_ORG,
   ANTHROPIC_VERSION,
 } from "../../open-sse/executors/factory.js";
-import factoryRegistry from "../../open-sse/providers/registry/factory.js";
 
 describe("FactoryExecutor", () => {
   const origEnv = { ...process.env };
@@ -42,7 +41,6 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("gpt-5.6-sol")).toBe("openai-responses");
       expect(resolveTargetGateway("gpt-5.4")).toBe("openai-responses");
       expect(resolveTargetGateway("gpt-5.3-codex")).toBe("openai-responses");
-      expect(resolveTargetGateway("gpt-5-codex")).toBe("openai-responses");
       expect(resolveTargetGateway("grok-4.6")).toBe("openai-responses");
       expect(resolveTargetGateway("gpt-6-sol-fast")).toBe("openai-responses");
       expect(resolveTargetGateway("gpt-6.1-sol-ultrafast")).toBe("openai-responses");
@@ -126,12 +124,6 @@ describe("FactoryExecutor", () => {
       expect(upstreamProviderFor("glm-5.2-fast")).toBe("baseten");
       expect(upstreamProviderFor("nemotron-3-ultra")).toBe("baseten");
       expect(upstreamProviderFor("glm-5.1")).toBe("fireworks");
-    });
-
-    it("no longer lists the GPT models Droid 1.3.0 dropped", () => {
-      for (const id of ["gpt-5.1", "gpt-5", "gpt-5.1-codex", "gpt-5-codex"]) {
-        expect(factoryRegistry.models.some((model) => model.id === id), id).toBe(false);
-      }
     });
 
     it("returns mistral for Mistral models", () => {

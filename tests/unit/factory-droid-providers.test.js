@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { upstreamProviderFor } from "../../open-sse/executors/factory.js";
+import { resolveTargetGateway, upstreamProviderFor } from "../../open-sse/executors/factory.js";
 
 // The provider Droid 1.3.0 picks for each model in the global region, read
 // from the binary's model registry.
@@ -96,11 +96,11 @@ describe("Factory provider choice from Droid 1.3.0", () => {
     }
   });
 
-  it("still picks a provider for models Droid no longer lists", () => {
-    expect(upstreamProviderFor("gpt-4.1")).toBe("openai");
-    expect(upstreamProviderFor("claude-opus-4-1")).toBe("anthropic");
-    expect(upstreamProviderFor("gemini-2.5-pro")).toBe("google");
-    expect(upstreamProviderFor("grok-4")).toBe("xai");
-    expect(upstreamProviderFor("some-open-model")).toBe("fireworks");
+  // Droid takes both from its table, so an id it does not have gets neither.
+  it("gives no provider and no gateway of its own for an id Droid does not have", () => {
+    for (const id of ["gpt-4.1", "claude-opus-4-1", "gemini-2.5-pro", "grok-4", "mistral-small", "some-open-model"]) {
+      expect(upstreamProviderFor(id), id).toBeNull();
+      expect(resolveTargetGateway(id), id).toBe("openai-completions");
+    }
   });
 });
