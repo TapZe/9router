@@ -101,14 +101,14 @@ export function factoryInferenceRegion(credentials) {
   return data.region === "eu" || endpointHost === "api.eu.factory.ai" ? "eu" : "global";
 }
 
-// Droid's table picks the provider for the region, and the global one when it
-// lists none there. The prefix rules cover models it does not list.
+// Droid's table picks the provider for the region. A listed model with no
+// provider there gets null, since Droid has no provider for that turn. The
+// prefix rules cover models it does not list.
 export function upstreamProviderFor(modelId, region = "global") {
   const m = cleanModelId(modelId);
-  const providers = FACTORY_DROID_MODELS[m]?.providers;
-  const droidProvider = providers?.[region] ?? providers?.global;
-  if (droidProvider) {
-    return droidProvider;
+  const droid = FACTORY_DROID_MODELS[m];
+  if (droid) {
+    return droid.providers[region] ?? null;
   }
   if (m.startsWith("claude-") || m.startsWith("atlas-") || m.startsWith("aster-")) {
     return "anthropic";
@@ -260,6 +260,18 @@ export function extractTextContent(content) {
 export class FactoryExecutor extends BaseExecutor {
   constructor(provider = "factory") {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
+  }
+
+  // Droid 1.3.0 stops a turn when the model has no provider in the region and
+  // never tries another region, so the request ends here before any fetch.
+  async execute(args) {
+    const region = factoryInferenceRegion(args.credentials);
+    if (upstreamProviderFor(args.model, region) === null) {
+      const message = `No providers available for this turn (model ${cleanModelId(args.model)}, region ${region})`;
+      const response = new Response(JSON.stringify({ error: { message } }), { status: 400, headers: { "Content-Type": "application/json" } });
+      return { response, url: this.buildUrl(args.model, args.stream, 0, args.credentials), headers: {}, transformedBody: args.body };
+    }
+    return super.execute(args);
   }
 
   async refreshCredentials(credentials, log, proxyOptions = null) {

@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FactoryExecutor, factoryInferenceRegion, upstreamProviderFor } from "../../open-sse/executors/factory.js";
+import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
+
+// No request in this file may reach Factory.
+vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
+  proxyAwareFetch: vi.fn(async () => { throw new Error("no network in this test"); }),
+}));
 
 const withData = (providerSpecificData) => ({ accessToken: "tok", providerSpecificData });
 
@@ -28,9 +34,21 @@ describe("Factory inference region from Droid 1.3.0", () => {
     expect(upstreamProviderFor("kimi-k3", "global")).toBe("fireworks");
   });
 
-  it("falls back to the global provider when Droid lists none for the region", () => {
-    expect(upstreamProviderFor("grok-4.5", "eu")).toBe("xai");
-    expect(upstreamProviderFor("gpt-5.1", "eu")).toBe("openai");
+  it("finds no provider when Droid lists none for the region", () => {
+    expect(upstreamProviderFor("grok-4.5", "eu")).toBeNull();
+    expect(upstreamProviderFor("grok-4.5", "us")).toBeNull();
+    expect(upstreamProviderFor("gemini-3.1-pro-preview", "us")).toBeNull();
+    expect(upstreamProviderFor("grok-4.5", "global")).toBe("xai");
+  });
+
+  it("fails the request before any fetch when the region has no provider", async () => {
+    proxyAwareFetch.mockClear();
+    const executor = new FactoryExecutor();
+    const body = { model: "grok-4.5", messages: [{ role: "user", content: "hi" }] };
+    const { response } = await executor.execute({ model: "grok-4.5", body, stream: true, credentials: withData({ inferenceRegion: "eu" }) });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.message).toBe("No providers available for this turn (model grok-4.5, region eu)");
+    expect(proxyAwareFetch).not.toHaveBeenCalled();
   });
 
   it("sends the regional provider in x-api-provider", () => {
