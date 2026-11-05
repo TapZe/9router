@@ -2,8 +2,8 @@
 
 ## Features
 - **Factory**: report Droid 1.3.0 as the client version. Reasoning efforts, default efforts, context and output limits, image support, and request fields now come from one table generated from the Droid 1.3.0 binary.
-- **Factory**: route each model to the provider Droid 1.3.0 picks for the org's inference region. GLM 5.2, GLM 5.2 Fast, GLM 4.6, and Nemotron 3 Ultra now go to Baseten, and EU orgs send Claude to Vertex. Connections saved before this change keep their region.
-- **Factory**: drop GPT-5.1, GPT-5, GPT-5.1 Codex, and GPT-5 Codex, which Droid 1.3.0 no longer lists. Saved selections of these models still route.
+- **Factory**: route each model to the provider Droid 1.3.0 picks for the org's inference region. GLM 5.2, GLM 5.2 Fast, and Nemotron 3 Ultra now go to Baseten, and EU orgs send Claude to Vertex. Connections saved before this change keep their region.
+- **Factory**: remove the models Droid 1.3.0 no longer offers. These are GPT-5.1, GPT-5, GPT-5.1 Codex, GPT-5 Codex, GLM 4.6, Kimi K2.7 Code, Kimi K2.6, MiniMax M2.5, and Gemini 3 Pro Preview. A request for a model id Droid does not have, saved selections included, now fails with "Unknown model" before it reaches Factory. Gateway and provider come only from the Droid table, with no guess from the id.
 - **Factory**: bump client version to 1.2.0; add `gpt-6.1-terra` (OpenAI Responses) and `muse-spark-open` (routed through Baseten); add `gemini-4-argon` (Google Generative AI).
 - **Factory**: add seven Droid 0.249.0 models, including GPT-6 fast variants, DeepSeek V4.1 Flash 1017, MiniMax M3.1 Flash, Muse Spark 1.2, and Beam 1.0; route Beam through Baseten and MiniMax M3.1 through chat completions. GPT-6.1 Sol Ultrafast requires Factory high-cost opt-in.
 - **Factory**: add Muse Spark 1.3 and Nemotron 3.5 Super from Droid 1.2.0.
