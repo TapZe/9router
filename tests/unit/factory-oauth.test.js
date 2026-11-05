@@ -41,6 +41,10 @@ describe("Factory OAuth & Token Management", () => {
       expect(getProvider("factory")).toBe(factory);
     });
 
+    it("reports Droid 1.3.0 as the client version", () => {
+      expect(FACTORY_CLIENT_VERSION).toBe("1.3.0");
+    });
+
     it("keeps registry headers on the executor's Droid client version", () => {
       expect(factoryRegistry.transport.headers["X-Client-Version"]).toBe(FACTORY_CLIENT_VERSION);
       expect(factoryRegistry.transport.headers["User-Agent"]).toBe(`factory-cli/${FACTORY_CLIENT_VERSION}`);

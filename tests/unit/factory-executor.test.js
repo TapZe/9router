@@ -272,8 +272,8 @@ describe("FactoryExecutor", () => {
       };
       const headers = executor.buildHeaders(creds, true, "", "claude-fable-5.1");
 
-      expect(headers["X-Client-Version"]).toBe("1.2.0");
-      expect(headers["User-Agent"]).toBe("factory-cli/1.2.0");
+      expect(headers["X-Client-Version"]).toBe("1.3.0");
+      expect(headers["User-Agent"]).toBe("factory-cli/1.3.0");
       expect(headers["Authorization"]).toBe("Bearer workos-token-123");
       expect(headers["X-Factory-Org-Id"]).toBe("RFmWaCAuH8jTGM21tL5k");
       expect(headers["x-provider-routing-source"]).toBe("registry_default");
