@@ -37,7 +37,7 @@
 
 import { matchPattern } from "./pricing.js";
 import { looksLikeVisionModel } from "./visionPatterns.js";
-import { FACTORY_DROID_DEFAULT_MODEL, FACTORY_DROID_MODELS, FACTORY_DROID_RETIRED_MODELS } from "./factoryDroid.js";
+import { FACTORY_DROID_MODELS } from "./factoryDroid.js";
 
 /**
  * Safe floor — every resolved result is merged over this so consumers
@@ -259,10 +259,6 @@ for (const [id, droid] of Object.entries(FACTORY_DROID_MODELS)) {
     contextWindow: FACTORY_ANTHROPIC_200K.has(id) ? 200_000 : droid.maxInputTokens + droid.maxOutputTokens,
     maxOutput: droid.maxOutputTokens,
   };
-}
-// Droid runs the ids it dropped on its default model and shows that model's limits.
-for (const id of FACTORY_DROID_RETIRED_MODELS) {
-  FACTORY_MODEL_CAPABILITIES[id] = FACTORY_MODEL_CAPABILITIES[FACTORY_DROID_DEFAULT_MODEL];
 }
 
 /**

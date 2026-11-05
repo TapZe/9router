@@ -90,13 +90,3 @@ export const FACTORY_DROID_MODELS = {
   "nemotron-3.5-super": {"api":"completions","efforts":["none","high"],"defaultEffort":"high","images":true,"maxInputTokens":934464,"maxOutputTokens":65536,"providers":{"global":"baseten","us":"baseten"}},
   "qwen3.8-max": {"api":"completions","efforts":["low","medium","xhigh"],"defaultEffort":"xhigh","images":false,"maxInputTokens":131072,"maxOutputTokens":131072,"providers":{"global":"fireworks"}},
 };
-
-// Droid 1.3.0 runs a model it does not offer on its default model. These
-// are the ids 9router offered before Droid dropped them.
-export const FACTORY_DROID_DEFAULT_MODEL = "gpt-6.1-sol";
-export const FACTORY_DROID_RETIRED_MODELS = ["gpt-5","gpt-5.1","gpt-5-codex","gpt-5.1-codex"];
-
-// The model Droid runs for an id.
-export function factoryDroidModelId(id) {
-  return FACTORY_DROID_RETIRED_MODELS.includes(id) ? FACTORY_DROID_DEFAULT_MODEL : id;
-}

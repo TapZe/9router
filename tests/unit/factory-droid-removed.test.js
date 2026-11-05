@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { FactoryExecutor } from "../../open-sse/executors/factory.js";
 import { PROVIDER_CAPABILITIES } from "../../open-sse/providers/capabilities.js";
-import { FACTORY_DROID_MODELS, FACTORY_DROID_RETIRED_MODELS } from "../../open-sse/providers/factoryDroid.js";
+import { FACTORY_DROID_MODELS } from "../../open-sse/providers/factoryDroid.js";
 import { FACTORY_DROID_REQUESTS } from "../../open-sse/providers/factoryDroidRequests.js";
 import factoryRegistry from "../../open-sse/providers/registry/factory.js";
 import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
@@ -12,7 +12,10 @@ vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
 }));
 
 // Droid 1.3.0 does not offer these ids, and 9router no longer has them.
-const REMOVED = ["glm-4.6", "kimi-k2.7-code", "kimi-k2.6", "minimax-m2.5", "gemini-3-pro-preview"];
+const REMOVED = [
+  "glm-4.6", "kimi-k2.7-code", "kimi-k2.6", "minimax-m2.5", "gemini-3-pro-preview",
+  "gpt-5", "gpt-5.1", "gpt-5-codex", "gpt-5.1-codex",
+];
 
 describe("Factory models removed with Droid 1.3.0", () => {
   it("are gone from the model list, capabilities, and Droid tables", () => {
@@ -21,7 +24,6 @@ describe("Factory models removed with Droid 1.3.0", () => {
       expect(PROVIDER_CAPABILITIES.factory[id], id).toBeUndefined();
       expect(FACTORY_DROID_MODELS[id], id).toBeUndefined();
       expect(FACTORY_DROID_REQUESTS[id], id).toBeUndefined();
-      expect(FACTORY_DROID_RETIRED_MODELS, id).not.toContain(id);
     }
   });
 

@@ -1,6 +1,6 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
-import { FACTORY_DROID_MODELS, factoryDroidModelId } from "../providers/factoryDroid.js";
+import { FACTORY_DROID_MODELS } from "../providers/factoryDroid.js";
 import { FACTORY_DROID_REQUESTS } from "../providers/factoryDroidRequests.js";
 import { factoryEffortFor } from "../providers/thinkingLevels.js";
 import {
@@ -262,20 +262,16 @@ export class FactoryExecutor extends BaseExecutor {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
   }
 
-  // Droid 1.3.0 runs an id it no longer offers on its default model. It stops
-  // a turn when the model has no provider in the region and never tries
-  // another region, so the request ends here before any fetch.
+  // Droid 1.3.0 stops a turn when the model has no provider in the region and
+  // never tries another region, so the request ends here before any fetch.
   async execute(args) {
-    const asked = cleanModelId(args.model);
-    const model = factoryDroidModelId(asked);
-    const run = model === asked ? args : { ...args, model, body: { ...args.body, model } };
-    const region = factoryInferenceRegion(run.credentials);
-    if (upstreamProviderFor(run.model, region) === null) {
-      const message = `No providers available for this turn (model ${model}, region ${region})`;
+    const region = factoryInferenceRegion(args.credentials);
+    if (upstreamProviderFor(args.model, region) === null) {
+      const message = `No providers available for this turn (model ${cleanModelId(args.model)}, region ${region})`;
       const response = new Response(JSON.stringify({ error: { message } }), { status: 400, headers: { "Content-Type": "application/json" } });
-      return { response, url: this.buildUrl(run.model, run.stream, 0, run.credentials), headers: {}, transformedBody: run.body };
+      return { response, url: this.buildUrl(args.model, args.stream, 0, args.credentials), headers: {}, transformedBody: args.body };
     }
-    return super.execute(run);
+    return super.execute(args);
   }
 
   async refreshCredentials(credentials, log, proxyOptions = null) {
