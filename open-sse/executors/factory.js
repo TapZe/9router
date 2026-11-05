@@ -262,12 +262,19 @@ export class FactoryExecutor extends BaseExecutor {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
   }
 
-  // Droid 1.3.0 stops a turn when the model has no provider in the region and
-  // never tries another region, so the request ends here before any fetch.
+  // Droid 1.3.0 throws "Unknown model" for an id its registry does not have.
+  // It stops a turn when the model has no provider in the region and never
+  // tries another region. Both end the request here before any fetch.
   async execute(args) {
+    const model = cleanModelId(args.model);
     const region = factoryInferenceRegion(args.credentials);
-    if (upstreamProviderFor(args.model, region) === null) {
-      const message = `No providers available for this turn (model ${cleanModelId(args.model)}, region ${region})`;
+    let message = null;
+    if (!FACTORY_DROID_MODELS[model]) {
+      message = `Unknown model: ${model}`;
+    } else if (upstreamProviderFor(model, region) === null) {
+      message = `No providers available for this turn (model ${model}, region ${region})`;
+    }
+    if (message) {
       const response = new Response(JSON.stringify({ error: { message } }), { status: 400, headers: { "Content-Type": "application/json" } });
       return { response, url: this.buildUrl(args.model, args.stream, 0, args.credentials), headers: {}, transformedBody: args.body };
     }

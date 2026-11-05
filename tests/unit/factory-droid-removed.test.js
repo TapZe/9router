@@ -27,14 +27,16 @@ describe("Factory models removed with Droid 1.3.0", () => {
     }
   });
 
-  it("send a saved id as it is, the same as any id Factory does not list", async () => {
-    for (const id of REMOVED) {
+  // Droid's registry throws "Unknown model" for an id it does not have.
+  it("get the unknown model error before any fetch, the same as any id Factory does not list", async () => {
+    for (const id of [...REMOVED, "fy/" + REMOVED[0], "some-model-factory-never-had"]) {
       proxyAwareFetch.mockClear();
       const executor = new FactoryExecutor();
       const body = { model: id, messages: [{ role: "user", content: "hi" }] };
-      await executor.execute({ model: id, body, stream: true, credentials: { accessToken: "tok" } });
-      const [, options] = proxyAwareFetch.mock.calls[0];
-      expect(JSON.parse(options.body).model, id).toBe(id);
+      const { response } = await executor.execute({ model: id, body, stream: true, credentials: { accessToken: "tok" } });
+      expect(proxyAwareFetch, id).not.toHaveBeenCalled();
+      expect(response.status, id).toBe(400);
+      expect((await response.json()).error.message, id).toBe(`Unknown model: ${id.replace(/^fy\//, "")}`);
     }
   });
 });
