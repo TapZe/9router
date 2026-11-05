@@ -113,25 +113,24 @@ describe("Factory reasoning efforts from Droid 1.3.0", () => {
     }
   });
 
-  it("sends a supported effort when the client asks for one the model lacks", () => {
+  it("sends the model's default effort when the client asks for one the model lacks", () => {
     const executor = new FactoryExecutor();
     const effortFor = (model, effort) => {
       const body = executor.transformRequest(model, { messages: [], reasoning_effort: effort }, true, {});
       return body.reasoning?.effort ?? body.reasoning_effort ?? body.generationConfig?.thinkingConfig?.thinkingLevel;
     };
-    // Effort-only models have no off, so none goes to their lowest effort.
-    expect(effortFor("gpt-6.1-sol", "none")).toBe("low");
+    // Droid 1.3.0 clamps an effort a model does not list to the model's default.
+    expect(effortFor("gpt-6.1-sol", "none")).toBe("medium");
     expect(effortFor("gpt-5.5-pro", "none")).toBe("medium");
-    // Garnet's medium effort goes upstream as Droid's HIGH thinking level.
-    expect(factoryEffortFor("garnet-07-15", "low")).toBe("medium");
+    expect(factoryEffortFor("garnet-07-15", "low")).toBe("high");
     expect(effortFor("garnet-07-15", "low")).toBe("HIGH");
-    // A missing higher effort steps down to the nearest listed one.
     expect(effortFor("kimi-k2.6", "medium")).toBe("high");
-    expect(effortFor("qwen3.8-max", "high")).toBe("medium");
-    expect(effortFor("gpt-5.5", "max")).toBe("xhigh");
-    expect(effortFor("gpt-5.6-sol", "max")).toBe("max");
-    expect(effortFor("glm-5.3", "medium")).toBe("low");
+    expect(effortFor("qwen3.8-max", "high")).toBe("xhigh");
+    expect(effortFor("gpt-5.5", "max")).toBe("medium");
+    expect(effortFor("glm-5.3", "medium")).toBe("max");
+    expect(factoryEffortFor("gpt-5.4", "dynamic")).toBe("medium");
     // A listed effort goes through as it is.
+    expect(effortFor("gpt-5.6-sol", "max")).toBe("max");
     expect(effortFor("inkling", "minimal")).toBe("minimal");
     expect(effortFor("gpt-5.2", "none")).toBe("none");
   });

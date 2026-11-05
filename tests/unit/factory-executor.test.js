@@ -206,10 +206,10 @@ describe("FactoryExecutor", () => {
 
     it("sends Droid's off body, which keeps thinking on for Opus 5.5 and Sonnet 5.5", () => {
       expect(claude("claude-sonnet-5", "none")).toEqual({ thinking: { type: "disabled" } });
-      // Droid 1.3.0 lists no off effort for Opus 5.5, so a disable request gets its lowest effort.
-      expect(claude("claude-opus-5-5", "none")).toEqual({ thinking: { type: "adaptive", display: "summarized" }, output_config: { effort: "low" } });
+      // Droid 1.3.0 lists no off effort for Opus 5.5, so a disable request gets its default effort.
+      expect(claude("claude-opus-5-5", "none")).toEqual({ thinking: { type: "adaptive", display: "summarized" }, output_config: { effort: "medium" } });
       expect(claude("claude-sonnet-5-5", "none")).toEqual({ thinking: { type: "between_tools" }, output_config: { effort: "high" } });
-      expect(claude("claude-opus-4-7", "minimal").output_config).toEqual({ effort: "low" });
+      expect(claude("claude-opus-4-7", "minimal").output_config).toEqual({ effort: "high" });
     });
 
     it("configures adaptive thinking without display for Opus 4.6 and Sonnet 4.6", () => {
@@ -562,21 +562,21 @@ describe("FactoryExecutor", () => {
 
       const opus55 = executor.transformRequest("claude-opus-5-5", { thinking: { type: "disabled" } }, true);
       expect(opus55.thinking).toEqual({ type: "adaptive", display: "summarized" });
-      expect(opus55.output_config).toEqual({ effort: "low" });
+      expect(opus55.output_config).toEqual({ effort: "medium" });
 
       const enabled = executor.transformRequest("claude-opus-4-7", { reasoning_effort: "xhigh" }, true);
       expect(enabled.output_config).toEqual({ effort: "xhigh" });
       expect(enabled.reasoning_effort).toBeUndefined();
     });
 
-    it("preserves translator-normalized Claude effort and minimum floors", () => {
+    it("preserves translator-normalized Claude effort and swaps an unlisted one for the default", () => {
       for (const model of ["claude-sonnet-5", "claude-opus-4-7", "claude-sonnet-4-6", "atlas-07-21"]) {
         const transformed = executor.transformRequest(model, { thinking: { type: "adaptive" }, output_config: { effort: "low" } }, true);
         expect(transformed.output_config, model).toEqual({ effort: "low" });
       }
       const opus55 = executor.transformRequest("claude-opus-5-5", { output_config: { effort: "minimal" } }, true);
       expect(opus55.thinking).toEqual({ type: "adaptive", display: "summarized" });
-      expect(opus55.output_config).toEqual({ effort: "low" });
+      expect(opus55.output_config).toEqual({ effort: "medium" });
     });
 
     it("keeps numeric budgets supplied by the translator for older models", () => {
@@ -749,27 +749,27 @@ describe("FactoryExecutor", () => {
       const sol61 = executor.transformRequest("gpt-6.1-sol", { reasoning_effort: "max" }, true);
       expect(sol61.reasoning?.effort ?? sol61.reasoning_effort).toBe("max");
       const sol61none = executor.transformRequest("gpt-6.1-sol", { reasoning_effort: "none" }, true);
-      expect(sol61none.reasoning?.effort ?? sol61none.reasoning_effort).toBe("low");
+      expect(sol61none.reasoning?.effort ?? sol61none.reasoning_effort).toBe("medium");
 
-      // GLM 5.3 lists low, high, and max, so xhigh steps down to high.
+      // An effort the model does not list goes to the model's default, as in Droid 1.3.0.
       const glm = executor.transformRequest("glm-5.3", { reasoning_effort: "xhigh" }, true);
-      expect(glm.reasoning_effort).toBe("high");
+      expect(glm.reasoning_effort).toBe("max");
 
-      // Always-on models have no "off" wire value, so disable requests floor to low.
-      expect(executor.transformRequest("beam-1.0", { reasoning_effort: "none" }, true).reasoning_effort).toBe("low");
-      expect(executor.transformRequest("muse-spark-1.2", { reasoning_effort: "off" }, true).reasoning_effort).toBe("low");
+      // Always-on models have no off effort, so disable requests get the default.
+      expect(executor.transformRequest("beam-1.0", { reasoning_effort: "none" }, true).reasoning_effort).toBe("high");
+      expect(executor.transformRequest("muse-spark-1.2", { reasoning_effort: "off" }, true).reasoning_effort).toBe("high");
       const muse13off = executor.transformRequest("muse-spark-1.3", { reasoning_effort: "off" }, true);
-      expect(muse13off.reasoning?.effort ?? muse13off.reasoning_effort).toBe("low");
+      expect(muse13off.reasoning?.effort ?? muse13off.reasoning_effort).toBe("high");
       const muse13none = executor.transformRequest("muse-spark-1.3", { reasoning_effort: "none" }, true);
-      expect(muse13none.reasoning?.effort ?? muse13none.reasoning_effort).toBe("low");
+      expect(muse13none.reasoning?.effort ?? muse13none.reasoning_effort).toBe("high");
       expect(executor.transformRequest("nemotron-3.5-super", { reasoning_effort: "off" }, true).reasoning_effort).toBe("none");
       expect(executor.transformRequest("nemotron-3.5-super", { reasoning_effort: "none" }, true).reasoning_effort).toBe("none");
-      expect(executor.transformRequest("muse-spark-open", { reasoning_effort: "off" }, true).reasoning_effort).toBe("low");
-      expect(executor.transformRequest("muse-spark-open", { reasoning_effort: "none" }, true).reasoning_effort).toBe("low");
-      expect(executor.transformRequest("minimax-m3.1-flash", { reasoning_effort: "none" }, true).reasoning_effort).toBe("low");
-      expect(executor.transformRequest("muse-spark-1.2", { reasoning_effort: "max" }, true).reasoning_effort).toBe("xhigh");
+      expect(executor.transformRequest("muse-spark-open", { reasoning_effort: "off" }, true).reasoning_effort).toBe("high");
+      expect(executor.transformRequest("muse-spark-open", { reasoning_effort: "none" }, true).reasoning_effort).toBe("high");
+      expect(executor.transformRequest("minimax-m3.1-flash", { reasoning_effort: "none" }, true).reasoning_effort).toBe("max");
+      expect(executor.transformRequest("muse-spark-1.2", { reasoning_effort: "max" }, true).reasoning_effort).toBe("high");
       const muse13max = executor.transformRequest("muse-spark-1.3", { reasoning_effort: "max" }, true);
-      expect(muse13max.reasoning?.effort ?? muse13max.reasoning_effort).toBe("xhigh");
+      expect(muse13max.reasoning?.effort ?? muse13max.reasoning_effort).toBe("high");
       // Ultrafast rejects disable; "max" must survive where the gateway accepts it.
       const ultrafast = executor.transformRequest("gpt-6.1-sol-ultrafast", { reasoning_effort: "max" }, true);
       expect(ultrafast.reasoning?.effort ?? ultrafast.reasoning_effort).toBe("max");
@@ -786,20 +786,20 @@ describe("FactoryExecutor", () => {
       expect(lunafast.reasoning?.effort ?? lunafast.reasoning_effort).toBe("max");
 
       const grok = executor.transformRequest("grok-4.6", { reasoning_effort: "max" }, true);
-      expect(grok.reasoning?.effort ?? grok.reasoning_effort).toBe("xhigh");
+      expect(grok.reasoning?.effort ?? grok.reasoning_effort).toBe("high");
 
       const grok47 = executor.transformRequest("grok-4.7", { reasoning_effort: "max" }, true);
-      expect(grok47.reasoning?.effort ?? grok47.reasoning_effort).toBe("xhigh");
+      expect(grok47.reasoning?.effort ?? grok47.reasoning_effort).toBe("high");
 
-      // A missing max steps down to the highest listed effort
+      // A missing max goes to the default effort
       const gpt54 = executor.transformRequest("gpt-5.4", { reasoning_effort: "max" }, true);
-      expect(gpt54.reasoning?.effort ?? gpt54.reasoning_effort).toBe("xhigh");
+      expect(gpt54.reasoning?.effort ?? gpt54.reasoning_effort).toBe("medium");
       const sonnet46 = executor.transformRequest("claude-sonnet-4-6", { output_config: { effort: "xhigh" } }, true);
       expect(sonnet46.output_config).toEqual({ effort: "high" });
 
-      // minimal -> low
+      // A missing minimal goes to the default effort too
       const min = executor.transformRequest("gpt-5.4", { reasoning_effort: "minimal" }, true);
-      expect(min.reasoning?.effort ?? min.reasoning_effort).toBe("low");
+      expect(min.reasoning?.effort ?? min.reasoning_effort).toBe("medium");
     });
   });
 

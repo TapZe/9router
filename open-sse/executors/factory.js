@@ -39,8 +39,6 @@ export function randomTraceparent() {
 // Server-generated item ID prefixes from OpenAI Responses that cause 404 with store=false
 const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
 
-const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-
 export function embeddedToolCallFromName(name) {
   if (typeof name !== "string" || !name.trimStart().startsWith("{")) {
     return null;
@@ -140,16 +138,14 @@ export function resolveFactoryApiBase(credentials = null) {
   return "https://api.factory.ai";
 }
 
-// The effort to send for a request. A model Droid lists keeps a listed effort.
-// Otherwise it gets the nearest lower effort it lists, or its lowest one when
-// nothing lower fits. Models without a Droid row keep the requested effort.
+// The effort to send for a request. Droid 1.3.0 keeps an effort the model
+// lists and swaps any other for the model's default effort. Models without a
+// Droid row keep the requested effort.
 export function factoryEffortFor(modelId, requested) {
-  const efforts = FACTORY_DROID_MODELS[cleanModelId(modelId)]?.efforts;
+  const droid = FACTORY_DROID_MODELS[cleanModelId(modelId)];
+  if (!droid) return requested;
   const effort = requested === "off" ? "none" : requested;
-  if (!efforts || !EFFORT_ORDER.includes(effort) || efforts.includes(effort)) return efforts ? effort : requested;
-  const reasoning = efforts.filter((level) => level !== "none");
-  const rank = EFFORT_ORDER.indexOf(effort);
-  return reasoning.filter((level) => EFFORT_ORDER.indexOf(level) < rank).pop() ?? reasoning[0] ?? "none";
+  return droid.efforts.includes(effort) ? effort : droid.defaultEffort;
 }
 
 // Fields Droid 1.3.0 decides per model, effort, and provider. The request
