@@ -124,6 +124,13 @@ describe("FactoryExecutor", () => {
       expect(upstreamProviderFor("deepseek-v4-flash-0731")).toBe("fireworks");
     });
 
+    it("returns baseten for GLM 5.2, GLM 5.2 Fast, and GLM 4.6 as Droid 1.3.0 does", () => {
+      expect(upstreamProviderFor("glm-5.2")).toBe("baseten");
+      expect(upstreamProviderFor("glm-5.2-fast")).toBe("baseten");
+      expect(upstreamProviderFor("glm-4.6")).toBe("baseten");
+      expect(upstreamProviderFor("glm-5.1")).toBe("fireworks");
+    });
+
     it("returns mistral for Mistral models", () => {
       expect(upstreamProviderFor("mistral-medium-3.5")).toBe("mistral");
     });
