@@ -9,7 +9,6 @@ import {
   FACTORY_DROID_SYSTEM_PROMPT,
   FACTORY_OPENAI_PLATFORM_ORG,
   ANTHROPIC_VERSION,
-  ANTHROPIC_BETAS,
 } from "../../open-sse/executors/factory.js";
 import factoryRegistry from "../../open-sse/providers/registry/factory.js";
 
@@ -274,19 +273,20 @@ describe("FactoryExecutor", () => {
       expect(headers["traceparent"]).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
     });
 
-    it("sends the static anthropic-beta allowlist for Claude models", () => {
+    // The betas come from Droid's request, which transformRequest puts on the body.
+    it("sends anthropic-version and no betas of its own for Claude models", () => {
       const creds = { accessToken: "tok" };
       const headers = executor.buildHeaders(creds, true, "", "claude-fable-5.1");
 
       expect(headers["anthropic-version"]).toBe(ANTHROPIC_VERSION);
-      expect(headers["anthropic-beta"]).toBe(ANTHROPIC_BETAS);
-      expect(headers["anthropic-beta"]).not.toContain("effort-2025-11-24");
+      expect(headers["anthropic-beta"]).toBeUndefined();
     });
 
-    it("sends Anthropic betas for MiniMax M2.x, not chat-completions M3", () => {
+    it("sends Anthropic headers for MiniMax M2.x, not chat-completions M3", () => {
       const creds = { accessToken: "tok" };
-      expect(executor.buildHeaders(creds, true, "", "minimax-m2.7")["anthropic-beta"]).toBe(ANTHROPIC_BETAS);
+      expect(executor.buildHeaders(creds, true, "", "minimax-m2.7")["anthropic-version"]).toBe(ANTHROPIC_VERSION);
       const m3Headers = executor.buildHeaders(creds, true, "", "minimax-m3");
+      expect(m3Headers["anthropic-version"]).toBeUndefined();
       expect(m3Headers["anthropic-beta"]).toBeUndefined();
       expect(m3Headers["x-api-provider"]).toBe("fireworks");
     });

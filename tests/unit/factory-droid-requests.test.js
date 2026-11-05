@@ -110,10 +110,17 @@ describe("Factory request fields from Droid 1.3.0", () => {
     expect(headers["x-session-id"]).toBe(sent.safety_identifier);
   });
 
-  it("leaves models Droid no longer lists on the old path", () => {
+  // execute stops these ids first, so no other request path remains for them.
+  it("adds no fields of its own for an id Droid does not have", () => {
     const { sent } = send("gpt-4.1", "global", { input: [{ role: "user", content: "hi" }], reasoning_effort: "high", temperature: 0.2 });
-    expect(sent.reasoning).toEqual({ effort: "high" });
-    expect(sent.temperature).toBeUndefined();
-    expect(sent.prompt_cache_retention).toBeUndefined();
+    expect(sent.reasoning).toBeUndefined();
+    expect(sent).toMatchObject({ reasoning_effort: "high", temperature: 0.2 });
+    const claude = send("claude-opus-4-1", "global", { messages: [{ role: "user", content: "hi" }] });
+    expect(claude.headers["anthropic-beta"]).toBeUndefined();
+    const gemini = send("gemini-2.5-pro", "global", { contents: [], reasoning_effort: "high" });
+    expect(gemini.sent.generationConfig?.thinkingConfig).toBeUndefined();
+    const open = send("some-open-model", "global", { messages: [], enable_thinking: true });
+    expect(open.sent).toMatchObject({ enable_thinking: true });
+    expect(open.sent.reasoning_history).toBeUndefined();
   });
 });

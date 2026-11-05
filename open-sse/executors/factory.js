@@ -16,7 +16,6 @@ export const FACTORY_DROID_SYSTEM_PROMPT =
 export const FACTORY_CLIENT_VERSION = "1.3.0";
 export const FACTORY_OPENAI_PLATFORM_ORG = "org-bHuLtG1fGmYk5YaOihAAXFBw";
 export const ANTHROPIC_VERSION = "2023-06-01";
-export const ANTHROPIC_BETAS = "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14";
 
 function randomHex(bytes) {
   if (typeof globalThis.crypto?.getRandomValues === "function") {
@@ -195,14 +194,14 @@ function fillSession(value, sessionId) {
 
 // The effort a client asked for, read before the gateway shapes the body.
 // A bare Claude budget asks for high, as before.
-function requestedEffortOf(gateway, body, credentials) {
+function requestedEffortOf(gateway, body) {
   let effort;
   if (gateway === "anthropic") {
     effort = body.thinking?.type === "disabled"
       ? "none"
       : body.output_config?.effort ?? body.reasoning_effort ?? body.thinking?.effort ?? (body.thinking?.budget_tokens > 0 ? "high" : undefined);
   } else if (gateway === "google") {
-    effort = body.reasoning_effort ?? body.thinking?.effort ?? credentials?._requestedEffort ?? body.generationConfig?.thinkingConfig?.thinkingLevel;
+    effort = body.reasoning_effort ?? body.thinking?.effort ?? body.generationConfig?.thinkingConfig?.thinkingLevel;
   } else {
     effort = body.reasoning?.effort ?? body.reasoning_effort;
   }
@@ -340,9 +339,6 @@ export class FactoryExecutor extends BaseExecutor {
         const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
         const betas = [...droidRequest.betas, ...(hasTools && TOOL_STREAMING_PROVIDERS.has(provider) ? [TOOL_STREAMING_BETA] : [])];
         if (betas.length > 0) headers["anthropic-beta"] = betas.join(",");
-      } else {
-        // Without Droid's request, keep the betas 9router always sent.
-        headers["anthropic-beta"] = ANTHROPIC_BETAS;
       }
     } else if (gateway === "openai-responses") {
       headers["OpenAI-Platform"] = FACTORY_OPENAI_PLATFORM_ORG;
@@ -369,7 +365,7 @@ export class FactoryExecutor extends BaseExecutor {
     const cloned = { ...body };
     const gateway = resolveTargetGateway(model);
     const m = cleanModelId(model);
-    const droidRequest = droidRequestFor(m, factoryInferenceRegion(credentials), requestedEffortOf(gateway, body, credentials));
+    const droidRequest = droidRequestFor(m, factoryInferenceRegion(credentials), requestedEffortOf(gateway, body));
 
     if (gateway !== "google") {
       cloned.stream = !!stream;
@@ -578,16 +574,6 @@ export class FactoryExecutor extends BaseExecutor {
         };
       }
 
-      // Gemini level-based thinking config for models Droid does not list
-      const effort = cloned.reasoning_effort || cloned.thinking?.effort || credentials?._requestedEffort;
-      if (effort && !droidRequest) {
-        const level = String(effort).toLowerCase();
-        if (!cloned.generationConfig) cloned.generationConfig = {};
-        if (!cloned.generationConfig.thinkingConfig) {
-          cloned.generationConfig.thinkingConfig = { thinkingLevel: level };
-        }
-      }
-
       // Clean up parameters mapped into generationConfig
       if (cloned.max_tokens !== undefined) {
         if (!cloned.generationConfig) cloned.generationConfig = {};
@@ -712,21 +698,6 @@ export class FactoryExecutor extends BaseExecutor {
 
         cloned.messages = msgs;
       }
-
-      // Models Droid lists take these fields from Droid's request below.
-      if (!droidRequest) {
-        // z.ai-habit request bodies smuggle enable_thinking; the Fireworks
-        // gateway rejects the field with HTTP 400.
-        delete cloned.enable_thinking;
-        if (cloned.chat_template_kwargs && typeof cloned.chat_template_kwargs === "object" && "enable_thinking" in cloned.chat_template_kwargs) {
-          cloned.chat_template_kwargs = { ...cloned.chat_template_kwargs };
-          delete cloned.chat_template_kwargs.enable_thinking;
-        }
-
-        // 4. Reasoning history for completions gateway
-        const isDeepseek = m.startsWith("deepseek-");
-        cloned.reasoning_history = isDeepseek ? "interleaved" : "preserved";
-      }
     }
 
     // 5. Droid's fields for the model, provider, and effort
@@ -753,24 +724,6 @@ export class FactoryExecutor extends BaseExecutor {
         }
       }
       return sent;
-    }
-
-    // Reasoning effort for models Droid does not list
-    const rawEffort = cloned.reasoning?.effort || cloned.reasoning_effort;
-    if (rawEffort) {
-      const normalized = String(rawEffort).toLowerCase();
-
-      if (gateway === "openai-responses") {
-        cloned.reasoning = {
-          ...(typeof cloned.reasoning === "object" ? cloned.reasoning : {}),
-          effort: normalized,
-        };
-        delete cloned.reasoning_effort;
-        delete cloned.temperature;
-        delete cloned.top_p;
-      } else {
-        cloned.reasoning_effort = normalized;
-      }
     }
 
     return cloned;
