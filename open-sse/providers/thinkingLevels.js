@@ -4,6 +4,7 @@ import { getCapabilitiesForModel } from "./capabilities.js";
 import { matchPattern } from "./pricing.js";
 import { resolveKiroEffortPath } from "../config/kiroConstants.js";
 import { getProviderModels } from "../config/providerModels.js";
+import { FACTORY_DROID_MODELS } from "./factoryDroid.js";
 
 // Shared level sets (deduped) — verified against provider docs + wire in thinkingUnified.applyFormat.
 const L = {
@@ -45,19 +46,6 @@ const PATTERN_THINKING = [
   { pattern: "*gemini-4*", levels: ["low", "medium", "high"] },
   { pattern: "*claude*4.6*", levels: CLAUDE_NO_XHIGH },
   { pattern: "*claude*4-6*", levels: CLAUDE_NO_XHIGH },
-  { provider: "factory", pattern: "gpt-6.1-sol", levels: ["low", "medium", "high", "xhigh", "max"] },
-  { provider: "factory", pattern: "gpt-6.1-sol-ultrafast", levels: ["low", "medium", "high", "xhigh", "max"] },
-  { provider: "factory", pattern: "gpt-6.1-terra", levels: ["none", "low", "medium", "high", "xhigh", "max"] },
-  { provider: "factory", pattern: "gpt-6-sol-fast", levels: ["none", "low", "medium", "high", "xhigh", "max"] },
-  { provider: "factory", pattern: "gpt-6-luna-fast", levels: ["none", "low", "medium", "high", "xhigh", "max"] },
-  { provider: "factory", pattern: "minimax-m3.1-flash", levels: ["low", "medium", "high", "xhigh", "max"] },
-  { provider: "factory", pattern: "deepseek-v4.1-flash-1017", levels: ["none", "low", "high", "max"] },
-  { provider: "factory", pattern: "muse-spark-1.2", levels: ["low", "medium", "high", "xhigh"] },
-  { provider: "factory", pattern: "muse-spark-1.3", levels: ["low", "medium", "high", "xhigh"] },
-  { provider: "factory", pattern: "muse-spark-open", levels: ["none", "low", "medium", "high", "xhigh", "max"] },
-  { provider: "factory", pattern: "gemini-4-argon", levels: ["low", "medium", "high"] },
-  { provider: "factory", pattern: "nemotron-3.5-super", levels: ["none", "high"] },
-  { provider: "factory", pattern: "beam-1.0", levels: ["low", "medium", "high", "xhigh", "max"] },
   { provider: "codex", pattern: "*gpt-6*", levels: CODEX_GPT_5_6_LEVELS },
   { provider: "codex", pattern: "*gpt-5.6-sol*", levels: [...CODEX_GPT_5_6_LEVELS, "ultra"] },
   { provider: "codex", pattern: "*gpt-5.6-terra*", levels: [...CODEX_GPT_5_6_LEVELS, "ultra"] },
@@ -128,7 +116,7 @@ export function getThinkingLevels(provider, model) {
   const baseId = String(model || "").replace(/\([^()]+\)\s*$/, "");
   const modelLevels = provider === "codex"
     ? getProviderModels("cx").find((entry) => entry.id === baseId)?.thinkingLevels
-    : null;
+    : thinkingProvider === "factory" ? FACTORY_DROID_MODELS[baseId]?.efforts : null;
   const hit = PATTERN_THINKING.find((entry) =>
     (!entry.provider || entry.provider === thinkingProvider) && matchPattern(entry.pattern, model)
   );

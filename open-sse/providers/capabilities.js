@@ -37,6 +37,7 @@
 
 import { matchPattern } from "./pricing.js";
 import { looksLikeVisionModel } from "./visionPatterns.js";
+import { FACTORY_DROID_MODELS } from "./factoryDroid.js";
 
 /**
  * Safe floor — every resolved result is merged over this so consumers
@@ -286,36 +287,26 @@ const FACTORY_TEXT_ONLY = new Set([
   "qwen3.8-max", "deepseek-v4-pro", "deepseek-v4-flash-0731", "nemotron-3-ultra",
   "muse-spark-1.2", "muse-spark-1.3", "beam-1.0",
 ]);
-const FACTORY_ALWAYS_THINKING = new Set([
-  "claude-opus-5-5", "claude-opus-5-5-fast", "claude-sonnet-5-5", "minimax-m3", "minimax-m3.1-flash",
-  "minimax-m2.7", "minimax-m2.5", "gpt-6-astra",
-  // Droid 0.230.0 only accepts low, medium, high, xhigh, or max for GPT-6.1 Sol.
-  "gpt-6.1-sol", "gpt-6.1-sol-ultrafast", "gpt-5.5", "gpt-5.5-pro", "gpt-5.5-fast", "gpt-5.4", "gpt-5.4-fast",
-  "gpt-5.4-mini", "gpt-5.4-mini-fast", "gpt-5.3-codex", "gpt-5.3-codex-fast",
-  "gpt-5.2-codex", "gpt-5.1-codex-max",
-  "grok-4.7", "grok-4.6", "grok-4.5", "glm-5.3", "glm-5.3-flash", "qwen3.8-max",
-  "garnet-07-15", "gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
-  "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
-  "muse-spark-1.2", "muse-spark-1.3", "beam-1.0",
-]);
 const FACTORY_BUDGET_MODELS = new Set([
   "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001",
   "minimax-m2.7", "minimax-m2.5",
 ]);
-const FACTORY_NO_EFFORT = new Set(["glm-5", "glm-4.7", "glm-4.6"]);
 const FACTORY_MODEL_CAPABILITIES = {};
 for (const [contextWindow, maxOutput, ids] of FACTORY_LIMIT_GROUPS) {
   for (const id of ids) {
     const isGoogle = id.startsWith("gemini-") || id.startsWith("garnet-");
     const isAnthropicWire = id.startsWith("claude-") || id.startsWith("atlas-") ||
       id.startsWith("aster-") || id.startsWith("minimax-m2.");
+    // Droid's efforts decide whether the model reasons and whether it can stop.
+    const efforts = FACTORY_DROID_MODELS[id]?.efforts ?? [];
+    const reasoning = efforts.some((effort) => effort !== "none");
     FACTORY_MODEL_CAPABILITIES[id] = {
       vision: !FACTORY_TEXT_ONLY.has(id),
-      reasoning: !FACTORY_NO_EFFORT.has(id),
+      reasoning,
       thinkingFormat: isGoogle ? "gemini-level" : isAnthropicWire
         ? (FACTORY_BUDGET_MODELS.has(id) ? "claude-budget" : "claude-adaptive")
         : "openai",
-      thinkingCanDisable: !FACTORY_ALWAYS_THINKING.has(id),
+      thinkingCanDisable: !reasoning || efforts.includes("none"),
       contextWindow,
       maxOutput,
     };

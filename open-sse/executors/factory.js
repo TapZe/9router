@@ -1,5 +1,6 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
+import { FACTORY_DROID_MODELS } from "../providers/factoryDroid.js";
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
@@ -37,15 +38,7 @@ export function randomTraceparent() {
 // Server-generated item ID prefixes from OpenAI Responses that cause 404 with store=false
 const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
 
-// Always-on models reject "none"/"off"; the upstream floor is "low".
-const NO_DISABLE_LOW_EFFORT = new Set([
-  "gpt-6.1-sol", "gpt-6.1-sol-ultrafast", "minimax-m3.1-flash", "muse-spark-1.2", "muse-spark-1.3", "beam-1.0",
-]);
-// Models whose hosted gateway accepts "max" as-is; everything else downgrades it.
-const MAX_EFFORT_MODELS = new Set([
-  "gpt-6.1-sol", "gpt-6.1-sol-ultrafast", "gpt-6.1-terra", "gpt-6-sol-fast", "gpt-6-luna-fast",
-  "deepseek-v4.1-flash-1017", "minimax-m3.1-flash", "beam-1.0", "muse-spark-open",
-]);
+const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export function embeddedToolCallFromName(name) {
   if (typeof name !== "string" || !name.trimStart().startsWith("{")) {
@@ -131,20 +124,35 @@ export function resolveFactoryApiBase(credentials = null) {
   return "https://api.factory.ai";
 }
 
+// The effort to send for a request. A model Droid lists keeps a listed effort.
+// Otherwise it gets the nearest lower effort it lists, or its lowest one when
+// nothing lower fits. Models without a Droid row keep the requested effort.
+export function factoryEffortFor(modelId, requested) {
+  const efforts = FACTORY_DROID_MODELS[cleanModelId(modelId)]?.efforts;
+  const effort = requested === "off" ? "none" : requested;
+  if (!efforts || !EFFORT_ORDER.includes(effort) || efforts.includes(effort)) return efforts ? effort : requested;
+  const reasoning = efforts.filter((level) => level !== "none");
+  const rank = EFFORT_ORDER.indexOf(effort);
+  return reasoning.filter((level) => EFFORT_ORDER.indexOf(level) < rank).pop() ?? reasoning[0] ?? "none";
+}
+
 export function resolveClaudeThinking(modelId, requestedEffort, requestedBudget) {
   const m = cleanModelId(modelId);
-  const disabled = requestedEffort === "off" || requestedEffort === "none";
   const explicitBudget = Number.isFinite(requestedBudget) && requestedBudget > 0
     ? requestedBudget
     : Number.isFinite(requestedEffort) && requestedEffort > 0 ? requestedEffort : undefined;
-  const requestedLevel = ["low", "medium", "high", "xhigh", "max"].includes(requestedEffort)
+  // A request without an effort gets the Droid default; a bare budget asks for high.
+  const asked = typeof requestedEffort === "string"
     ? requestedEffort
-    : requestedEffort === "minimal" ? "low" : "high";
-  const effort = requestedLevel === "xhigh" && !supportsExtraHighEffort(m) ? "high" : requestedLevel;
-  // Claude 5.5 models expose no `off` effort — the API rejects a thinking
-  // disable, so they fall through to the adaptive branch with thinking on.
+    : explicitBudget !== undefined ? "high" : FACTORY_DROID_MODELS[m]?.defaultEffort ?? "high";
+  const chosen = factoryEffortFor(m, asked);
+  const disabled = chosen === "off" || chosen === "none";
+  const effort = ["low", "medium", "high", "xhigh", "max"].includes(chosen)
+    ? chosen
+    : chosen === "minimal" ? "low" : "high";
+  // Sonnet 5.5 keeps thinking on when asked to stop, so it takes the adaptive branch.
   if (disabled && (m.startsWith("claude-") || m.startsWith("atlas-") || m.startsWith("aster-")) &&
-    !m.startsWith("claude-opus-5-5") && !m.startsWith("claude-sonnet-5-5")) {
+    !m.startsWith("claude-sonnet-5-5")) {
     return { thinking: undefined, outputConfig: undefined };
   }
 
@@ -205,33 +213,6 @@ export function resolveClaudeThinking(modelId, requestedEffort, requestedBudget)
     thinking: undefined,
     outputConfig: undefined,
   };
-}
-
-export function supportsExtraHighEffort(modelId) {
-  const m = cleanModelId(modelId);
-  return (
-    m === "grok-4.6" ||
-    m === "grok-4.7" ||
-    m.startsWith("gpt-6") ||
-    m.startsWith("gpt6") ||
-    m.startsWith("gpt-5.6") ||
-    m.startsWith("glm-5.3") ||
-    m === "minimax-m3.1-flash" ||
-    m === "muse-spark-1.2" ||
-    m === "muse-spark-1.3" ||
-    m === "muse-spark-open" ||
-    m === "beam-1.0" ||
-    m === "gpt-6.1-terra" ||
-    m.startsWith("claude-opus-5") ||
-    m.startsWith("claude-opus-4-8") ||
-    m.startsWith("claude-opus-4-7") ||
-    m.startsWith("claude-sonnet-5") ||
-    m.startsWith("claude-fable-5") ||
-    m.startsWith("claude-haiku-5") ||
-    m.startsWith("atlas-") ||
-    m.startsWith("aster-") ||
-    m.startsWith("qwen")
-  );
 }
 
 export function extractTextContent(content) {
@@ -571,12 +552,9 @@ export class FactoryExecutor extends BaseExecutor {
       }
 
       // Gemini level-based thinking config
-      const supportsMinimal = m === "gemini-3-flash-preview" || m === "gemini-3.5-flash";
       const effort = cloned.reasoning_effort || cloned.thinking?.effort || credentials?._requestedEffort;
       if (effort) {
-        let level = String(effort).toLowerCase();
-        if (level === "minimal" && !supportsMinimal) level = "low";
-        if (level === "xhigh" || level === "max") level = "high";
+        const level = factoryEffortFor(m, String(effort).toLowerCase());
         if (!cloned.generationConfig) cloned.generationConfig = {};
         if (!cloned.generationConfig.thinkingConfig) {
           cloned.generationConfig.thinkingConfig = { thinkingLevel: level };
@@ -722,21 +700,9 @@ export class FactoryExecutor extends BaseExecutor {
     }
 
     // 5. Reasoning effort normalization across gateways
-    const hasExtraHigh = supportsExtraHighEffort(m);
-
     const rawEffort = cloned.reasoning?.effort || cloned.reasoning_effort;
     if (rawEffort) {
-      const re = String(rawEffort).toLowerCase();
-      let normalized = re;
-      if (NO_DISABLE_LOW_EFFORT.has(m) && (re === "none" || re === "off")) {
-        normalized = "low";
-      } else if (re === "minimal") {
-        normalized = "low";
-      } else if (re === "max") {
-        normalized = MAX_EFFORT_MODELS.has(m) ? "max" : hasExtraHigh ? "xhigh" : "high";
-      } else if (re === "xhigh" && !hasExtraHigh) {
-        normalized = "high";
-      }
+      const normalized = factoryEffortFor(m, String(rawEffort).toLowerCase());
 
       if (gateway === "openai-responses") {
         cloned.reasoning = {
