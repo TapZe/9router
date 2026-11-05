@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { getCapabilitiesForModel } from "../../open-sse/providers/capabilities.js";
 import { getThinkingLevels } from "../../open-sse/providers/thinkingLevels.js";
 import factoryRegistry from "../../open-sse/providers/registry/factory.js";
-import { FactoryExecutor } from "../../open-sse/executors/factory.js";
+import { FactoryExecutor, factoryEffortFor } from "../../open-sse/executors/factory.js";
 
 // Efforts and the default effort Droid 1.3.0 lists for each model, read from
 // the binary's model registry. "none" is Droid's off effort.
@@ -122,7 +122,9 @@ describe("Factory reasoning efforts from Droid 1.3.0", () => {
     // Effort-only models have no off, so none goes to their lowest effort.
     expect(effortFor("gpt-6.1-sol", "none")).toBe("low");
     expect(effortFor("gpt-5.5-pro", "none")).toBe("medium");
-    expect(effortFor("garnet-07-15", "low")).toBe("medium");
+    // Garnet's medium effort goes upstream as Droid's HIGH thinking level.
+    expect(factoryEffortFor("garnet-07-15", "low")).toBe("medium");
+    expect(effortFor("garnet-07-15", "low")).toBe("HIGH");
     // A missing higher effort steps down to the nearest listed one.
     expect(effortFor("kimi-k2.6", "medium")).toBe("high");
     expect(effortFor("qwen3.8-max", "high")).toBe("medium");

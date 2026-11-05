@@ -1,6 +1,7 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { FACTORY_DROID_MODELS } from "../providers/factoryDroid.js";
+import { FACTORY_DROID_REQUESTS } from "../providers/factoryDroidRequests.js";
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
@@ -151,83 +152,105 @@ export function factoryEffortFor(modelId, requested) {
   return reasoning.filter((level) => EFFORT_ORDER.indexOf(level) < rank).pop() ?? reasoning[0] ?? "none";
 }
 
-export function resolveClaudeThinking(modelId, requestedEffort, requestedBudget) {
+// Fields Droid 1.3.0 decides per model, effort, and provider. The request
+// drops each of them and takes Droid's value, so a field Droid leaves out is
+// left out here too.
+const DROID_OWNED_FIELDS = {
+  anthropic: ["thinking", "output_config.effort", "speed", "context_management"],
+  responses: [
+    "reasoning", "include", "parallel_tool_calls", "prompt_cache_retention", "text.verbosity",
+    "service_tier", "safety_identifier", "max_output_tokens", "tool_choice",
+  ],
+  completions: [
+    "reasoning_effort", "reasoning_history", "chat_template_args", "chat_template_kwargs.enable_thinking",
+    "enable_thinking", "allow_missing_thinking", "thinking", "reasoning", "temperature", "store", "tool_choice",
+  ],
+  google: [
+    "generationConfig.thinkingConfig", "generationConfig.temperature", "generationConfig.topP",
+    "generationConfig.topK", "generationConfig.maxOutputTokens",
+  ],
+};
+
+// Droid adds fine-grained tool streaming whenever a request carries tools on
+// these Anthropic providers.
+const TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14";
+const TOOL_STREAMING_PROVIDERS = new Set(["anthropic", "vertex_anthropic", "azure_anthropic"]);
+
+// The Droid betas and session id ride on the sent body for buildHeaders.
+// A symbol key stays out of the JSON that goes upstream.
+const DROID_REQUEST = Symbol("droidRequest");
+
+const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+
+function dropField(body, fieldPath) {
+  const keys = fieldPath.split(".");
+  const last = keys.pop();
+  let parent = body;
+  for (const key of keys) parent = isObject(parent) ? parent[key] : undefined;
+  if (!isObject(parent)) return;
+  delete parent[last];
+  if (keys.length > 0 && Object.keys(parent).length === 0) dropField(body, keys.join("."));
+}
+
+function mergeInto(target, source) {
+  for (const [key, value] of Object.entries(source)) {
+    if (isObject(value) && isObject(target[key])) mergeInto(target[key], value);
+    else target[key] = structuredClone(value);
+  }
+}
+
+function fillSession(value, sessionId) {
+  if (value === "$session") return sessionId;
+  if (Array.isArray(value)) return value.map((item) => fillSession(item, sessionId));
+  if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillSession(v, sessionId)]));
+  return value;
+}
+
+// The effort a client asked for, read before the gateway shapes the body.
+// A bare Claude budget asks for high, as before.
+function requestedEffortOf(gateway, body, credentials) {
+  let effort;
+  if (gateway === "anthropic") {
+    effort = body.thinking?.type === "disabled"
+      ? "none"
+      : body.output_config?.effort ?? body.reasoning_effort ?? body.thinking?.effort ?? (body.thinking?.budget_tokens > 0 ? "high" : undefined);
+  } else if (gateway === "google") {
+    effort = body.reasoning_effort ?? body.thinking?.effort ?? credentials?._requestedEffort ?? body.generationConfig?.thinkingConfig?.thinkingLevel;
+  } else {
+    effort = body.reasoning?.effort ?? body.reasoning_effort;
+  }
+  return typeof effort === "string" ? effort.toLowerCase() : undefined;
+}
+
+// The body fields and Anthropic betas Droid sends for this model, region, and
+// effort. A request without an effort gets the model's default. Models Droid
+// does not list get null.
+export function droidRequestFor(modelId, region, requested) {
   const m = cleanModelId(modelId);
-  const explicitBudget = Number.isFinite(requestedBudget) && requestedBudget > 0
-    ? requestedBudget
-    : Number.isFinite(requestedEffort) && requestedEffort > 0 ? requestedEffort : undefined;
-  // A request without an effort gets the Droid default; a bare budget asks for high.
-  const asked = typeof requestedEffort === "string"
-    ? requestedEffort
-    : explicitBudget !== undefined ? "high" : FACTORY_DROID_MODELS[m]?.defaultEffort ?? "high";
-  const chosen = factoryEffortFor(m, asked);
-  const disabled = chosen === "off" || chosen === "none";
-  const effort = ["low", "medium", "high", "xhigh", "max"].includes(chosen)
-    ? chosen
-    : chosen === "minimal" ? "low" : "high";
-  // Sonnet 5.5 keeps thinking on when asked to stop, so it takes the adaptive branch.
-  if (disabled && (m.startsWith("claude-") || m.startsWith("atlas-") || m.startsWith("aster-")) &&
-    !m.startsWith("claude-sonnet-5-5")) {
-    return { thinking: undefined, outputConfig: undefined };
-  }
+  const droid = FACTORY_DROID_MODELS[m];
+  if (!droid) return null;
+  const byEffort = FACTORY_DROID_REQUESTS[m][upstreamProviderFor(m, region)];
+  const effort = factoryEffortFor(m, requested ?? droid.defaultEffort);
+  return { api: droid.api, ...(byEffort[effort] ?? byEffort[droid.defaultEffort]) };
+}
 
-  // Adaptive models
-  if (
-    m.startsWith("claude-fable-5.1") ||
-    m.startsWith("claude-fable-5") ||
-    m.startsWith("claude-opus-5") ||
-    m.startsWith("claude-opus-4-8") ||
-    m.startsWith("claude-opus-4-7") ||
-    m.startsWith("claude-sonnet-5") ||
-    m.startsWith("atlas-") ||
-    m.startsWith("aster-")
-  ) {
-    return {
-      thinking: { type: "adaptive", display: "summarized" },
-      outputConfig: disabled ? undefined : { effort },
-    };
+// Swaps the Droid-owned fields for what Droid sends. Droid's chat body sends
+// max_tokens and never max_completion_tokens.
+function applyDroidRequest(body, request, sessionId) {
+  const next = structuredClone(body);
+  for (const fieldPath of DROID_OWNED_FIELDS[request.api]) dropField(next, fieldPath);
+  if (request.api === "completions" && "max_completion_tokens" in next) {
+    next.max_tokens = next.max_completion_tokens;
+    delete next.max_completion_tokens;
   }
-
-  // Opus 4.6 and Sonnet 4.6 use adaptive thinking without summarized display.
-  if (m.startsWith("claude-sonnet-4-6") || m.startsWith("claude-opus-4-6")) {
-    return {
-      thinking: { type: "adaptive" },
-      outputConfig: { effort },
-    };
+  mergeInto(next, fillSession(request.body, sessionId));
+  // Droid always sends tools, so its tool fields assume them.
+  if (!(Array.isArray(next.tools) && next.tools.length > 0)) {
+    delete next.tool_choice;
+    delete next.parallel_tool_calls;
   }
-
-  // Older Claude releases use token budgets; only Opus 4.5 accepts output effort.
-  const isOpus45 = m.startsWith("claude-opus-4-5");
-  if (isOpus45 || m.startsWith("claude-sonnet-4-5") || m.startsWith("claude-haiku-4-5")) {
-    const budget = explicitBudget ?? (effort === "low" ? 4096 : effort === "medium" ? 12288 : 24576);
-    return {
-      thinking: { type: "enabled", budget_tokens: budget },
-      outputConfig: isOpus45 ? { effort: effort === "low" || effort === "medium" ? effort : "high" } : undefined,
-    };
-  }
-
-  // MiniMax M2.x uses Anthropic-compatible budget thinking; M3 uses completions.
-  if (m.startsWith("minimax-m2.")) {
-    let budget = 2048;
-    if (explicitBudget !== undefined) {
-      budget = Math.max(1024, explicitBudget);
-    } else if (requestedEffort === "low") {
-      budget = 1024;
-    } else if (requestedEffort === "medium") {
-      budget = 2048;
-    } else if (requestedEffort === "high" || requestedEffort === "xhigh" || requestedEffort === "max") {
-      budget = 4096;
-    }
-    return {
-      thinking: { type: "enabled", budget_tokens: budget },
-      outputConfig: undefined,
-    };
-  }
-
-  return {
-    thinking: undefined,
-    outputConfig: undefined,
-  };
+  next[DROID_REQUEST] = { betas: request.betas ?? [], sessionId };
+  return next;
 }
 
 export function extractTextContent(content) {
@@ -276,7 +299,7 @@ export class FactoryExecutor extends BaseExecutor {
     return `${base}/api/llm/o/v1/chat/completions`;
   }
 
-  buildHeaders(credentials, stream = true, url, model) {
+  buildHeaders(credentials, stream = true, url, model, body) {
     const clientType = process.env.FACTORY_UPSTREAM_CLIENT_TYPE?.trim() || "cli";
     const headers = {
       "Content-Type": "application/json",
@@ -299,15 +322,22 @@ export class FactoryExecutor extends BaseExecutor {
     }
 
     const gateway = resolveTargetGateway(model);
-    headers["x-api-provider"] = upstreamProviderFor(model, factoryInferenceRegion(credentials));
+    const provider = upstreamProviderFor(model, factoryInferenceRegion(credentials));
+    const droidRequest = body?.[DROID_REQUEST];
+    headers["x-api-provider"] = provider;
     headers["x-provider-routing-source"] = "registry_default";
     headers["traceparent"] = randomTraceparent();
 
     if (gateway === "anthropic") {
       headers["anthropic-version"] = ANTHROPIC_VERSION;
-      // Effort rides the body's output_config.effort — the gateway needs no
-      // effort beta flag (verified against the live Droid client contract).
-      headers["anthropic-beta"] = ANTHROPIC_BETAS;
+      if (droidRequest) {
+        const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+        const betas = [...droidRequest.betas, ...(hasTools && TOOL_STREAMING_PROVIDERS.has(provider) ? [TOOL_STREAMING_BETA] : [])];
+        if (betas.length > 0) headers["anthropic-beta"] = betas.join(",");
+      } else {
+        // Without Droid's request, keep the betas 9router always sent.
+        headers["anthropic-beta"] = ANTHROPIC_BETAS;
+      }
     } else if (gateway === "openai-responses") {
       headers["OpenAI-Platform"] = FACTORY_OPENAI_PLATFORM_ORG;
     } else if (gateway === "google") {
@@ -315,7 +345,7 @@ export class FactoryExecutor extends BaseExecutor {
     }
 
     if (globalThis.crypto?.randomUUID) {
-      headers["x-session-id"] = globalThis.crypto.randomUUID();
+      headers["x-session-id"] = droidRequest?.sessionId ?? globalThis.crypto.randomUUID();
       headers["x-assistant-message-id"] = globalThis.crypto.randomUUID();
     }
 
@@ -333,6 +363,7 @@ export class FactoryExecutor extends BaseExecutor {
     const cloned = { ...body };
     const gateway = resolveTargetGateway(model);
     const m = cleanModelId(model);
+    const droidRequest = droidRequestFor(m, factoryInferenceRegion(credentials), requestedEffortOf(gateway, body, credentials));
 
     if (gateway !== "google") {
       cloned.stream = !!stream;
@@ -430,32 +461,7 @@ export class FactoryExecutor extends BaseExecutor {
         cloned.max_tokens = 4096;
       }
 
-      // The translator already normalized effort and budget for this wire format.
-      const disabledThinking = cloned.thinking?.type === "disabled";
-      const thinkingConfig = resolveClaudeThinking(
-        model,
-        disabledThinking ? "off" : cloned.output_config?.effort ?? cloned.reasoning_effort ?? cloned.thinking?.effort ?? cloned.thinking?.budget_tokens,
-        cloned.thinking?.budget_tokens,
-      );
-      if (thinkingConfig.thinking) {
-        cloned.thinking = thinkingConfig.thinking;
-      } else if (disabledThinking || cloned.reasoning_effort === "off" || cloned.reasoning_effort === "none") {
-        delete cloned.thinking;
-      }
-      if (thinkingConfig.outputConfig) {
-        cloned.output_config = thinkingConfig.outputConfig;
-      } else {
-        delete cloned.output_config;
-      }
       delete cloned.reasoning_effort;
-
-      // Ensure max_tokens > budget_tokens if thinking is enabled (Anthropic / Fireworks requirement)
-      if (cloned.thinking?.type === "enabled" && cloned.thinking.budget_tokens) {
-        const minRequired = cloned.thinking.budget_tokens + 1024;
-        if (cloned.max_tokens < minRequired) {
-          cloned.max_tokens = minRequired;
-        }
-      }
 
       if (typeof cloned.system === "string") {
         const clean = stripCompeting(cloned.system);
@@ -566,9 +572,9 @@ export class FactoryExecutor extends BaseExecutor {
         };
       }
 
-      // Gemini level-based thinking config
+      // Gemini level-based thinking config for models Droid does not list
       const effort = cloned.reasoning_effort || cloned.thinking?.effort || credentials?._requestedEffort;
-      if (effort) {
+      if (effort && !droidRequest) {
         const level = factoryEffortFor(m, String(effort).toLowerCase());
         if (!cloned.generationConfig) cloned.generationConfig = {};
         if (!cloned.generationConfig.thinkingConfig) {
@@ -701,20 +707,49 @@ export class FactoryExecutor extends BaseExecutor {
         cloned.messages = msgs;
       }
 
-      // z.ai-habit request bodies smuggle enable_thinking; the Fireworks
-      // gateway rejects the field with HTTP 400.
-      delete cloned.enable_thinking;
-      if (cloned.chat_template_kwargs && typeof cloned.chat_template_kwargs === "object" && "enable_thinking" in cloned.chat_template_kwargs) {
-        cloned.chat_template_kwargs = { ...cloned.chat_template_kwargs };
-        delete cloned.chat_template_kwargs.enable_thinking;
-      }
+      // Models Droid lists take these fields from Droid's request below.
+      if (!droidRequest) {
+        // z.ai-habit request bodies smuggle enable_thinking; the Fireworks
+        // gateway rejects the field with HTTP 400.
+        delete cloned.enable_thinking;
+        if (cloned.chat_template_kwargs && typeof cloned.chat_template_kwargs === "object" && "enable_thinking" in cloned.chat_template_kwargs) {
+          cloned.chat_template_kwargs = { ...cloned.chat_template_kwargs };
+          delete cloned.chat_template_kwargs.enable_thinking;
+        }
 
-      // 4. Reasoning history for completions gateway
-      const isDeepseek = m.startsWith("deepseek-");
-      cloned.reasoning_history = isDeepseek ? "interleaved" : "preserved";
+        // 4. Reasoning history for completions gateway
+        const isDeepseek = m.startsWith("deepseek-");
+        cloned.reasoning_history = isDeepseek ? "interleaved" : "preserved";
+      }
     }
 
-    // 5. Reasoning effort normalization across gateways
+    // 5. Droid's fields for the model, provider, and effort
+    if (droidRequest) {
+      const sent = applyDroidRequest(cloned, droidRequest, globalThis.crypto.randomUUID());
+      if (gateway === "openai-responses") {
+        // Responses takes the effort in reasoning, and reasoning models refuse sampling fields.
+        delete sent.reasoning_effort;
+        if (sent.reasoning) {
+          delete sent.temperature;
+          delete sent.top_p;
+        }
+      }
+      if (gateway === "anthropic") {
+        // A client's own Claude budget still wins over Droid's, down to
+        // Anthropic's smallest budget of 1024 tokens.
+        const budget = body.thinking?.budget_tokens;
+        if (sent.thinking?.type === "enabled" && Number.isFinite(budget) && budget > 0) {
+          sent.thinking.budget_tokens = Math.max(1024, budget);
+        }
+        // Anthropic and Fireworks need max_tokens above the thinking budget.
+        if (sent.thinking?.type === "enabled" && sent.thinking.budget_tokens) {
+          sent.max_tokens = Math.max(sent.max_tokens, sent.thinking.budget_tokens + 1024);
+        }
+      }
+      return sent;
+    }
+
+    // Reasoning effort for models Droid does not list
     const rawEffort = cloned.reasoning?.effort || cloned.reasoning_effort;
     if (rawEffort) {
       const normalized = factoryEffortFor(m, String(rawEffort).toLowerCase());

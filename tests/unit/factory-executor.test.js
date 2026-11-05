@@ -4,7 +4,7 @@ import {
   resolveTargetGateway,
   upstreamProviderFor,
   resolveFactoryApiBase,
-  resolveClaudeThinking,
+  droidRequestFor,
   embeddedToolCallFromName,
   FACTORY_DROID_SYSTEM_PROMPT,
   FACTORY_OPENAI_PLATFORM_ORG,
@@ -195,62 +195,46 @@ describe("FactoryExecutor", () => {
     });
   });
 
-  describe("resolveClaudeThinking", () => {
+  describe("Claude thinking from Droid 1.3.0", () => {
+    const claude = (m, effort) => droidRequestFor(m, "global", effort).body;
+
     it("configures summarized adaptive thinking for current Claude models", () => {
       for (const m of ["claude-fable-5.1", "claude-fable-5", "claude-opus-5", "claude-opus-5-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5", "claude-sonnet-5-5", "atlas-07-21", "aster-07-15"]) {
-        const config = resolveClaudeThinking(m, "medium");
-        expect(config.thinking).toEqual({ type: "adaptive", display: "summarized" });
-        expect(config.outputConfig).toEqual({ effort: "medium" });
+        expect(claude(m, "medium"), m).toEqual({ thinking: { type: "adaptive", display: "summarized" }, output_config: { effort: "medium" } });
       }
     });
 
-    it("honors disabled thinking except on always-adaptive Opus 5.5 and Sonnet 5.5", () => {
-      expect(resolveClaudeThinking("claude-sonnet-5", "off")).toEqual({ thinking: undefined, outputConfig: undefined });
-      // Droid 1.3.0 lists no off effort for Opus 5.5, so a disable request gets
-      // its lowest effort. Sonnet 5.5 keeps adaptive thinking.
-      expect(resolveClaudeThinking("claude-opus-5-5", "off")).toEqual({
-        thinking: { type: "adaptive", display: "summarized" },
-        outputConfig: { effort: "low" },
-      });
-      expect(resolveClaudeThinking("claude-sonnet-5-5", "off")).toEqual({
-        thinking: { type: "adaptive", display: "summarized" },
-        outputConfig: undefined,
-      });
-      expect(resolveClaudeThinking("claude-opus-4-7", "minimal").outputConfig).toEqual({ effort: "low" });
+    it("sends Droid's off body, which keeps thinking on for Opus 5.5 and Sonnet 5.5", () => {
+      expect(claude("claude-sonnet-5", "none")).toEqual({ thinking: { type: "disabled" } });
+      // Droid 1.3.0 lists no off effort for Opus 5.5, so a disable request gets its lowest effort.
+      expect(claude("claude-opus-5-5", "none")).toEqual({ thinking: { type: "adaptive", display: "summarized" }, output_config: { effort: "low" } });
+      expect(claude("claude-sonnet-5-5", "none")).toEqual({ thinking: { type: "between_tools" }, output_config: { effort: "high" } });
+      expect(claude("claude-opus-4-7", "minimal").output_config).toEqual({ effort: "low" });
     });
 
     it("configures adaptive thinking without display for Opus 4.6 and Sonnet 4.6", () => {
       for (const m of ["claude-sonnet-4-6", "claude-opus-4-6"]) {
-        const config = resolveClaudeThinking(m, "high");
-        expect(config.thinking).toEqual({ type: "adaptive" });
-        expect(config.outputConfig).toEqual({ effort: "high" });
-        expect(resolveClaudeThinking(m, "xhigh").outputConfig).toEqual({ effort: "high" });
+        expect(claude(m, "high")).toEqual({ thinking: { type: "adaptive" }, output_config: { effort: "high" } });
+        expect(claude(m, "xhigh").output_config).toEqual({ effort: "high" });
       }
     });
 
-    it("configures enabled budget thinking for Claude Opus 4.5", () => {
-      const config = resolveClaudeThinking("claude-opus-4-5-20251101", "high");
-      expect(config.thinking).toEqual({ type: "enabled", budget_tokens: 24576 });
-      expect(config.outputConfig).toEqual({ effort: "high" });
-      expect(resolveClaudeThinking("claude-opus-4-5-20251101", "low")).toMatchObject({
-        thinking: { type: "enabled", budget_tokens: 4096 },
-        outputConfig: { effort: "low" },
+    it("configures enabled budget thinking for the Claude 4.5 models", () => {
+      expect(droidRequestFor("claude-opus-4-5-20251101", "global", "high")).toMatchObject({
+        body: { thinking: { type: "enabled", budget_tokens: 24576 }, output_config: { effort: "high" } },
+        betas: ["effort-2025-11-24"],
       });
-      expect(resolveClaudeThinking("claude-sonnet-4-5-20250929", "medium")).toEqual({
-        thinking: { type: "enabled", budget_tokens: 12288 },
-        outputConfig: undefined,
+      expect(claude("claude-opus-4-5-20251101", "low")).toEqual({ thinking: { type: "enabled", budget_tokens: 4096 }, output_config: { effort: "low" } });
+      expect(droidRequestFor("claude-sonnet-4-5-20250929", "global", "medium")).toMatchObject({
+        body: { thinking: { type: "enabled", budget_tokens: 12288 } },
+        betas: ["interleaved-thinking-2025-05-14"],
       });
-      expect(resolveClaudeThinking("claude-haiku-4-5-20251001", "high").thinking.budget_tokens).toBe(24576);
+      expect(claude("claude-haiku-4-5-20251001", "high").thinking.budget_tokens).toBe(24576);
     });
 
-    it("configures enabled thinking for MiniMax M2.x", () => {
-      const config = resolveClaudeThinking("minimax-m2.5", "low");
-      expect(config.thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
-      expect(config.outputConfig).toBeUndefined();
-
-      const highConfig = resolveClaudeThinking("minimax-m2.7", "high");
-      expect(highConfig.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
-      expect(highConfig.outputConfig).toBeUndefined();
+    it("configures enabled thinking with an output effort for MiniMax M2.x", () => {
+      expect(claude("minimax-m2.5", "low")).toEqual({ thinking: { type: "enabled", budget_tokens: 4096 }, output_config: { effort: "low" } });
+      expect(claude("minimax-m2.7", "high")).toEqual({ thinking: { type: "enabled", budget_tokens: 24576 }, output_config: { effort: "high" } });
     });
   });
 
@@ -549,7 +533,9 @@ describe("FactoryExecutor", () => {
 
     it("uses chat-completions semantics for MiniMax M3", () => {
       const transformed = executor.transformRequest("minimax-m3", { messages: [{ role: "user", content: "Hello" }] }, true);
-      expect(transformed.reasoning_history).toBe("preserved");
+      // Droid 1.3.0 sends MiniMax M3 its high effort with no reasoning history.
+      expect(transformed).toMatchObject({ temperature: 1, reasoning_effort: "high" });
+      expect(transformed.reasoning_history).toBeUndefined();
       expect(transformed.thinking).toBeUndefined();
     });
 
@@ -569,8 +555,9 @@ describe("FactoryExecutor", () => {
     });
 
     it("does not re-enable disabled Claude thinking or forward completions-only effort", () => {
+      // Droid 1.3.0 sends disabled thinking as it is.
       const disabled = executor.transformRequest("claude-sonnet-5", { thinking: { type: "disabled" }, output_config: { effort: "high" } }, true);
-      expect(disabled.thinking).toBeUndefined();
+      expect(disabled.thinking).toEqual({ type: "disabled" });
       expect(disabled.output_config).toBeUndefined();
 
       const opus55 = executor.transformRequest("claude-opus-5-5", { thinking: { type: "disabled" } }, true);
@@ -602,16 +589,16 @@ describe("FactoryExecutor", () => {
       expect(minimax.thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
     });
 
-    it("configures MiniMax with budget_tokens, no output_config, and raises max_tokens if needed", () => {
+    it("configures MiniMax with Droid's budget and effort, and raises max_tokens if needed", () => {
       const body = {
         messages: [{ role: "user", content: "Hello" }],
         max_tokens: 1024,
       };
       const transformed = executor.transformRequest("minimax-m2.7", body, false);
 
-      expect(transformed.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
-      expect(transformed.output_config).toBeUndefined();
-      expect(transformed.max_tokens).toBe(3072); // 2048 + 1024
+      expect(transformed.thinking).toEqual({ type: "enabled", budget_tokens: 24576 });
+      expect(transformed.output_config).toEqual({ effort: "high" });
+      expect(transformed.max_tokens).toBe(25600); // 24576 + 1024
     });
 
     it("strips competing Claude Code identity from system prompt", () => {
@@ -698,7 +685,7 @@ describe("FactoryExecutor", () => {
       expect(transformed.model).toBe("gemini-3.8-flash");
       expect(transformed.systemInstruction).toBeDefined();
       expect(transformed.systemInstruction.parts[0].text).toContain("You are Droid, an AI software engineering agent built by Factory");
-      expect(transformed.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
+      expect(transformed.generationConfig?.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "HIGH" });
       // Critical Google proto3 constraints: no stream, no reasoning_effort at top-level
       expect(transformed.stream).toBeUndefined();
       expect(transformed.reasoning_effort).toBeUndefined();
@@ -728,13 +715,13 @@ describe("FactoryExecutor", () => {
       expect(transformed.stream).toBeUndefined();
       // reasoning_effort stripped and moved to thinkingConfig
       expect(transformed.reasoning_effort).toBeUndefined();
-      expect(transformed.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
-      // generationConfig parameters moved and deleted from top-level
-      expect(transformed.generationConfig?.maxOutputTokens).toBe(2048);
+      expect(transformed.generationConfig?.thinkingConfig?.thinkingLevel).toBe("HIGH");
+      // Droid 1.3.0 owns the sampling fields and sends no output limit.
+      expect(transformed.generationConfig?.maxOutputTokens).toBeUndefined();
       expect(transformed.max_tokens).toBeUndefined();
-      expect(transformed.generationConfig?.temperature).toBe(0.7);
+      expect(transformed.generationConfig?.temperature).toBe(1);
       expect(transformed.temperature).toBeUndefined();
-      expect(transformed.generationConfig?.topP).toBe(0.9);
+      expect(transformed.generationConfig?.topP).toBe(0.95);
       expect(transformed.top_p).toBeUndefined();
       expect(transformed.generationConfig?.stopSequences).toEqual(["END"]);
       expect(transformed.stop).toBeUndefined();
