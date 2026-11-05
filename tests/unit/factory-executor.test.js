@@ -58,7 +58,7 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("glm-5.3")).toBe("openai-completions");
       expect(resolveTargetGateway("glm-5.2")).toBe("openai-completions");
       expect(resolveTargetGateway("kimi-k3")).toBe("openai-completions");
-      expect(resolveTargetGateway("kimi-k2.7-code")).toBe("openai-completions");
+      expect(resolveTargetGateway("kimi-k2.5")).toBe("openai-completions");
       expect(resolveTargetGateway("deepseek-v4-pro")).toBe("openai-completions");
       expect(resolveTargetGateway("deepseek-v4-flash-0731")).toBe("openai-completions");
       expect(resolveTargetGateway("nemotron-3-ultra")).toBe("openai-completions");
@@ -80,7 +80,6 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("gemini-3.6-flash")).toBe("google");
       expect(resolveTargetGateway("gemini-3.5-flash")).toBe("google");
       expect(resolveTargetGateway("gemini-3-flash-preview")).toBe("google");
-      expect(resolveTargetGateway("gemini-3-pro-preview")).toBe("google");
       expect(resolveTargetGateway("garnet-07-15")).toBe("google");
       expect(resolveTargetGateway("gemini-4-argon")).toBe("google");
     });
@@ -123,10 +122,9 @@ describe("FactoryExecutor", () => {
       expect(upstreamProviderFor("deepseek-v4-flash-0731")).toBe("fireworks");
     });
 
-    it("returns baseten for GLM 5.2, GLM 5.2 Fast, GLM 4.6, and Nemotron 3 Ultra as Droid 1.3.0 does", () => {
+    it("returns baseten for GLM 5.2, GLM 5.2 Fast, and Nemotron 3 Ultra as Droid 1.3.0 does", () => {
       expect(upstreamProviderFor("glm-5.2")).toBe("baseten");
       expect(upstreamProviderFor("glm-5.2-fast")).toBe("baseten");
-      expect(upstreamProviderFor("glm-4.6")).toBe("baseten");
       expect(upstreamProviderFor("nemotron-3-ultra")).toBe("baseten");
       expect(upstreamProviderFor("glm-5.1")).toBe("fireworks");
     });
@@ -230,8 +228,7 @@ describe("FactoryExecutor", () => {
       expect(claude("claude-haiku-4-5-20251001", "high").thinking.budget_tokens).toBe(24576);
     });
 
-    it("configures enabled thinking with an output effort for MiniMax M2.x", () => {
-      expect(claude("minimax-m2.5", "low")).toEqual({ thinking: { type: "enabled", budget_tokens: 4096 }, output_config: { effort: "low" } });
+    it("configures enabled thinking with an output effort for MiniMax M2.7", () => {
       expect(claude("minimax-m2.7", "high")).toEqual({ thinking: { type: "enabled", budget_tokens: 24576 }, output_config: { effort: "high" } });
     });
   });

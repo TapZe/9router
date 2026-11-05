@@ -239,7 +239,7 @@ const DEVIN_CLI_GPT_CAPS = { vision: true, reasoning: true, search: true, thinki
 const FACTORY_ANTHROPIC_200K = new Set(["claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"]);
 const FACTORY_BUDGET_MODELS = new Set([
   "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001",
-  "minimax-m2.7", "minimax-m2.5",
+  "minimax-m2.7",
 ]);
 const FACTORY_MODEL_CAPABILITIES = {};
 for (const [id, droid] of Object.entries(FACTORY_DROID_MODELS)) {

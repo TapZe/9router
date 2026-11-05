@@ -37,14 +37,12 @@ const DROID_1_3_0_EFFORTS = {
   "deepseek-v4.1-flash-1017": [["none", "low", "high", "max"], "high"],
   "garnet-07-15": [["medium", "high"], "high"],
   "gemini-3-flash-preview": [["minimal", "low", "medium", "high"], "high"],
-  "gemini-3-pro-preview": [["none", "low", "medium", "high"], "high"],
   "gemini-3.1-pro-preview": [["low", "medium", "high"], "high"],
   "gemini-3.5-flash": [["minimal", "low", "medium", "high"], "high"],
   "gemini-3.6-flash": [["low", "medium", "high"], "high"],
   "gemini-3.7-flash": [["low", "medium", "high"], "high"],
   "gemini-3.8-flash": [["low", "medium", "high"], "high"],
   "gemini-4-argon": [["low", "medium", "high"], "medium"],
-  "glm-4.6": [["none"], "none"],
   "glm-4.7": [["none"], "none"],
   "glm-5": [["none"], "none"],
   "glm-5.1": [["none", "high"], "high"],
@@ -81,10 +79,7 @@ const DROID_1_3_0_EFFORTS = {
   "grok-4.7": [["low", "medium", "high", "xhigh"], "high"],
   "inkling": [["none", "minimal", "low", "medium", "high", "xhigh", "max"], "high"],
   "kimi-k2.5": [["none", "high"], "high"],
-  "kimi-k2.6": [["none", "high"], "high"],
-  "kimi-k2.7-code": [["none", "high"], "high"],
   "kimi-k3": [["none", "low", "high", "max"], "high"],
-  "minimax-m2.5": [["low", "medium", "high"], "high"],
   "minimax-m2.7": [["high"], "high"],
   "minimax-m3": [["high"], "high"],
   "minimax-m3.1-flash": [["low", "medium", "high", "xhigh", "max"], "max"],
@@ -126,7 +121,7 @@ describe("Factory reasoning efforts from Droid 1.3.0", () => {
     expect(effortFor("gpt-5.5-pro", "none")).toBe("medium");
     expect(factoryEffortFor("garnet-07-15", "low")).toBe("high");
     expect(effortFor("garnet-07-15", "low")).toBe("HIGH");
-    expect(effortFor("kimi-k2.6", "medium")).toBe("high");
+    expect(effortFor("kimi-k2.5", "medium")).toBe("high");
     expect(effortFor("qwen3.8-max", "high")).toBe("xhigh");
     expect(effortFor("gpt-5.5", "max")).toBe("medium");
     expect(effortFor("glm-5.3", "medium")).toBe("max");

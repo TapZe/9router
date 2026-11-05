@@ -93,8 +93,8 @@ describe("Factory request fields from Droid 1.3.0", () => {
     expect(send("claude-sonnet-4-5-20250929", "global", clientBody("anthropic", "low")).sent.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
     expect(send("glm-5.1", "us", clientBody("completions", "high")).sent).toMatchObject({ temperature: 1, chat_template_args: { enable_thinking: true } });
     expect(send("beam-1.0", "global", clientBody("completions", "high")).sent).toMatchObject({ reasoning_effort: "high", allow_missing_thinking: true });
-    expect(send("gemini-3-pro-preview", "global", clientBody("google", "medium")).sent.generationConfig).toEqual({
-      temperature: 1, topP: 0.95, topK: 64, thinkingConfig: { includeThoughts: true, thinkingLevel: "HIGH" },
+    expect(send("gemini-3.1-pro-preview", "global", clientBody("google", "medium")).sent.generationConfig).toEqual({
+      temperature: 1, topP: 0.95, topK: 64, thinkingConfig: { includeThoughts: true, thinkingLevel: "MEDIUM" },
     });
     expect(send("grok-4.7", "global", clientBody("responses", "low")).sent.max_output_tokens).toBe(63356);
   });
