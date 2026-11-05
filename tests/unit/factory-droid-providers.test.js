@@ -102,7 +102,7 @@ describe("Factory provider choice from Droid 1.3.0", () => {
   });
 
   it("still picks a provider for models Droid no longer lists", () => {
-    expect(upstreamProviderFor("gpt-5.1")).toBe("openai");
+    expect(upstreamProviderFor("gpt-4.1")).toBe("openai");
     expect(upstreamProviderFor("claude-opus-4-1")).toBe("anthropic");
     expect(upstreamProviderFor("gemini-2.5-pro")).toBe("google");
     expect(upstreamProviderFor("grok-4")).toBe("xai");

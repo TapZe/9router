@@ -4,7 +4,7 @@ import { getCapabilitiesForModel } from "./capabilities.js";
 import { matchPattern } from "./pricing.js";
 import { resolveKiroEffortPath } from "../config/kiroConstants.js";
 import { getProviderModels } from "../config/providerModels.js";
-import { FACTORY_DROID_MODELS } from "./factoryDroid.js";
+import { FACTORY_DROID_MODELS, factoryDroidModelId } from "./factoryDroid.js";
 
 // Shared level sets (deduped) — verified against provider docs + wire in thinkingUnified.applyFormat.
 const L = {
@@ -111,7 +111,7 @@ const isOpenAICompatibleNode = (provider) => String(provider || "").startsWith("
 // swaps any other for the model's default effort. Models without a Droid row
 // keep the requested effort.
 export function factoryEffortFor(modelId, requested) {
-  const droid = FACTORY_DROID_MODELS[modelId];
+  const droid = FACTORY_DROID_MODELS[factoryDroidModelId(modelId)];
   if (!droid) return requested;
   const effort = requested === "off" ? "none" : requested;
   return droid.efforts.includes(effort) ? effort : droid.defaultEffort;
@@ -126,7 +126,7 @@ export function getThinkingLevels(provider, model) {
   const baseId = String(model || "").replace(/\([^()]+\)\s*$/, "");
   const modelLevels = provider === "codex"
     ? getProviderModels("cx").find((entry) => entry.id === baseId)?.thinkingLevels
-    : thinkingProvider === "factory" ? FACTORY_DROID_MODELS[baseId]?.efforts : null;
+    : thinkingProvider === "factory" ? FACTORY_DROID_MODELS[factoryDroidModelId(baseId)]?.efforts : null;
   const hit = PATTERN_THINKING.find((entry) =>
     (!entry.provider || entry.provider === thinkingProvider) && matchPattern(entry.pattern, model)
   );

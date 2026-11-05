@@ -111,7 +111,7 @@ describe("Factory request fields from Droid 1.3.0", () => {
   });
 
   it("leaves models Droid no longer lists on the old path", () => {
-    const { sent } = send("gpt-5.1", "global", { input: [{ role: "user", content: "hi" }], reasoning_effort: "high", temperature: 0.2 });
+    const { sent } = send("gpt-4.1", "global", { input: [{ role: "user", content: "hi" }], reasoning_effort: "high", temperature: 0.2 });
     expect(sent.reasoning).toEqual({ effort: "high" });
     expect(sent.temperature).toBeUndefined();
     expect(sent.prompt_cache_retention).toBeUndefined();

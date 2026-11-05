@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { getCapabilitiesForModel, PROVIDER_CAPABILITIES } from "../../open-sse/providers/capabilities.js";
 import { getThinkingLevels } from "../../open-sse/providers/thinkingLevels.js";
 import factoryRegistry from "../../open-sse/providers/registry/factory.js";
+import { FACTORY_DROID_RETIRED_MODELS } from "../../open-sse/providers/factoryDroid.js";
 
 describe("getCapabilitiesForModel", () => {
 
@@ -153,7 +154,8 @@ describe("getCapabilitiesForModel", () => {
   it("defines hosted limits for every registered Factory model", () => {
     const registered = factoryRegistry.models.map(({ id }) => id).sort();
     expect([...new Set(registered)]).toEqual(registered);
-    expect(Object.keys(PROVIDER_CAPABILITIES.factory).sort()).toEqual(registered);
+    // The ids Droid dropped keep a row so they show the default model's limits.
+    expect(Object.keys(PROVIDER_CAPABILITIES.factory).sort()).toEqual([...registered, ...FACTORY_DROID_RETIRED_MODELS].sort());
     // Promoted 2026-09: docs.factory.ai/models publishes deepseek-v4.1-flash and
     // Droid 0.228.1 ships binary-audited limits for it (image input, disable-able
     // thinking, openai wire format).
