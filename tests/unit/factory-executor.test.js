@@ -118,16 +118,16 @@ describe("FactoryExecutor", () => {
       expect(upstreamProviderFor("minimax-m3")).toBe("fireworks");
       expect(upstreamProviderFor("glm-5.3")).toBe("fireworks");
       expect(upstreamProviderFor("kimi-k3")).toBe("fireworks");
-      expect(upstreamProviderFor("nemotron-3-ultra")).toBe("fireworks");
       expect(upstreamProviderFor("inkling")).toBe("fireworks");
       expect(upstreamProviderFor("qwen3.8-max")).toBe("fireworks");
       expect(upstreamProviderFor("deepseek-v4-flash-0731")).toBe("fireworks");
     });
 
-    it("returns baseten for GLM 5.2, GLM 5.2 Fast, and GLM 4.6 as Droid 1.3.0 does", () => {
+    it("returns baseten for GLM 5.2, GLM 5.2 Fast, GLM 4.6, and Nemotron 3 Ultra as Droid 1.3.0 does", () => {
       expect(upstreamProviderFor("glm-5.2")).toBe("baseten");
       expect(upstreamProviderFor("glm-5.2-fast")).toBe("baseten");
       expect(upstreamProviderFor("glm-4.6")).toBe("baseten");
+      expect(upstreamProviderFor("nemotron-3-ultra")).toBe("baseten");
       expect(upstreamProviderFor("glm-5.1")).toBe("fireworks");
     });
 

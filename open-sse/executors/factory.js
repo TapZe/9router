@@ -82,13 +82,13 @@ export function resolveTargetGateway(modelId) {
   return "openai-completions";
 }
 
-// Droid 1.3.0 sends these open models to Baseten instead of Fireworks.
-const BASETEN_MODELS = new Set([
-  "beam-1.0", "muse-spark-open", "nemotron-3.5-super", "glm-5.2", "glm-5.2-fast", "glm-4.6",
-]);
-
+// Droid's table picks the provider. The prefix rules cover models it does not list.
 export function upstreamProviderFor(modelId) {
   const m = cleanModelId(modelId);
+  const droidProvider = FACTORY_DROID_MODELS[m]?.providers.global;
+  if (droidProvider) {
+    return droidProvider;
+  }
   if (m.startsWith("claude-") || m.startsWith("atlas-") || m.startsWith("aster-")) {
     return "anthropic";
   }
@@ -103,12 +103,6 @@ export function upstreamProviderFor(modelId) {
   }
   if (m.startsWith("mistral-")) {
     return "mistral";
-  }
-  if (BASETEN_MODELS.has(m)) {
-    return "baseten";
-  }
-  if (m === "muse-spark-1.3") {
-    return "google";
   }
   return "fireworks";
 }
