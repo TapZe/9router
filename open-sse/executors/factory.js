@@ -2,6 +2,7 @@ import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { FACTORY_DROID_MODELS } from "../providers/factoryDroid.js";
 import { FACTORY_DROID_REQUESTS } from "../providers/factoryDroidRequests.js";
+import { factoryEffortFor } from "../providers/thinkingLevels.js";
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
@@ -136,16 +137,6 @@ export function resolveFactoryApiBase(credentials = null) {
     return custom.trim().replace(/\/+$/, "");
   }
   return "https://api.factory.ai";
-}
-
-// The effort to send for a request. Droid 1.3.0 keeps an effort the model
-// lists and swaps any other for the model's default effort. Models without a
-// Droid row keep the requested effort.
-export function factoryEffortFor(modelId, requested) {
-  const droid = FACTORY_DROID_MODELS[cleanModelId(modelId)];
-  if (!droid) return requested;
-  const effort = requested === "off" ? "none" : requested;
-  return droid.efforts.includes(effort) ? effort : droid.defaultEffort;
 }
 
 // Fields Droid 1.3.0 decides per model, effort, and provider. The request
@@ -571,7 +562,7 @@ export class FactoryExecutor extends BaseExecutor {
       // Gemini level-based thinking config for models Droid does not list
       const effort = cloned.reasoning_effort || cloned.thinking?.effort || credentials?._requestedEffort;
       if (effort && !droidRequest) {
-        const level = factoryEffortFor(m, String(effort).toLowerCase());
+        const level = String(effort).toLowerCase();
         if (!cloned.generationConfig) cloned.generationConfig = {};
         if (!cloned.generationConfig.thinkingConfig) {
           cloned.generationConfig.thinkingConfig = { thinkingLevel: level };
@@ -748,7 +739,7 @@ export class FactoryExecutor extends BaseExecutor {
     // Reasoning effort for models Droid does not list
     const rawEffort = cloned.reasoning?.effort || cloned.reasoning_effort;
     if (rawEffort) {
-      const normalized = factoryEffortFor(m, String(rawEffort).toLowerCase());
+      const normalized = String(rawEffort).toLowerCase();
 
       if (gateway === "openai-responses") {
         cloned.reasoning = {

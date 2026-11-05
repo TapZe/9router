@@ -107,6 +107,16 @@ const PATTERN_THINKING = [
 const OPENAI_MAX_EFFORT_MODEL = /(?:^|\/)gpt-(?:5\.6|6)(?:[.-]|$)/i;
 const isOpenAICompatibleNode = (provider) => String(provider || "").startsWith("openai-compatible-");
 
+// The effort Factory sends. Droid 1.3.0 keeps an effort the model lists and
+// swaps any other for the model's default effort. Models without a Droid row
+// keep the requested effort.
+export function factoryEffortFor(modelId, requested) {
+  const droid = FACTORY_DROID_MODELS[modelId];
+  if (!droid) return requested;
+  const effort = requested === "off" ? "none" : requested;
+  return droid.efforts.includes(effort) ? effort : droid.defaultEffort;
+}
+
 // Returns valid thinking levels for a model, or null when the model has no reasoning.
 export function getThinkingLevels(provider, model) {
   if (provider === "kiro" && resolveKiroEffortPath(model) === null) return null;

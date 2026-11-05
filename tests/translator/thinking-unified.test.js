@@ -73,11 +73,11 @@ describe("extractThinking", () => {
 });
 
 describe("Factory GPT-6.1 Sol thinking", () => {
-  it("preserves max and clamps unsupported disable to low", () => {
+  it("keeps max and swaps an unlisted disable for the Droid default", () => {
     const max = apply("openai-responses", "gpt-6.1-sol", { reasoning_effort: "max" }, "factory");
     const off = apply("openai-responses", "gpt-6.1-sol", { reasoning_effort: "none" }, "factory");
     expect(max.reasoning_effort).toBe("max");
-    expect(off.reasoning_effort).toBe("low");
+    expect(off.reasoning_effort).toBe("medium");
   });
 });
 

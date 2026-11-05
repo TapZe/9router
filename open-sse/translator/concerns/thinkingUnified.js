@@ -3,7 +3,7 @@
 // never hardcoded per-model here. See .docs/thinking/plan.md MATRIX VI-A.
 
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
-import { getThinkingLevels } from "../../providers/thinkingLevels.js";
+import { factoryEffortFor, getThinkingLevels } from "../../providers/thinkingLevels.js";
 import { PROVIDERS } from "../../providers/index.js";
 import { LEVEL_TO_BUDGET, budgetToLevel, effortToBudget, effortToThinkingLevel } from "./thinking.js";
 
@@ -438,11 +438,20 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels, display, model = "")
 // Mutates and returns body. No-op when model has no reasoning capability.
 // `intent` is a pre-captured config (from captureThinking on the original body);
 // falls back to extracting from the current body when omitted.
+// Factory picks the effort the way Droid 1.3.0 does before any generic clamp
+// runs, so an effort the model does not list becomes the model's default.
+function factoryThinking(provider, model, cfg) {
+  if (!["factory", "fy", "droid"].includes(provider)) return cfg;
+  if (cfg?.mode !== "none" && cfg?.mode !== "level") return cfg;
+  const level = factoryEffortFor(model, cfg.mode === "none" ? "none" : cfg.level);
+  return level === "none" ? { mode: "none" } : { mode: "level", level };
+}
+
 export function applyThinking(targetFormat, model, body, provider = null, intent = undefined) {
   if (!body || typeof body !== "object") return body;
 
   const { cleanModel, override } = parseSuffix(model);
-  const cfg = override || intent || extractThinking(body);
+  const cfg = factoryThinking(provider, cleanModel, override || intent || extractThinking(body));
   const caps = getCapabilitiesForModel(provider, cleanModel);
 
   // Model cannot reason → strip any stray thinking fields.
