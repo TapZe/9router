@@ -133,6 +133,7 @@ export default {
     { id: "grok-4.5", name: "Grok 4.5 (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
 
     // Core Open models (routed to /api/llm/o/v1/chat/completions)
+    { id: "kimi-k3.1-pro", name: "Kimi K3.1 Pro (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "kimi-k3", name: "Kimi K3 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "kimi-k2.5", name: "Kimi K2.5 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "glm-5.3", name: "GLM 5.3 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
