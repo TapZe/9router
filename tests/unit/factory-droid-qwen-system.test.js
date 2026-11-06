@@ -58,6 +58,42 @@ describe("Factory Qwen3.8 Max later system messages from Droid 1.5.0", () => {
     expect(await send("qwen3.8-max", once)).toEqual(once);
   });
 
+  // Droid puts its own system prompt at index 0 before c4 runs
+  // (chunk-8me1ar91.js offset 877258, `else ro.unshift({role:"system",...})`;
+  // Qwen has no systemAsUser), and c4 converts every system message after
+  // index 0. probe-c4-1.5.json runs the verbatim c4 on these shapes.
+  const userFirst = [
+    { role: "user", content: "hi" },
+    { role: "system", content: "  Plan mode is on.  " },
+    { role: "user", content: "go" },
+    { role: "system", content: [{ type: "text", text: "A" }, { type: "text", text: "B" }] },
+    { role: "developer", content: "Developer note." },
+    { role: "system", content: "<system-reminder>\nAlready wrapped.\n</system-reminder>" },
+  ];
+
+  it("puts the Droid prompt first when the client starts with a user message", async () => {
+    const sent = await send("qwen3.8-max", userFirst);
+    expect(sent).toEqual([
+      { role: "system", content: FACTORY_DROID_SYSTEM_PROMPT },
+      { role: "user", content: "hi" },
+      { role: "user", content: "<system-reminder>\n  Plan mode is on.  \n</system-reminder>" },
+      { role: "user", content: "go" },
+      { role: "user", content: "<system-reminder>\nA\nB\n</system-reminder>" },
+      { role: "user", content: "<system-reminder>\nDeveloper note.\n</system-reminder>" },
+      { role: "user", content: "<system-reminder>\nAlready wrapped.\n</system-reminder>" },
+    ]);
+    expect(await send("qwen3.8-max", sent)).toEqual(sent);
+  });
+
+  it("keeps the old prompt placement for other models when the client starts with a user message", async () => {
+    const sent = await send("kimi-k3", userFirst.slice(0, 3));
+    expect(sent).toEqual([
+      { role: "user", content: "hi" },
+      { role: "system", content: `${FACTORY_DROID_SYSTEM_PROMPT}\n\nPlan mode is on.` },
+      { role: "user", content: "go" },
+    ]);
+  });
+
   it("leaves later system messages alone for models without the rule", async () => {
     for (const model of ["kimi-k3", "kimi-k3.1-pro", "glm-5.3", "deepseek-v4-pro"]) {
       const sent = await send(model, conversation);

@@ -3,8 +3,8 @@
 // Each row holds what Droid 1.5.0 uses for one model. That is the reasoning
 // efforts it accepts, the effort it uses by default, whether it takes images,
 // its input and output token limits, and the provider it picks in each
-// inference region. systemMessageOnlyAtBeginning means Droid sends each
-// system message after the first as a user message. "none" is the off effort.
+// inference region. systemMessageOnlyAtBeginning means Droid sends any
+// system message after index 0 as a user message. "none" is the off effort.
 export const FACTORY_DROID_VERSION = "1.5.0";
 
 export const FACTORY_DROID_MODELS = {

@@ -617,7 +617,12 @@ export class FactoryExecutor extends BaseExecutor {
       // OpenAI Chat Completions format (Factory Core / Fireworks gateway)
       if (Array.isArray(cloned.messages)) {
         const msgs = cloned.messages.map((m) => ({ ...m }));
-        const sysIndex = msgs.findIndex((m) => m.role === "system");
+        // Droid puts its system prompt at index 0. A model with
+        // systemMessageOnlyAtBeginning only takes a system message there.
+        const systemFirst = FACTORY_DROID_MODELS[m]?.systemMessageOnlyAtBeginning;
+        const sysIndex = systemFirst
+          ? (msgs[0]?.role === "system" ? 0 : -1)
+          : msgs.findIndex((m) => m.role === "system");
         if (sysIndex >= 0) {
           const sys = msgs[sysIndex];
           if (typeof sys.content === "string") {
@@ -639,12 +644,11 @@ export class FactoryExecutor extends BaseExecutor {
           msgs.unshift({ role: "system", content: FACTORY_DROID_SYSTEM_PROMPT });
         }
 
-        // Droid sends each system message after the first as a user system
+        // Droid sends each system message after index 0 as a user system
         // reminder on models with systemMessageOnlyAtBeginning.
-        if (FACTORY_DROID_MODELS[m]?.systemMessageOnlyAtBeginning) {
-          const first = msgs.findIndex((msg) => msg.role === "system");
+        if (systemFirst) {
           msgs.forEach((msg, i) => {
-            if (i > first && msg.role === "system") msgs[i] = { ...msg, role: "user", content: systemReminder(msg.content) };
+            if (i > 0 && msg.role === "system") msgs[i] = { ...msg, role: "user", content: systemReminder(msg.content) };
           });
         }
 
