@@ -3,7 +3,8 @@
 // Each row holds what Droid 1.5.0 uses for one model. That is the reasoning
 // efforts it accepts, the effort it uses by default, whether it takes images,
 // its input and output token limits, and the provider it picks in each
-// inference region. "none" is the off effort.
+// inference region. systemMessageOnlyAtBeginning means Droid sends each
+// system message after the first as a user message. "none" is the off effort.
 export const FACTORY_DROID_VERSION = "1.5.0";
 
 export const FACTORY_DROID_MODELS = {
@@ -89,5 +90,5 @@ export const FACTORY_DROID_MODELS = {
   "muse-spark-open": {"api":"completions","efforts":["low","medium","high","xhigh","max"],"defaultEffort":"high","images":true,"maxInputTokens":908928,"maxOutputTokens":131072,"providers":{"global":"baseten","us":"baseten"}},
   "nemotron-3-ultra": {"api":"completions","efforts":["none","high"],"defaultEffort":"high","images":false,"maxInputTokens":136464,"maxOutputTokens":65536,"providers":{"global":"baseten","us":"baseten"}},
   "nemotron-3.5-super": {"api":"completions","efforts":["none","high"],"defaultEffort":"high","images":true,"maxInputTokens":934464,"maxOutputTokens":65536,"providers":{"global":"baseten","us":"baseten"}},
-  "qwen3.8-max": {"api":"completions","efforts":["low","medium","xhigh"],"defaultEffort":"xhigh","images":false,"maxInputTokens":131072,"maxOutputTokens":131072,"providers":{"global":"fireworks"}},
+  "qwen3.8-max": {"api":"completions","efforts":["low","medium","xhigh"],"defaultEffort":"xhigh","images":false,"maxInputTokens":131072,"maxOutputTokens":131072,"providers":{"global":"fireworks"},"systemMessageOnlyAtBeginning":true},
 };

@@ -212,6 +212,14 @@ function applyDroidRequest(body, request, sessionId) {
   return next;
 }
 
+// Droid 1.5.0's wrapping: text already wrapped after a trim stays as it is.
+function systemReminder(content) {
+  const text = typeof content === "string" ? content : (content ?? []).map((part) => part.text).join("\n");
+  const trimmed = text.trim();
+  if (trimmed.startsWith("<system-reminder>") && trimmed.endsWith("</system-reminder>")) return text;
+  return `<system-reminder>\n${text}\n</system-reminder>`;
+}
+
 export function extractTextContent(content) {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -629,6 +637,15 @@ export class FactoryExecutor extends BaseExecutor {
           }
         } else {
           msgs.unshift({ role: "system", content: FACTORY_DROID_SYSTEM_PROMPT });
+        }
+
+        // Droid sends each system message after the first as a user system
+        // reminder on models with systemMessageOnlyAtBeginning.
+        if (FACTORY_DROID_MODELS[m]?.systemMessageOnlyAtBeginning) {
+          const first = msgs.findIndex((msg) => msg.role === "system");
+          msgs.forEach((msg, i) => {
+            if (i > first && msg.role === "system") msgs[i] = { ...msg, role: "user", content: systemReminder(msg.content) };
+          });
         }
 
         // 3. Fireworks / Factory Core requirements for assistant tool turns and tool results
