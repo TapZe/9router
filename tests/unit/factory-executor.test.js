@@ -4,13 +4,11 @@ import {
   resolveTargetGateway,
   upstreamProviderFor,
   resolveFactoryApiBase,
-  resolveClaudeThinking,
+  droidRequestFor,
   embeddedToolCallFromName,
-  supportsExtraHighEffort,
   FACTORY_DROID_SYSTEM_PROMPT,
   FACTORY_OPENAI_PLATFORM_ORG,
   ANTHROPIC_VERSION,
-  ANTHROPIC_BETAS,
 } from "../../open-sse/executors/factory.js";
 
 describe("FactoryExecutor", () => {
@@ -43,7 +41,6 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("gpt-5.6-sol")).toBe("openai-responses");
       expect(resolveTargetGateway("gpt-5.4")).toBe("openai-responses");
       expect(resolveTargetGateway("gpt-5.3-codex")).toBe("openai-responses");
-      expect(resolveTargetGateway("gpt-5-codex")).toBe("openai-responses");
       expect(resolveTargetGateway("grok-4.6")).toBe("openai-responses");
       expect(resolveTargetGateway("gpt-6-sol-fast")).toBe("openai-responses");
       expect(resolveTargetGateway("gpt-6.1-sol-ultrafast")).toBe("openai-responses");
@@ -58,7 +55,7 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("glm-5.3")).toBe("openai-completions");
       expect(resolveTargetGateway("glm-5.2")).toBe("openai-completions");
       expect(resolveTargetGateway("kimi-k3")).toBe("openai-completions");
-      expect(resolveTargetGateway("kimi-k2.7-code")).toBe("openai-completions");
+      expect(resolveTargetGateway("kimi-k2.5")).toBe("openai-completions");
       expect(resolveTargetGateway("deepseek-v4-pro")).toBe("openai-completions");
       expect(resolveTargetGateway("deepseek-v4-flash-0731")).toBe("openai-completions");
       expect(resolveTargetGateway("nemotron-3-ultra")).toBe("openai-completions");
@@ -80,7 +77,6 @@ describe("FactoryExecutor", () => {
       expect(resolveTargetGateway("gemini-3.6-flash")).toBe("google");
       expect(resolveTargetGateway("gemini-3.5-flash")).toBe("google");
       expect(resolveTargetGateway("gemini-3-flash-preview")).toBe("google");
-      expect(resolveTargetGateway("gemini-3-pro-preview")).toBe("google");
       expect(resolveTargetGateway("garnet-07-15")).toBe("google");
       expect(resolveTargetGateway("gemini-4-argon")).toBe("google");
     });
@@ -118,10 +114,16 @@ describe("FactoryExecutor", () => {
       expect(upstreamProviderFor("minimax-m3")).toBe("fireworks");
       expect(upstreamProviderFor("glm-5.3")).toBe("fireworks");
       expect(upstreamProviderFor("kimi-k3")).toBe("fireworks");
-      expect(upstreamProviderFor("nemotron-3-ultra")).toBe("fireworks");
       expect(upstreamProviderFor("inkling")).toBe("fireworks");
       expect(upstreamProviderFor("qwen3.8-max")).toBe("fireworks");
       expect(upstreamProviderFor("deepseek-v4-flash-0731")).toBe("fireworks");
+    });
+
+    it("returns baseten for GLM 5.2, GLM 5.2 Fast, and Nemotron 3 Ultra as Droid 1.3.0 does", () => {
+      expect(upstreamProviderFor("glm-5.2")).toBe("baseten");
+      expect(upstreamProviderFor("glm-5.2-fast")).toBe("baseten");
+      expect(upstreamProviderFor("nemotron-3-ultra")).toBe("baseten");
+      expect(upstreamProviderFor("glm-5.1")).toBe("fireworks");
     });
 
     it("returns mistral for Mistral models", () => {
@@ -180,62 +182,45 @@ describe("FactoryExecutor", () => {
     });
   });
 
-  describe("resolveClaudeThinking", () => {
+  describe("Claude thinking from Droid 1.3.0", () => {
+    const claude = (m, effort) => droidRequestFor(m, "global", effort).body;
+
     it("configures summarized adaptive thinking for current Claude models", () => {
       for (const m of ["claude-fable-5.1", "claude-fable-5", "claude-opus-5", "claude-opus-5-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5", "claude-sonnet-5-5", "atlas-07-21", "aster-07-15"]) {
-        const config = resolveClaudeThinking(m, "medium");
-        expect(config.thinking).toEqual({ type: "adaptive", display: "summarized" });
-        expect(config.outputConfig).toEqual({ effort: "medium" });
+        expect(claude(m, "medium"), m).toEqual({ thinking: { type: "adaptive", display: "summarized" }, output_config: { effort: "medium" } });
       }
     });
 
-    it("honors disabled thinking except on always-adaptive Opus 5.5 and Sonnet 5.5", () => {
-      expect(resolveClaudeThinking("claude-sonnet-5", "off")).toEqual({ thinking: undefined, outputConfig: undefined });
-      // Neither 5.5 model exposes an `off` effort, so a disable request keeps
-      // adaptive thinking and only drops the output effort.
-      expect(resolveClaudeThinking("claude-opus-5-5", "off")).toEqual({
-        thinking: { type: "adaptive", display: "summarized" },
-        outputConfig: undefined,
-      });
-      expect(resolveClaudeThinking("claude-sonnet-5-5", "off")).toEqual({
-        thinking: { type: "adaptive", display: "summarized" },
-        outputConfig: undefined,
-      });
-      expect(resolveClaudeThinking("claude-opus-4-7", "minimal").outputConfig).toEqual({ effort: "low" });
+    it("sends Droid's off body, which keeps thinking on for Opus 5.5 and Sonnet 5.5", () => {
+      expect(claude("claude-sonnet-5", "none")).toEqual({ thinking: { type: "disabled" } });
+      // Droid 1.3.0 lists no off effort for Opus 5.5, so a disable request gets its default effort.
+      expect(claude("claude-opus-5-5", "none")).toEqual({ thinking: { type: "adaptive", display: "summarized" }, output_config: { effort: "medium" } });
+      expect(claude("claude-sonnet-5-5", "none")).toEqual({ thinking: { type: "between_tools" }, output_config: { effort: "high" } });
+      expect(claude("claude-opus-4-7", "minimal").output_config).toEqual({ effort: "high" });
     });
 
     it("configures adaptive thinking without display for Opus 4.6 and Sonnet 4.6", () => {
       for (const m of ["claude-sonnet-4-6", "claude-opus-4-6"]) {
-        const config = resolveClaudeThinking(m, "high");
-        expect(config.thinking).toEqual({ type: "adaptive" });
-        expect(config.outputConfig).toEqual({ effort: "high" });
-        expect(resolveClaudeThinking(m, "xhigh").outputConfig).toEqual({ effort: "high" });
+        expect(claude(m, "high")).toEqual({ thinking: { type: "adaptive" }, output_config: { effort: "high" } });
+        expect(claude(m, "xhigh").output_config).toEqual({ effort: "high" });
       }
     });
 
-    it("configures enabled budget thinking for Claude Opus 4.5", () => {
-      const config = resolveClaudeThinking("claude-opus-4-5-20251101", "high");
-      expect(config.thinking).toEqual({ type: "enabled", budget_tokens: 24576 });
-      expect(config.outputConfig).toEqual({ effort: "high" });
-      expect(resolveClaudeThinking("claude-opus-4-5-20251101", "low")).toMatchObject({
-        thinking: { type: "enabled", budget_tokens: 4096 },
-        outputConfig: { effort: "low" },
+    it("configures enabled budget thinking for the Claude 4.5 models", () => {
+      expect(droidRequestFor("claude-opus-4-5-20251101", "global", "high")).toMatchObject({
+        body: { thinking: { type: "enabled", budget_tokens: 24576 }, output_config: { effort: "high" } },
+        betas: ["effort-2025-11-24"],
       });
-      expect(resolveClaudeThinking("claude-sonnet-4-5-20250929", "medium")).toEqual({
-        thinking: { type: "enabled", budget_tokens: 12288 },
-        outputConfig: undefined,
+      expect(claude("claude-opus-4-5-20251101", "low")).toEqual({ thinking: { type: "enabled", budget_tokens: 4096 }, output_config: { effort: "low" } });
+      expect(droidRequestFor("claude-sonnet-4-5-20250929", "global", "medium")).toMatchObject({
+        body: { thinking: { type: "enabled", budget_tokens: 12288 } },
+        betas: ["interleaved-thinking-2025-05-14"],
       });
-      expect(resolveClaudeThinking("claude-haiku-4-5-20251001", "high").thinking.budget_tokens).toBe(24576);
+      expect(claude("claude-haiku-4-5-20251001", "high").thinking.budget_tokens).toBe(24576);
     });
 
-    it("configures enabled thinking for MiniMax M2.x", () => {
-      const config = resolveClaudeThinking("minimax-m2.5", "low");
-      expect(config.thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
-      expect(config.outputConfig).toBeUndefined();
-
-      const highConfig = resolveClaudeThinking("minimax-m2.7", "high");
-      expect(highConfig.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
-      expect(highConfig.outputConfig).toBeUndefined();
+    it("configures enabled thinking with an output effort for MiniMax M2.7", () => {
+      expect(claude("minimax-m2.7", "high")).toEqual({ thinking: { type: "enabled", budget_tokens: 24576 }, output_config: { effort: "high" } });
     });
   });
 
@@ -272,27 +257,28 @@ describe("FactoryExecutor", () => {
       };
       const headers = executor.buildHeaders(creds, true, "", "claude-fable-5.1");
 
-      expect(headers["X-Client-Version"]).toBe("1.2.0");
-      expect(headers["User-Agent"]).toBe("factory-cli/1.2.0");
+      expect(headers["X-Client-Version"]).toBe("1.5.0");
+      expect(headers["User-Agent"]).toBe("factory-cli/1.5.0");
       expect(headers["Authorization"]).toBe("Bearer workos-token-123");
       expect(headers["X-Factory-Org-Id"]).toBe("RFmWaCAuH8jTGM21tL5k");
       expect(headers["x-provider-routing-source"]).toBe("registry_default");
       expect(headers["traceparent"]).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
     });
 
-    it("sends the static anthropic-beta allowlist for Claude models", () => {
+    // The betas come from Droid's request, which transformRequest puts on the body.
+    it("sends anthropic-version and no betas of its own for Claude models", () => {
       const creds = { accessToken: "tok" };
       const headers = executor.buildHeaders(creds, true, "", "claude-fable-5.1");
 
       expect(headers["anthropic-version"]).toBe(ANTHROPIC_VERSION);
-      expect(headers["anthropic-beta"]).toBe(ANTHROPIC_BETAS);
-      expect(headers["anthropic-beta"]).not.toContain("effort-2025-11-24");
+      expect(headers["anthropic-beta"]).toBeUndefined();
     });
 
-    it("sends Anthropic betas for MiniMax M2.x, not chat-completions M3", () => {
+    it("sends Anthropic headers for MiniMax M2.x, not chat-completions M3", () => {
       const creds = { accessToken: "tok" };
-      expect(executor.buildHeaders(creds, true, "", "minimax-m2.7")["anthropic-beta"]).toBe(ANTHROPIC_BETAS);
+      expect(executor.buildHeaders(creds, true, "", "minimax-m2.7")["anthropic-version"]).toBe(ANTHROPIC_VERSION);
       const m3Headers = executor.buildHeaders(creds, true, "", "minimax-m3");
+      expect(m3Headers["anthropic-version"]).toBeUndefined();
       expect(m3Headers["anthropic-beta"]).toBeUndefined();
       expect(m3Headers["x-api-provider"]).toBe("fireworks");
     });
@@ -534,7 +520,9 @@ describe("FactoryExecutor", () => {
 
     it("uses chat-completions semantics for MiniMax M3", () => {
       const transformed = executor.transformRequest("minimax-m3", { messages: [{ role: "user", content: "Hello" }] }, true);
-      expect(transformed.reasoning_history).toBe("preserved");
+      // Droid 1.3.0 sends MiniMax M3 its high effort with no reasoning history.
+      expect(transformed).toMatchObject({ temperature: 1, reasoning_effort: "high" });
+      expect(transformed.reasoning_history).toBeUndefined();
       expect(transformed.thinking).toBeUndefined();
     });
 
@@ -554,27 +542,28 @@ describe("FactoryExecutor", () => {
     });
 
     it("does not re-enable disabled Claude thinking or forward completions-only effort", () => {
+      // Droid 1.3.0 sends disabled thinking as it is.
       const disabled = executor.transformRequest("claude-sonnet-5", { thinking: { type: "disabled" }, output_config: { effort: "high" } }, true);
-      expect(disabled.thinking).toBeUndefined();
+      expect(disabled.thinking).toEqual({ type: "disabled" });
       expect(disabled.output_config).toBeUndefined();
 
       const opus55 = executor.transformRequest("claude-opus-5-5", { thinking: { type: "disabled" } }, true);
       expect(opus55.thinking).toEqual({ type: "adaptive", display: "summarized" });
-      expect(opus55.output_config).toBeUndefined();
+      expect(opus55.output_config).toEqual({ effort: "medium" });
 
       const enabled = executor.transformRequest("claude-opus-4-7", { reasoning_effort: "xhigh" }, true);
       expect(enabled.output_config).toEqual({ effort: "xhigh" });
       expect(enabled.reasoning_effort).toBeUndefined();
     });
 
-    it("preserves translator-normalized Claude effort and minimum floors", () => {
+    it("preserves translator-normalized Claude effort and swaps an unlisted one for the default", () => {
       for (const model of ["claude-sonnet-5", "claude-opus-4-7", "claude-sonnet-4-6", "atlas-07-21"]) {
         const transformed = executor.transformRequest(model, { thinking: { type: "adaptive" }, output_config: { effort: "low" } }, true);
         expect(transformed.output_config, model).toEqual({ effort: "low" });
       }
       const opus55 = executor.transformRequest("claude-opus-5-5", { output_config: { effort: "minimal" } }, true);
       expect(opus55.thinking).toEqual({ type: "adaptive", display: "summarized" });
-      expect(opus55.output_config).toEqual({ effort: "low" });
+      expect(opus55.output_config).toEqual({ effort: "medium" });
     });
 
     it("keeps numeric budgets supplied by the translator for older models", () => {
@@ -587,16 +576,16 @@ describe("FactoryExecutor", () => {
       expect(minimax.thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
     });
 
-    it("configures MiniMax with budget_tokens, no output_config, and raises max_tokens if needed", () => {
+    it("configures MiniMax with Droid's budget and effort, and raises max_tokens if needed", () => {
       const body = {
         messages: [{ role: "user", content: "Hello" }],
         max_tokens: 1024,
       };
       const transformed = executor.transformRequest("minimax-m2.7", body, false);
 
-      expect(transformed.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
-      expect(transformed.output_config).toBeUndefined();
-      expect(transformed.max_tokens).toBe(3072); // 2048 + 1024
+      expect(transformed.thinking).toEqual({ type: "enabled", budget_tokens: 24576 });
+      expect(transformed.output_config).toEqual({ effort: "high" });
+      expect(transformed.max_tokens).toBe(25600); // 24576 + 1024
     });
 
     it("strips competing Claude Code identity from system prompt", () => {
@@ -683,7 +672,7 @@ describe("FactoryExecutor", () => {
       expect(transformed.model).toBe("gemini-3.8-flash");
       expect(transformed.systemInstruction).toBeDefined();
       expect(transformed.systemInstruction.parts[0].text).toContain("You are Droid, an AI software engineering agent built by Factory");
-      expect(transformed.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
+      expect(transformed.generationConfig?.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "HIGH" });
       // Critical Google proto3 constraints: no stream, no reasoning_effort at top-level
       expect(transformed.stream).toBeUndefined();
       expect(transformed.reasoning_effort).toBeUndefined();
@@ -713,13 +702,13 @@ describe("FactoryExecutor", () => {
       expect(transformed.stream).toBeUndefined();
       // reasoning_effort stripped and moved to thinkingConfig
       expect(transformed.reasoning_effort).toBeUndefined();
-      expect(transformed.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
-      // generationConfig parameters moved and deleted from top-level
-      expect(transformed.generationConfig?.maxOutputTokens).toBe(2048);
+      expect(transformed.generationConfig?.thinkingConfig?.thinkingLevel).toBe("HIGH");
+      // Droid 1.3.0 owns the sampling fields and sends no output limit.
+      expect(transformed.generationConfig?.maxOutputTokens).toBeUndefined();
       expect(transformed.max_tokens).toBeUndefined();
-      expect(transformed.generationConfig?.temperature).toBe(0.7);
+      expect(transformed.generationConfig?.temperature).toBe(1);
       expect(transformed.temperature).toBeUndefined();
-      expect(transformed.generationConfig?.topP).toBe(0.9);
+      expect(transformed.generationConfig?.topP).toBe(0.95);
       expect(transformed.top_p).toBeUndefined();
       expect(transformed.generationConfig?.stopSequences).toEqual(["END"]);
       expect(transformed.stop).toBeUndefined();
@@ -738,35 +727,36 @@ describe("FactoryExecutor", () => {
       expect(transformed.tools).toBeUndefined();
     });
 
-    it("normalizes reasoning effort: allows xhigh for supported models and clamps for others", () => {
-      // Supported models keep xhigh / max -> xhigh; Responses API moves it to reasoning.effort
+    it("normalizes reasoning effort to the efforts Droid 1.3.0 lists", () => {
+      // A listed effort goes through; Responses API moves it to reasoning.effort
       const gpt6 = executor.transformRequest("gpt-6-astra", { reasoning_effort: "max" }, true);
-      expect(gpt6.reasoning?.effort ?? gpt6.reasoning_effort).toBe("xhigh");
+      expect(gpt6.reasoning?.effort ?? gpt6.reasoning_effort).toBe("max");
       expect(gpt6.reasoning_effort).toBeUndefined();
 
       const sol61 = executor.transformRequest("gpt-6.1-sol", { reasoning_effort: "max" }, true);
       expect(sol61.reasoning?.effort ?? sol61.reasoning_effort).toBe("max");
       const sol61none = executor.transformRequest("gpt-6.1-sol", { reasoning_effort: "none" }, true);
-      expect(sol61none.reasoning?.effort ?? sol61none.reasoning_effort).toBe("low");
+      expect(sol61none.reasoning?.effort ?? sol61none.reasoning_effort).toBe("medium");
 
+      // An effort the model does not list goes to the model's default, as in Droid 1.3.0.
       const glm = executor.transformRequest("glm-5.3", { reasoning_effort: "xhigh" }, true);
-      expect(glm.reasoning_effort).toBe("xhigh");
+      expect(glm.reasoning_effort).toBe("max");
 
-      // Always-on models have no "off" wire value, so disable requests floor to low.
-      expect(executor.transformRequest("beam-1.0", { reasoning_effort: "none" }, true).reasoning_effort).toBe("low");
-      expect(executor.transformRequest("muse-spark-1.2", { reasoning_effort: "off" }, true).reasoning_effort).toBe("low");
+      // Always-on models have no off effort, so disable requests get the default.
+      expect(executor.transformRequest("beam-1.0", { reasoning_effort: "none" }, true).reasoning_effort).toBe("high");
+      expect(executor.transformRequest("muse-spark-1.2", { reasoning_effort: "off" }, true).reasoning_effort).toBe("high");
       const muse13off = executor.transformRequest("muse-spark-1.3", { reasoning_effort: "off" }, true);
-      expect(muse13off.reasoning?.effort ?? muse13off.reasoning_effort).toBe("low");
+      expect(muse13off.reasoning?.effort ?? muse13off.reasoning_effort).toBe("high");
       const muse13none = executor.transformRequest("muse-spark-1.3", { reasoning_effort: "none" }, true);
-      expect(muse13none.reasoning?.effort ?? muse13none.reasoning_effort).toBe("low");
-      expect(executor.transformRequest("nemotron-3.5-super", { reasoning_effort: "off" }, true).reasoning_effort).toBe("off");
+      expect(muse13none.reasoning?.effort ?? muse13none.reasoning_effort).toBe("high");
+      expect(executor.transformRequest("nemotron-3.5-super", { reasoning_effort: "off" }, true).reasoning_effort).toBe("none");
       expect(executor.transformRequest("nemotron-3.5-super", { reasoning_effort: "none" }, true).reasoning_effort).toBe("none");
-      expect(executor.transformRequest("muse-spark-open", { reasoning_effort: "off" }, true).reasoning_effort).toBe("off");
-      expect(executor.transformRequest("muse-spark-open", { reasoning_effort: "none" }, true).reasoning_effort).toBe("none");
-      expect(executor.transformRequest("minimax-m3.1-flash", { reasoning_effort: "none" }, true).reasoning_effort).toBe("low");
-      expect(executor.transformRequest("muse-spark-1.2", { reasoning_effort: "max" }, true).reasoning_effort).toBe("xhigh");
+      expect(executor.transformRequest("muse-spark-open", { reasoning_effort: "off" }, true).reasoning_effort).toBe("high");
+      expect(executor.transformRequest("muse-spark-open", { reasoning_effort: "none" }, true).reasoning_effort).toBe("high");
+      expect(executor.transformRequest("minimax-m3.1-flash", { reasoning_effort: "none" }, true).reasoning_effort).toBe("max");
+      expect(executor.transformRequest("muse-spark-1.2", { reasoning_effort: "max" }, true).reasoning_effort).toBe("high");
       const muse13max = executor.transformRequest("muse-spark-1.3", { reasoning_effort: "max" }, true);
-      expect(muse13max.reasoning?.effort ?? muse13max.reasoning_effort).toBe("xhigh");
+      expect(muse13max.reasoning?.effort ?? muse13max.reasoning_effort).toBe("high");
       // Ultrafast rejects disable; "max" must survive where the gateway accepts it.
       const ultrafast = executor.transformRequest("gpt-6.1-sol-ultrafast", { reasoning_effort: "max" }, true);
       expect(ultrafast.reasoning?.effort ?? ultrafast.reasoning_effort).toBe("max");
@@ -783,34 +773,20 @@ describe("FactoryExecutor", () => {
       expect(lunafast.reasoning?.effort ?? lunafast.reasoning_effort).toBe("max");
 
       const grok = executor.transformRequest("grok-4.6", { reasoning_effort: "max" }, true);
-      expect(grok.reasoning?.effort ?? grok.reasoning_effort).toBe("xhigh");
+      expect(grok.reasoning?.effort ?? grok.reasoning_effort).toBe("high");
 
       const grok47 = executor.transformRequest("grok-4.7", { reasoning_effort: "max" }, true);
-      expect(grok47.reasoning?.effort ?? grok47.reasoning_effort).toBe("xhigh");
+      expect(grok47.reasoning?.effort ?? grok47.reasoning_effort).toBe("high");
 
-      // Non-supported models clamp xhigh / max -> high
+      // A missing max goes to the default effort
       const gpt54 = executor.transformRequest("gpt-5.4", { reasoning_effort: "max" }, true);
-      expect(gpt54.reasoning?.effort ?? gpt54.reasoning_effort).toBe("high");
+      expect(gpt54.reasoning?.effort ?? gpt54.reasoning_effort).toBe("medium");
+      const sonnet46 = executor.transformRequest("claude-sonnet-4-6", { output_config: { effort: "xhigh" } }, true);
+      expect(sonnet46.output_config).toEqual({ effort: "high" });
 
-      // minimal -> low
+      // A missing minimal goes to the default effort too
       const min = executor.transformRequest("gpt-5.4", { reasoning_effort: "minimal" }, true);
-      expect(min.reasoning?.effort ?? min.reasoning_effort).toBe("low");
-
-      // Verify supportsExtraHighEffort helper directly
-      expect(supportsExtraHighEffort("grok-4.6")).toBe(true);
-      expect(supportsExtraHighEffort("grok-4.7")).toBe(true);
-      expect(supportsExtraHighEffort("qwen-2.5-coder")).toBe(true);
-      expect(supportsExtraHighEffort("qwen2.5-72b")).toBe(true);
-      expect(supportsExtraHighEffort("gpt-6-astra")).toBe(true);
-      expect(supportsExtraHighEffort("gpt-5.6-sol")).toBe(true);
-      expect(supportsExtraHighEffort("claude-opus-5")).toBe(true);
-      expect(supportsExtraHighEffort("claude-fable-5.1")).toBe(true);
-      expect(supportsExtraHighEffort("muse-spark-1.3")).toBe(true);
-      expect(supportsExtraHighEffort("gpt-6.1-terra")).toBe(true);
-      expect(supportsExtraHighEffort("muse-spark-open")).toBe(true);
-      expect(supportsExtraHighEffort("nemotron-3.5-super")).toBe(false);
-      expect(supportsExtraHighEffort("gpt-5.4")).toBe(false);
-      expect(supportsExtraHighEffort("claude-sonnet-4-6")).toBe(false);
+      expect(min.reasoning?.effort ?? min.reasoning_effort).toBe("medium");
     });
   });
 

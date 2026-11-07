@@ -103,6 +103,7 @@ const factory = {
     let apiEndpoint = FACTORY_API;
     let orgId = null;
     let region = null;
+    let inferenceRegion = null;
 
     // Decode JWT payload first as fallback
     const jwtPayload = parseJwtPayload(accessToken);
@@ -125,6 +126,7 @@ const factory = {
         if (whoami.org_id || whoami.orgId || whoami.current_org?.id) {
           orgId = whoami.org_id || whoami.orgId || whoami.current_org?.id;
         }
+        inferenceRegion = whoami.inferenceRegion || null;
         if (whoami.region) {
           region = whoami.region;
           if (region === "eu" || region === "europe") {
@@ -138,7 +140,7 @@ const factory = {
       // Non-critical: network timeout, fall back to JWT claims
     }
 
-    return { whoami, orgId, region, apiEndpoint, jwtPayload };
+    return { whoami, orgId, region, inferenceRegion, apiEndpoint, jwtPayload };
   },
 
   mapTokens: (tokens, extra) => {
@@ -179,6 +181,7 @@ const factory = {
       providerSpecificData: {
         orgId: extra?.orgId || null,
         region: extra?.region || null,
+        inferenceRegion: extra?.inferenceRegion || null,
         apiEndpoint: extra?.apiEndpoint || FACTORY_API,
         ...(extra?.isLocalCli ? { isLocalCli: true } : {}),
       },

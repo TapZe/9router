@@ -1298,8 +1298,8 @@
     "format": "openai",
     "headers": {
       "X-Factory-Client": "cli",
-      "X-Client-Version": "0.226.1",
-      "User-Agent": "factory-cli/0.226.1"
+      "X-Client-Version": "1.5.0",
+      "User-Agent": "factory-cli/1.5.0"
     },
     "usage": {
       "url": "https://api.factory.ai/api/billing/limits"

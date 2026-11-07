@@ -25,8 +25,8 @@ export default {
     format: "openai",
     headers: {
       "X-Factory-Client": "cli",
-      "X-Client-Version": "1.2.0",
-      "User-Agent": "factory-cli/1.2.0",
+      "X-Client-Version": "1.5.0",
+      "User-Agent": "factory-cli/1.5.0",
     },
     usage: {
       url: "https://api.factory.ai/api/billing/limits",
@@ -102,7 +102,6 @@ export default {
     { id: "minimax-m3", name: "MiniMax M3 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "minimax-m3.1-flash", name: "MiniMax M3.1 Flash (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "minimax-m2.7", name: "MiniMax M2.7 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
-    { id: "minimax-m2.5", name: "MiniMax M2.5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
 
     // GPT / Codex / Grok family (routed to /api/llm/o/v1/responses)
     { id: "gpt-6-astra", name: "GPT-6 Astra (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
@@ -125,22 +124,17 @@ export default {
     { id: "gpt-5.4-mini", name: "GPT-5.4 Mini (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.4-mini-fast", name: "GPT-5.4 Mini Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.2", name: "GPT-5.2 (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
-    { id: "gpt-5.1", name: "GPT-5.1 (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
-    { id: "gpt-5", name: "GPT-5 (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.3-codex", name: "GPT-5.3 Codex (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.3-codex-fast", name: "GPT-5.3 Codex Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.2-codex", name: "GPT-5.2 Codex (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
-    { id: "gpt-5.1-codex", name: "GPT-5.1 Codex (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-5.1-codex-max", name: "GPT-5.1 Codex Max (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
-    { id: "gpt-5-codex", name: "GPT-5 Codex (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "grok-4.7", name: "Grok 4.7 (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "grok-4.6", name: "Grok 4.6 (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "grok-4.5", name: "Grok 4.5 (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
 
     // Core Open models (routed to /api/llm/o/v1/chat/completions)
+    { id: "kimi-k3.1-pro", name: "Kimi K3.1 Pro (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "kimi-k3", name: "Kimi K3 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
-    { id: "kimi-k2.7-code", name: "Kimi K2.7 Code (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
-    { id: "kimi-k2.6", name: "Kimi K2.6 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "kimi-k2.5", name: "Kimi K2.5 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "glm-5.3", name: "GLM 5.3 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "glm-5.3-flash", name: "GLM 5.3 Flash (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
@@ -149,7 +143,6 @@ export default {
     { id: "glm-5.1", name: "GLM 5.1 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "glm-5", name: "GLM 5 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "glm-4.7", name: "GLM 4.7 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
-    { id: "glm-4.6", name: "GLM 4.6 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "mistral-large-4", name: "Mistral Large 4 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "mistral-medium-3.5", name: "Mistral Medium 3.5 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
     { id: "qwen3.8-max", name: "Qwen3.8 Max (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
@@ -176,6 +169,5 @@ export default {
     { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "gemini-3-flash-preview", name: "Gemini 3 Flash Preview (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
-    { id: "gemini-3-pro-preview", name: "Gemini 3 Pro Preview (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
   ],
 };

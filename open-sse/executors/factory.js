@@ -1,5 +1,8 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
+import { FACTORY_DROID_MODELS } from "../providers/factoryDroid.js";
+import { FACTORY_DROID_REQUESTS } from "../providers/factoryDroidRequests.js";
+import { factoryEffortFor } from "../providers/thinkingLevels.js";
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
@@ -10,10 +13,9 @@ export const FACTORY_DROID_SYSTEM_PROMPT =
   "Help the user with software engineering tasks using the provided tools.\n" +
   "Ground all analysis, planning, and answers in actual file contents and tool outputs.";
 
-export const FACTORY_CLIENT_VERSION = "1.2.0";
+export const FACTORY_CLIENT_VERSION = "1.5.0";
 export const FACTORY_OPENAI_PLATFORM_ORG = "org-bHuLtG1fGmYk5YaOihAAXFBw";
 export const ANTHROPIC_VERSION = "2023-06-01";
-export const ANTHROPIC_BETAS = "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14";
 
 function randomHex(bytes) {
   if (typeof globalThis.crypto?.getRandomValues === "function") {
@@ -36,16 +38,6 @@ export function randomTraceparent() {
 
 // Server-generated item ID prefixes from OpenAI Responses that cause 404 with store=false
 const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
-
-// Always-on models reject "none"/"off"; the upstream floor is "low".
-const NO_DISABLE_LOW_EFFORT = new Set([
-  "gpt-6.1-sol", "gpt-6.1-sol-ultrafast", "minimax-m3.1-flash", "muse-spark-1.2", "muse-spark-1.3", "beam-1.0",
-]);
-// Models whose hosted gateway accepts "max" as-is; everything else downgrades it.
-const MAX_EFFORT_MODELS = new Set([
-  "gpt-6.1-sol", "gpt-6.1-sol-ultrafast", "gpt-6.1-terra", "gpt-6-sol-fast", "gpt-6-luna-fast",
-  "deepseek-v4.1-flash-1017", "minimax-m3.1-flash", "beam-1.0", "muse-spark-open",
-]);
 
 export function embeddedToolCallFromName(name) {
   if (typeof name !== "string" || !name.trimStart().startsWith("{")) {
@@ -75,44 +67,37 @@ export function cleanModelId(modelId) {
   return m.replace(/^(prd\/)?(fy|factory|droid)\//, "");
 }
 
+// Droid's table gives each model's API. An id it does not have gets the chat
+// gateway, which only names the URL of the unknown model error.
+const GATEWAY_FOR_API = { anthropic: "anthropic", google: "google", responses: "openai-responses", completions: "openai-completions" };
+
 export function resolveTargetGateway(modelId) {
-  const m = cleanModelId(modelId);
-  if (m.startsWith("claude-") || (m.startsWith("minimax-") && m !== "minimax-m3" && m !== "minimax-m3.1-flash") || m.startsWith("atlas-") || m.startsWith("aster-")) {
-    return "anthropic";
-  }
-  if (m.startsWith("gemini-") || m.startsWith("garnet-")) {
-    return "google";
-  }
-  if (m.startsWith("gpt-") || m.startsWith("gpt6") || m.endsWith("-codex") || m.startsWith("grok-") || m === "muse-spark-1.3") {
-    return "openai-responses";
-  }
-  return "openai-completions";
+  return GATEWAY_FOR_API[FACTORY_DROID_MODELS[cleanModelId(modelId)]?.api] ?? "openai-completions";
 }
 
-export function upstreamProviderFor(modelId) {
-  const m = cleanModelId(modelId);
-  if (m.startsWith("claude-") || m.startsWith("atlas-") || m.startsWith("aster-")) {
-    return "anthropic";
+const INFERENCE_REGIONS = ["global", "eu", "us"];
+
+// Droid uses whoami's inferenceRegion when it is valid, else sends an eu org to
+// eu and every other org to global. Connections saved before inferenceRegion
+// was stored keep eu through their EU API endpoint.
+export function factoryInferenceRegion(credentials) {
+  const data = credentials?.providerSpecificData || {};
+  if (INFERENCE_REGIONS.includes(data.inferenceRegion)) {
+    return data.inferenceRegion;
   }
-  if (m.startsWith("gemini-") || m.startsWith("garnet-")) {
-    return "google";
+  let endpointHost = null;
+  try {
+    endpointHost = new URL(data.apiEndpoint).hostname.toLowerCase();
+  } catch {
+    // No saved endpoint, or not a URL
   }
-  if (m.startsWith("gpt-") || m.startsWith("gpt6") || m.endsWith("-codex")) {
-    return "openai";
-  }
-  if (m.startsWith("grok-")) {
-    return "xai";
-  }
-  if (m.startsWith("mistral-")) {
-    return "mistral";
-  }
-  if (m === "beam-1.0" || m === "muse-spark-open" || m === "nemotron-3.5-super") {
-    return "baseten";
-  }
-  if (m === "muse-spark-1.3") {
-    return "google";
-  }
-  return "fireworks";
+  return data.region === "eu" || endpointHost === "api.eu.factory.ai" ? "eu" : "global";
+}
+
+// Droid's table picks the provider for the region. A model with no provider
+// there, or an id Droid does not have, gets null.
+export function upstreamProviderFor(modelId, region = "global") {
+  return FACTORY_DROID_MODELS[cleanModelId(modelId)]?.providers[region] ?? null;
 }
 
 export function resolveFactoryApiBase(credentials = null) {
@@ -126,107 +111,113 @@ export function resolveFactoryApiBase(credentials = null) {
   return "https://api.factory.ai";
 }
 
-export function resolveClaudeThinking(modelId, requestedEffort, requestedBudget) {
-  const m = cleanModelId(modelId);
-  const disabled = requestedEffort === "off" || requestedEffort === "none";
-  const explicitBudget = Number.isFinite(requestedBudget) && requestedBudget > 0
-    ? requestedBudget
-    : Number.isFinite(requestedEffort) && requestedEffort > 0 ? requestedEffort : undefined;
-  const requestedLevel = ["low", "medium", "high", "xhigh", "max"].includes(requestedEffort)
-    ? requestedEffort
-    : requestedEffort === "minimal" ? "low" : "high";
-  const effort = requestedLevel === "xhigh" && !supportsExtraHighEffort(m) ? "high" : requestedLevel;
-  // Claude 5.5 models expose no `off` effort — the API rejects a thinking
-  // disable, so they fall through to the adaptive branch with thinking on.
-  if (disabled && (m.startsWith("claude-") || m.startsWith("atlas-") || m.startsWith("aster-")) &&
-    !m.startsWith("claude-opus-5-5") && !m.startsWith("claude-sonnet-5-5")) {
-    return { thinking: undefined, outputConfig: undefined };
-  }
+// Fields Droid 1.3.0 decides per model, effort, and provider. The request
+// drops each of them and takes Droid's value, so a field Droid leaves out is
+// left out here too.
+const DROID_OWNED_FIELDS = {
+  anthropic: ["thinking", "output_config.effort", "speed", "context_management"],
+  responses: [
+    "reasoning", "include", "parallel_tool_calls", "prompt_cache_retention", "text.verbosity",
+    "service_tier", "safety_identifier", "max_output_tokens", "tool_choice",
+  ],
+  completions: [
+    "reasoning_effort", "reasoning_history", "chat_template_args", "chat_template_kwargs.enable_thinking",
+    "enable_thinking", "allow_missing_thinking", "thinking", "reasoning", "temperature", "store", "tool_choice",
+  ],
+  google: [
+    "generationConfig.thinkingConfig", "generationConfig.temperature", "generationConfig.topP",
+    "generationConfig.topK", "generationConfig.maxOutputTokens",
+  ],
+};
 
-  // Adaptive models
-  if (
-    m.startsWith("claude-fable-5.1") ||
-    m.startsWith("claude-fable-5") ||
-    m.startsWith("claude-opus-5") ||
-    m.startsWith("claude-opus-4-8") ||
-    m.startsWith("claude-opus-4-7") ||
-    m.startsWith("claude-sonnet-5") ||
-    m.startsWith("atlas-") ||
-    m.startsWith("aster-")
-  ) {
-    return {
-      thinking: { type: "adaptive", display: "summarized" },
-      outputConfig: disabled ? undefined : { effort },
-    };
-  }
+// Droid adds fine-grained tool streaming whenever a request carries tools on
+// these Anthropic providers.
+const TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14";
+const TOOL_STREAMING_PROVIDERS = new Set(["anthropic", "vertex_anthropic", "azure_anthropic"]);
 
-  // Opus 4.6 and Sonnet 4.6 use adaptive thinking without summarized display.
-  if (m.startsWith("claude-sonnet-4-6") || m.startsWith("claude-opus-4-6")) {
-    return {
-      thinking: { type: "adaptive" },
-      outputConfig: { effort },
-    };
-  }
+// The Droid betas and session id ride on the sent body for buildHeaders.
+// A symbol key stays out of the JSON that goes upstream.
+const DROID_REQUEST = Symbol("droidRequest");
 
-  // Older Claude releases use token budgets; only Opus 4.5 accepts output effort.
-  const isOpus45 = m.startsWith("claude-opus-4-5");
-  if (isOpus45 || m.startsWith("claude-sonnet-4-5") || m.startsWith("claude-haiku-4-5")) {
-    const budget = explicitBudget ?? (effort === "low" ? 4096 : effort === "medium" ? 12288 : 24576);
-    return {
-      thinking: { type: "enabled", budget_tokens: budget },
-      outputConfig: isOpus45 ? { effort: effort === "low" || effort === "medium" ? effort : "high" } : undefined,
-    };
-  }
+const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 
-  // MiniMax M2.x uses Anthropic-compatible budget thinking; M3 uses completions.
-  if (m.startsWith("minimax-m2.")) {
-    let budget = 2048;
-    if (explicitBudget !== undefined) {
-      budget = Math.max(1024, explicitBudget);
-    } else if (requestedEffort === "low") {
-      budget = 1024;
-    } else if (requestedEffort === "medium") {
-      budget = 2048;
-    } else if (requestedEffort === "high" || requestedEffort === "xhigh" || requestedEffort === "max") {
-      budget = 4096;
-    }
-    return {
-      thinking: { type: "enabled", budget_tokens: budget },
-      outputConfig: undefined,
-    };
-  }
-
-  return {
-    thinking: undefined,
-    outputConfig: undefined,
-  };
+function dropField(body, fieldPath) {
+  const keys = fieldPath.split(".");
+  const last = keys.pop();
+  let parent = body;
+  for (const key of keys) parent = isObject(parent) ? parent[key] : undefined;
+  if (!isObject(parent)) return;
+  delete parent[last];
+  if (keys.length > 0 && Object.keys(parent).length === 0) dropField(body, keys.join("."));
 }
 
-export function supportsExtraHighEffort(modelId) {
+function mergeInto(target, source) {
+  for (const [key, value] of Object.entries(source)) {
+    if (isObject(value) && isObject(target[key])) mergeInto(target[key], value);
+    else target[key] = structuredClone(value);
+  }
+}
+
+function fillSession(value, sessionId) {
+  if (value === "$session") return sessionId;
+  if (Array.isArray(value)) return value.map((item) => fillSession(item, sessionId));
+  if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillSession(v, sessionId)]));
+  return value;
+}
+
+// The effort a client asked for, read before the gateway shapes the body.
+// A bare Claude budget asks for high, as before.
+function requestedEffortOf(gateway, body) {
+  let effort;
+  if (gateway === "anthropic") {
+    effort = body.thinking?.type === "disabled"
+      ? "none"
+      : body.output_config?.effort ?? body.reasoning_effort ?? body.thinking?.effort ?? (body.thinking?.budget_tokens > 0 ? "high" : undefined);
+  } else if (gateway === "google") {
+    effort = body.reasoning_effort ?? body.thinking?.effort ?? body.generationConfig?.thinkingConfig?.thinkingLevel;
+  } else {
+    effort = body.reasoning?.effort ?? body.reasoning_effort;
+  }
+  return typeof effort === "string" ? effort.toLowerCase() : undefined;
+}
+
+// The body fields and Anthropic betas Droid sends for this model, region, and
+// effort. A request without an effort gets the model's default. Models Droid
+// does not list get null.
+export function droidRequestFor(modelId, region, requested) {
   const m = cleanModelId(modelId);
-  return (
-    m === "grok-4.6" ||
-    m === "grok-4.7" ||
-    m.startsWith("gpt-6") ||
-    m.startsWith("gpt6") ||
-    m.startsWith("gpt-5.6") ||
-    m.startsWith("glm-5.3") ||
-    m === "minimax-m3.1-flash" ||
-    m === "muse-spark-1.2" ||
-    m === "muse-spark-1.3" ||
-    m === "muse-spark-open" ||
-    m === "beam-1.0" ||
-    m === "gpt-6.1-terra" ||
-    m.startsWith("claude-opus-5") ||
-    m.startsWith("claude-opus-4-8") ||
-    m.startsWith("claude-opus-4-7") ||
-    m.startsWith("claude-sonnet-5") ||
-    m.startsWith("claude-fable-5") ||
-    m.startsWith("claude-haiku-5") ||
-    m.startsWith("atlas-") ||
-    m.startsWith("aster-") ||
-    m.startsWith("qwen")
-  );
+  const droid = FACTORY_DROID_MODELS[m];
+  if (!droid) return null;
+  const byEffort = FACTORY_DROID_REQUESTS[m][upstreamProviderFor(m, region)];
+  const effort = factoryEffortFor(m, requested ?? droid.defaultEffort);
+  return { api: droid.api, ...(byEffort[effort] ?? byEffort[droid.defaultEffort]) };
+}
+
+// Swaps the Droid-owned fields for what Droid sends. Droid's chat body sends
+// max_tokens and never max_completion_tokens.
+function applyDroidRequest(body, request, sessionId) {
+  const next = structuredClone(body);
+  for (const fieldPath of DROID_OWNED_FIELDS[request.api]) dropField(next, fieldPath);
+  if (request.api === "completions" && "max_completion_tokens" in next) {
+    next.max_tokens = next.max_completion_tokens;
+    delete next.max_completion_tokens;
+  }
+  mergeInto(next, fillSession(request.body, sessionId));
+  // Droid always sends tools, so its tool fields assume them.
+  if (!(Array.isArray(next.tools) && next.tools.length > 0)) {
+    delete next.tool_choice;
+    delete next.parallel_tool_calls;
+  }
+  next[DROID_REQUEST] = { betas: request.betas ?? [], sessionId };
+  return next;
+}
+
+// Droid 1.5.0's wrapping: text already wrapped after a trim stays as it is.
+function systemReminder(content) {
+  const text = typeof content === "string" ? content : (content ?? []).map((part) => part.text).join("\n");
+  const trimmed = text.trim();
+  if (trimmed.startsWith("<system-reminder>") && trimmed.endsWith("</system-reminder>")) return text;
+  return `<system-reminder>\n${text}\n</system-reminder>`;
 }
 
 export function extractTextContent(content) {
@@ -249,6 +240,25 @@ export function extractTextContent(content) {
 export class FactoryExecutor extends BaseExecutor {
   constructor(provider = "factory") {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
+  }
+
+  // Droid 1.3.0 throws "Unknown model" for an id its registry does not have.
+  // It stops a turn when the model has no provider in the region and never
+  // tries another region. Both end the request here before any fetch.
+  async execute(args) {
+    const model = cleanModelId(args.model);
+    const region = factoryInferenceRegion(args.credentials);
+    let message = null;
+    if (!FACTORY_DROID_MODELS[model]) {
+      message = `Unknown model: ${model}`;
+    } else if (upstreamProviderFor(model, region) === null) {
+      message = `No providers available for this turn (model ${model}, region ${region})`;
+    }
+    if (message) {
+      const response = new Response(JSON.stringify({ error: { message } }), { status: 400, headers: { "Content-Type": "application/json" } });
+      return { response, url: this.buildUrl(args.model, args.stream, 0, args.credentials), headers: {}, transformedBody: args.body };
+    }
+    return super.execute(args);
   }
 
   async refreshCredentials(credentials, log, proxyOptions = null) {
@@ -275,7 +285,7 @@ export class FactoryExecutor extends BaseExecutor {
     return `${base}/api/llm/o/v1/chat/completions`;
   }
 
-  buildHeaders(credentials, stream = true, url, model) {
+  buildHeaders(credentials, stream = true, url, model, body) {
     const clientType = process.env.FACTORY_UPSTREAM_CLIENT_TYPE?.trim() || "cli";
     const headers = {
       "Content-Type": "application/json",
@@ -298,15 +308,19 @@ export class FactoryExecutor extends BaseExecutor {
     }
 
     const gateway = resolveTargetGateway(model);
-    headers["x-api-provider"] = upstreamProviderFor(model);
+    const provider = upstreamProviderFor(model, factoryInferenceRegion(credentials));
+    const droidRequest = body?.[DROID_REQUEST];
+    headers["x-api-provider"] = provider;
     headers["x-provider-routing-source"] = "registry_default";
     headers["traceparent"] = randomTraceparent();
 
     if (gateway === "anthropic") {
       headers["anthropic-version"] = ANTHROPIC_VERSION;
-      // Effort rides the body's output_config.effort — the gateway needs no
-      // effort beta flag (verified against the live Droid client contract).
-      headers["anthropic-beta"] = ANTHROPIC_BETAS;
+      if (droidRequest) {
+        const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+        const betas = [...droidRequest.betas, ...(hasTools && TOOL_STREAMING_PROVIDERS.has(provider) ? [TOOL_STREAMING_BETA] : [])];
+        if (betas.length > 0) headers["anthropic-beta"] = betas.join(",");
+      }
     } else if (gateway === "openai-responses") {
       headers["OpenAI-Platform"] = FACTORY_OPENAI_PLATFORM_ORG;
     } else if (gateway === "google") {
@@ -314,7 +328,7 @@ export class FactoryExecutor extends BaseExecutor {
     }
 
     if (globalThis.crypto?.randomUUID) {
-      headers["x-session-id"] = globalThis.crypto.randomUUID();
+      headers["x-session-id"] = droidRequest?.sessionId ?? globalThis.crypto.randomUUID();
       headers["x-assistant-message-id"] = globalThis.crypto.randomUUID();
     }
 
@@ -332,6 +346,7 @@ export class FactoryExecutor extends BaseExecutor {
     const cloned = { ...body };
     const gateway = resolveTargetGateway(model);
     const m = cleanModelId(model);
+    const droidRequest = droidRequestFor(m, factoryInferenceRegion(credentials), requestedEffortOf(gateway, body));
 
     if (gateway !== "google") {
       cloned.stream = !!stream;
@@ -429,32 +444,7 @@ export class FactoryExecutor extends BaseExecutor {
         cloned.max_tokens = 4096;
       }
 
-      // The translator already normalized effort and budget for this wire format.
-      const disabledThinking = cloned.thinking?.type === "disabled";
-      const thinkingConfig = resolveClaudeThinking(
-        model,
-        disabledThinking ? "off" : cloned.output_config?.effort ?? cloned.reasoning_effort ?? cloned.thinking?.effort ?? cloned.thinking?.budget_tokens,
-        cloned.thinking?.budget_tokens,
-      );
-      if (thinkingConfig.thinking) {
-        cloned.thinking = thinkingConfig.thinking;
-      } else if (disabledThinking || cloned.reasoning_effort === "off" || cloned.reasoning_effort === "none") {
-        delete cloned.thinking;
-      }
-      if (thinkingConfig.outputConfig) {
-        cloned.output_config = thinkingConfig.outputConfig;
-      } else {
-        delete cloned.output_config;
-      }
       delete cloned.reasoning_effort;
-
-      // Ensure max_tokens > budget_tokens if thinking is enabled (Anthropic / Fireworks requirement)
-      if (cloned.thinking?.type === "enabled" && cloned.thinking.budget_tokens) {
-        const minRequired = cloned.thinking.budget_tokens + 1024;
-        if (cloned.max_tokens < minRequired) {
-          cloned.max_tokens = minRequired;
-        }
-      }
 
       if (typeof cloned.system === "string") {
         const clean = stripCompeting(cloned.system);
@@ -565,19 +555,6 @@ export class FactoryExecutor extends BaseExecutor {
         };
       }
 
-      // Gemini level-based thinking config
-      const supportsMinimal = m === "gemini-3-flash-preview" || m === "gemini-3.5-flash";
-      const effort = cloned.reasoning_effort || cloned.thinking?.effort || credentials?._requestedEffort;
-      if (effort) {
-        let level = String(effort).toLowerCase();
-        if (level === "minimal" && !supportsMinimal) level = "low";
-        if (level === "xhigh" || level === "max") level = "high";
-        if (!cloned.generationConfig) cloned.generationConfig = {};
-        if (!cloned.generationConfig.thinkingConfig) {
-          cloned.generationConfig.thinkingConfig = { thinkingLevel: level };
-        }
-      }
-
       // Clean up parameters mapped into generationConfig
       if (cloned.max_tokens !== undefined) {
         if (!cloned.generationConfig) cloned.generationConfig = {};
@@ -640,7 +617,12 @@ export class FactoryExecutor extends BaseExecutor {
       // OpenAI Chat Completions format (Factory Core / Fireworks gateway)
       if (Array.isArray(cloned.messages)) {
         const msgs = cloned.messages.map((m) => ({ ...m }));
-        const sysIndex = msgs.findIndex((m) => m.role === "system");
+        // Droid puts its system prompt at index 0. A model with
+        // systemMessageOnlyAtBeginning only takes a system message there.
+        const systemFirst = FACTORY_DROID_MODELS[m]?.systemMessageOnlyAtBeginning;
+        const sysIndex = systemFirst
+          ? (msgs[0]?.role === "system" ? 0 : -1)
+          : msgs.findIndex((m) => m.role === "system");
         if (sysIndex >= 0) {
           const sys = msgs[sysIndex];
           if (typeof sys.content === "string") {
@@ -660,6 +642,14 @@ export class FactoryExecutor extends BaseExecutor {
           }
         } else {
           msgs.unshift({ role: "system", content: FACTORY_DROID_SYSTEM_PROMPT });
+        }
+
+        // Droid sends each system message after index 0 as a user system
+        // reminder on models with systemMessageOnlyAtBeginning.
+        if (systemFirst) {
+          msgs.forEach((msg, i) => {
+            if (i > 0 && msg.role === "system") msgs[i] = { ...msg, role: "user", content: systemReminder(msg.content) };
+          });
         }
 
         // 3. Fireworks / Factory Core requirements for assistant tool turns and tool results
@@ -702,48 +692,32 @@ export class FactoryExecutor extends BaseExecutor {
 
         cloned.messages = msgs;
       }
-
-      // z.ai-habit request bodies smuggle enable_thinking; the Fireworks
-      // gateway rejects the field with HTTP 400.
-      delete cloned.enable_thinking;
-      if (cloned.chat_template_kwargs && typeof cloned.chat_template_kwargs === "object" && "enable_thinking" in cloned.chat_template_kwargs) {
-        cloned.chat_template_kwargs = { ...cloned.chat_template_kwargs };
-        delete cloned.chat_template_kwargs.enable_thinking;
-      }
-
-      // 4. Reasoning history for completions gateway
-      const isDeepseek = m.startsWith("deepseek-");
-      cloned.reasoning_history = isDeepseek ? "interleaved" : "preserved";
     }
 
-    // 5. Reasoning effort normalization across gateways
-    const hasExtraHigh = supportsExtraHighEffort(m);
-
-    const rawEffort = cloned.reasoning?.effort || cloned.reasoning_effort;
-    if (rawEffort) {
-      const re = String(rawEffort).toLowerCase();
-      let normalized = re;
-      if (NO_DISABLE_LOW_EFFORT.has(m) && (re === "none" || re === "off")) {
-        normalized = "low";
-      } else if (re === "minimal") {
-        normalized = "low";
-      } else if (re === "max") {
-        normalized = MAX_EFFORT_MODELS.has(m) ? "max" : hasExtraHigh ? "xhigh" : "high";
-      } else if (re === "xhigh" && !hasExtraHigh) {
-        normalized = "high";
-      }
-
+    // 5. Droid's fields for the model, provider, and effort
+    if (droidRequest) {
+      const sent = applyDroidRequest(cloned, droidRequest, globalThis.crypto.randomUUID());
       if (gateway === "openai-responses") {
-        cloned.reasoning = {
-          ...(typeof cloned.reasoning === "object" ? cloned.reasoning : {}),
-          effort: normalized,
-        };
-        delete cloned.reasoning_effort;
-        delete cloned.temperature;
-        delete cloned.top_p;
-      } else {
-        cloned.reasoning_effort = normalized;
+        // Responses takes the effort in reasoning, and reasoning models refuse sampling fields.
+        delete sent.reasoning_effort;
+        if (sent.reasoning) {
+          delete sent.temperature;
+          delete sent.top_p;
+        }
       }
+      if (gateway === "anthropic") {
+        // A client's own Claude budget still wins over Droid's, down to
+        // Anthropic's smallest budget of 1024 tokens.
+        const budget = body.thinking?.budget_tokens;
+        if (sent.thinking?.type === "enabled" && Number.isFinite(budget) && budget > 0) {
+          sent.thinking.budget_tokens = Math.max(1024, budget);
+        }
+        // Anthropic and Fireworks need max_tokens above the thinking budget.
+        if (sent.thinking?.type === "enabled" && sent.thinking.budget_tokens) {
+          sent.max_tokens = Math.max(sent.max_tokens, sent.thinking.budget_tokens + 1024);
+        }
+      }
+      return sent;
     }
 
     return cloned;

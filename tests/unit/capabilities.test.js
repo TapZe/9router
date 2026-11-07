@@ -86,7 +86,7 @@ describe("getCapabilitiesForModel", () => {
       "deepseek-v4.1-flash-1017": ["none", "low", "high", "max"],
       "muse-spark-1.2": ["low", "medium", "high", "xhigh"],
       "muse-spark-1.3": ["low", "medium", "high", "xhigh"],
-      "muse-spark-open": ["none", "low", "medium", "high", "xhigh", "max"],
+      "muse-spark-open": ["low", "medium", "high", "xhigh", "max"],
       "gemini-4-argon": ["low", "medium", "high"],
       "beam-1.0": ["low", "medium", "high", "xhigh", "max"],
     };
@@ -124,9 +124,9 @@ describe("getCapabilitiesForModel", () => {
       vision: true,
       reasoning: true,
       thinkingFormat: "openai",
-      thinkingCanDisable: true,
+      thinkingCanDisable: false,
     });
-    expect(getThinkingLevels("factory", "muse-spark-open")).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+    expect(getThinkingLevels("factory", "muse-spark-open")).toEqual(["low", "medium", "high", "xhigh", "max"]);
 
     expect(getCapabilitiesForModel("factory", "gemini-4-argon")).toMatchObject({
       contextWindow: 1000000,
