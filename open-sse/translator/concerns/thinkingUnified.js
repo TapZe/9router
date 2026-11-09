@@ -263,14 +263,11 @@ function stripAll(body) {
 }
 
 // Apply unified thinking config to body in the resolved provider-native format.
-function applyFormat(fmt, body, cfg, caps, supportedLevels, display, model = "", budgetPassthrough = false, factory = false) {
+function applyFormat(fmt, body, cfg, caps, supportedLevels, display, model = "", budgetPassthrough = false) {
   const none = cfg.mode === "none";
   const canDisable = caps.thinkingCanDisable !== false;
   // Model cannot disable thinking → clamp "none" to minimal effort instead.
-  // Factory's forced-on OpenAI models can omit minimal; use the first listed level.
-  const minimum = factory && fmt === "openai" && supportedLevels?.length && !supportedLevels.includes("minimal")
-    ? supportedLevels[0] : "minimal";
-  const eff = none && !canDisable ? { mode: "level", level: minimum } : cfg;
+  const eff = none && !canDisable ? { mode: "level", level: "minimal" } : cfg;
 
   switch (fmt) {
     case "openai": {
@@ -453,7 +450,7 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels, display, model = "",
 // Mutates and returns body. No-op when model has no reasoning capability.
 // `intent` is a pre-captured config (from captureThinking on the original body);
 // falls back to extracting from the current body when omitted.
-// Factory picks the effort the way Droid 1.3.0 does before any generic clamp
+// Factory picks the effort the way Droid does before any generic clamp
 // runs, so an effort the model does not list becomes the model's default.
 const FACTORY_PROVIDERS = new Set(["factory", "fy", "droid"]);
 
@@ -485,6 +482,6 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
   // An OpenAI-shaped client's ask arrives via the captured intent instead.
   const display = typeof body.thinking?.display === "string" ? body.thinking.display : intent?.display;
   stripAll(body);
-  applyFormat(fmt, body, cfg, caps, supportedLevels, display, cleanModel, isOpenAICompatibleNode(provider), FACTORY_PROVIDERS.has(provider));
+  applyFormat(fmt, body, cfg, caps, supportedLevels, display, cleanModel, isOpenAICompatibleNode(provider));
   return body;
 }
