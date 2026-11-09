@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import fs from "node:fs";
 
 const mocks = vi.hoisted(() => ({
   nextResponse: Symbol("next"),
@@ -345,4 +346,33 @@ describe("dashboard guard CLI auto-import routes", () => {
       expect(response).toBe(mocks.nextResponse);
     });
   }
+});
+
+// Every auto-import route reads credentials from the host and returns them, so
+// the list comes from the route tree, not from a hand-kept list: a route that
+// upstream adds later is checked without anyone remembering to add it here.
+describe("dashboard guard: every CLI auto-import route found on disk", () => {
+  const oauthDir = new URL("../../src/app/api/oauth/", import.meta.url);
+  const routes = fs.readdirSync(oauthDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && fs.existsSync(new URL(`${d.name}/auto-import/route.js`, oauthDir)))
+    .map((d) => `/api/oauth/${d.name}/auto-import`);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+    mocks.getSettings.mockResolvedValue({ requireLogin: false });
+    mocks.validateApiKey.mockResolvedValue(false);
+    mocks.getConsistentMachineId.mockResolvedValue("cli-token");
+    mocks.verifyDashboardAuthToken.mockResolvedValue(false);
+  });
+
+  it("finds the auto-import routes", () => {
+    expect(routes).toContain("/api/oauth/factory/auto-import");
+    expect(routes.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it.each(routes)("%s rejects a remote request without a session when requireLogin is off", async (route) => {
+    const response = await proxy(request(route, { host: "router.example.com" }));
+    expect(response.status).toBe(403);
+  });
 });
