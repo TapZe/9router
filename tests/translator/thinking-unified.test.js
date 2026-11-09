@@ -81,6 +81,26 @@ describe("Factory GPT-6.1 Sol thinking", () => {
   });
 });
 
+// The lowest-listed-level rule for a "none" on a model that cannot stop
+// thinking came with Factory's GPT-6.1 Sol work. It belongs to Factory only:
+// every other provider keeps upstream's "minimal".
+describe("forced-on thinking off: lowest listed level is Factory only", () => {
+  const forcedOn = [["antigravity", "gemini-4-argon-high"], ["claude", "claude-opus-5-5"], ["kiro", "claude-opus-5.5"]];
+  for (const [provider, model] of forcedOn) {
+    it(`${provider}/${model} sends minimal for none, as upstream does`, () => {
+      for (const fmt of ["openai", "openai-responses"]) {
+        expect(apply(fmt, model, { reasoning_effort: "none" }, provider).reasoning_effort, fmt).toBe("minimal");
+      }
+    });
+  }
+
+  it("factory, fy and droid keep the lowest listed level for an id without a Droid row", () => {
+    for (const provider of ["factory", "fy", "droid"]) {
+      expect(apply("openai", "gemini-4-argon-high", { reasoning_effort: "none" }, provider).reasoning_effort, provider).toBe("low");
+    }
+  });
+});
+
 describe("applyThinking per provider format", () => {
   it("claude 4.6+ → adaptive thinking + output_config (no budget_tokens)", () => {
     const out = apply("claude", "claude-opus-4.7", { reasoning_effort: "high" }, "claude");

@@ -263,11 +263,12 @@ function stripAll(body) {
 }
 
 // Apply unified thinking config to body in the resolved provider-native format.
-function applyFormat(fmt, body, cfg, caps, supportedLevels, display, model = "", budgetPassthrough = false) {
+function applyFormat(fmt, body, cfg, caps, supportedLevels, display, model = "", budgetPassthrough = false, factory = false) {
   const none = cfg.mode === "none";
   const canDisable = caps.thinkingCanDisable !== false;
-  // Forced-on OpenAI models can omit minimal; use the first accepted level.
-  const minimum = fmt === "openai" && supportedLevels?.length && !supportedLevels.includes("minimal")
+  // Model cannot disable thinking → clamp "none" to minimal effort instead.
+  // Factory's forced-on OpenAI models can omit minimal; use the first listed level.
+  const minimum = factory && fmt === "openai" && supportedLevels?.length && !supportedLevels.includes("minimal")
     ? supportedLevels[0] : "minimal";
   const eff = none && !canDisable ? { mode: "level", level: minimum } : cfg;
 
@@ -454,8 +455,10 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels, display, model = "",
 // falls back to extracting from the current body when omitted.
 // Factory picks the effort the way Droid 1.3.0 does before any generic clamp
 // runs, so an effort the model does not list becomes the model's default.
+const FACTORY_PROVIDERS = new Set(["factory", "fy", "droid"]);
+
 function factoryThinking(provider, model, cfg) {
-  if (!["factory", "fy", "droid"].includes(provider)) return cfg;
+  if (!FACTORY_PROVIDERS.has(provider)) return cfg;
   if (cfg?.mode !== "none" && cfg?.mode !== "level") return cfg;
   const level = factoryEffortFor(model, cfg.mode === "none" ? "none" : cfg.level);
   return level === "none" ? { mode: "none" } : { mode: "level", level };
@@ -482,6 +485,6 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
   // An OpenAI-shaped client's ask arrives via the captured intent instead.
   const display = typeof body.thinking?.display === "string" ? body.thinking.display : intent?.display;
   stripAll(body);
-  applyFormat(fmt, body, cfg, caps, supportedLevels, display, cleanModel, isOpenAICompatibleNode(provider));
+  applyFormat(fmt, body, cfg, caps, supportedLevels, display, cleanModel, isOpenAICompatibleNode(provider), FACTORY_PROVIDERS.has(provider));
   return body;
 }
