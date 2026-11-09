@@ -29,11 +29,13 @@ async function within(pending) {
 }
 
 let refreshFunctions;
+let proxyFetchModule;
 
 beforeEach(async () => {
   vi.resetModules();
   vi.stubEnv("OAUTH_REFRESH_TIMEOUT_MS", "20");
   refreshFunctions = await import("../../open-sse/services/tokenRefresh/providers.js");
+  proxyFetchModule = await import("../../open-sse/utils/proxyFetch.js");
 });
 
 afterEach(() => {
@@ -49,9 +51,15 @@ describe.each(["codex", "factory"])("%s shared credential refresh deadline", (pr
       : refreshFactoryToken(token, {});
   }
 
+  // Codex refresh uses the global fetch; Factory refresh uses proxyAwareFetch.
+  function stubTransport(fetch) {
+    if (provider === "factory") proxyFetchModule.proxyAwareFetch.mockImplementation(fetch);
+    else vi.stubGlobal("fetch", fetch);
+  }
+
   it("finishes a stalled token request without revoking the account or retrying a spent token", async () => {
     const fetch = vi.fn((url, options) => untilAborted(options.signal));
-    vi.stubGlobal("fetch", fetch);
+    stubTransport(fetch);
 
     const result = await within(refresh(`${provider}-stalled-headers`));
 
@@ -64,7 +72,7 @@ describe.each(["codex", "factory"])("%s shared credential refresh deadline", (pr
       ok: true,
       json: () => untilAborted(options.signal),
     }));
-    vi.stubGlobal("fetch", fetch);
+    stubTransport(fetch);
 
     const result = await within(refresh(`${provider}-stalled-body`));
 

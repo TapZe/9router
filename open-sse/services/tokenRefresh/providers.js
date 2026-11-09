@@ -750,7 +750,9 @@ export async function refreshFactoryToken(refreshToken, credentials, log) {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         signal.throwIfAborted();
-        const response = await fetch(tokenUrl, {
+        // proxyAwareFetch, not bare fetch: the shared transport (env proxy,
+        // curved dispatcher, keep-alive cap) must not depend on load order.
+        const response = await proxyAwareFetch(tokenUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded",

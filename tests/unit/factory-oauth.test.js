@@ -7,12 +7,17 @@ import { refreshTokenByProvider } from "../../open-sse/services/tokenRefresh.js"
 import factoryRegistry from "../../open-sse/providers/registry/factory.js";
 import { getProviderModels, getModelTargetFormat } from "../../open-sse/config/providerModels.js";
 import { FACTORY_CLIENT_VERSION, resolveTargetGateway } from "../../open-sse/executors/factory.js";
+import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
+
+// Factory auth requests go through the shared transport; tests stub it here.
+vi.mock("../../open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: vi.fn() }));
 
 const originalFetch = global.fetch;
 
 describe("Factory OAuth & Token Management", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    proxyAwareFetch.mockReset();
   });
 
   afterEach(() => {
@@ -250,7 +255,7 @@ describe("Factory OAuth & Token Management", () => {
 
   describe("refreshFactoryToken and refreshTokenByProvider", () => {
     it("omits external alphanumeric Factory orgId from WorkOS refresh payload to prevent 400 rejection", async () => {
-      global.fetch = vi.fn().mockResolvedValue({
+      proxyAwareFetch.mockResolvedValue({
         ok: true,
         json: async () => ({
           access_token: "new_factory_access_token",
@@ -268,7 +273,7 @@ describe("Factory OAuth & Token Management", () => {
       expect(refreshed.expiresIn).toBe(3600);
       expect(refreshed.providerSpecificData.orgId).toBe("RFmWaCAuH8jTGM21tL5k");
 
-      const call = global.fetch.mock.calls[0];
+      const call = proxyAwareFetch.mock.calls[0];
       const body = call[1].body;
       expect(body.get("grant_type")).toBe("refresh_token");
       expect(body.get("client_id")).toBe("client_01HNM792M5G5G1A2THWPXKFMXB");
@@ -277,7 +282,7 @@ describe("Factory OAuth & Token Management", () => {
     });
 
     it("includes organization_id when orgId matches WorkOS internal org pattern", async () => {
-      global.fetch = vi.fn().mockResolvedValue({
+      proxyAwareFetch.mockResolvedValue({
         ok: true,
         json: async () => ({
           access_token: "new_factory_access_token",
@@ -291,14 +296,14 @@ describe("Factory OAuth & Token Management", () => {
       });
 
       expect(refreshed.accessToken).toBe("new_factory_access_token");
-      const call = global.fetch.mock.calls[0];
+      const call = proxyAwareFetch.mock.calls[0];
       const body = call[1].body;
       expect(body.get("organization_id")).toBe("org_workos_123");
     });
 
     it("retries on transient 429/500 errors and succeeds", async () => {
       let attempts = 0;
-      global.fetch = vi.fn().mockImplementation(async () => {
+      proxyAwareFetch.mockImplementation(async () => {
         attempts++;
         if (attempts === 1) {
           return { ok: false, status: 429, text: async () => "Rate limited" };
@@ -319,7 +324,7 @@ describe("Factory OAuth & Token Management", () => {
     });
 
     it("dispatches through refreshTokenByProvider", async () => {
-      global.fetch = vi.fn().mockResolvedValue({
+      proxyAwareFetch.mockResolvedValue({
         ok: true,
         json: async () => ({
           access_token: "dispatch_access_token",
@@ -342,7 +347,7 @@ describe("Factory OAuth & Token Management", () => {
       const payload = Buffer.from(JSON.stringify({ org_id: "org_backfilled_999" })).toString("base64");
       const jwtWithOrg = `${header}.${payload}.signature`;
 
-      global.fetch = vi.fn().mockResolvedValue({
+      proxyAwareFetch.mockResolvedValue({
         ok: true,
         json: async () => ({
           access_token: jwtWithOrg,
@@ -363,7 +368,7 @@ describe("Factory OAuth & Token Management", () => {
       const jwtToken = `${header}.${payload}.sig`;
 
       // Real WorkOS responses omit expires_in!
-      global.fetch = vi.fn().mockResolvedValue({
+      proxyAwareFetch.mockResolvedValue({
         ok: true,
         json: async () => ({
           access_token: jwtToken,
@@ -380,7 +385,7 @@ describe("Factory OAuth & Token Management", () => {
     });
 
     it("classifies permanent OAuth error as unrecoverable_refresh_error", async () => {
-      global.fetch = vi.fn().mockResolvedValue({
+      proxyAwareFetch.mockResolvedValue({
         ok: false,
         status: 400,
         text: async () => JSON.stringify({ error: "invalid_grant", error_description: "The authorization grant is invalid" }),
