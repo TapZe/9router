@@ -37,8 +37,7 @@ tests/unit/db-benchmark.test.js :: <suite failed to load>
 tests/unit/embeddings.cloud.test.js :: <suite failed to load>
 
 # Also fail on upstream decolua/9router master v0.5.116 (1339107e): same names in a run
-# of its own suite. Most stub globalThis.fetch, which proxyAwareFetch no longer calls
-# since 963787f7. Remove an entry once upstream fixes it.
+# of its own suite. Causes not investigated here. Remove an entry once upstream fixes it.
 tests/translator/golden-url-header.test.js :: GOLDEN buildHeaders (default executor providers) cline → headers (apiKey / oauth)
 tests/translator/golden-url-header.test.js :: GOLDEN buildHeaders (default executor providers) clinepass → headers (apiKey / oauth)
 tests/translator/golden-url-header.test.js :: GOLDEN buildHeaders (default executor providers) codebuddy-cn → headers (apiKey / oauth)
