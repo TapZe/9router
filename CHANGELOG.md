@@ -264,7 +264,6 @@
 - **CLI**: filter model selector by active connections and noAuth providers
 - **Usage**: key live byApiKey stats by full api key to prevent team-key collision and preserve API key usage attribution
 - **Tailscale**: cap enable-flow health wait at 20s
->>>>>>> upstream/master
 
 # v0.5.86 (2026-09-23)
 
