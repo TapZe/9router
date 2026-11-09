@@ -306,3 +306,43 @@ describe("dashboard guard helpers", () => {
     expect(__test__.extractApiKey(apiRequest)).toBe("header-key");
   });
 });
+
+// CLI auto-import routes read host credential files (CommandCode reads
+// ~/.commandcode/auth.json). Each one must be local-only and always need a
+// dashboard session or the CLI token, even when requireLogin is off.
+describe("dashboard guard CLI auto-import routes", () => {
+  const routes = ["cursor", "kiro", "factory", "zed", "commandcode"].map((id) => `/api/oauth/${id}/auto-import`);
+  const loopback = { host: "localhost:20128", origin: "http://localhost:20128" };
+  const withSession = (req) => ({ ...req, cookies: { get: vi.fn(() => ({ value: "jwt" })) } });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+    mocks.getSettings.mockResolvedValue({ requireLogin: false });
+    mocks.validateApiKey.mockResolvedValue(false);
+    mocks.getConsistentMachineId.mockResolvedValue("cli-token");
+    mocks.verifyDashboardAuthToken.mockImplementation(async (token) => token === "jwt");
+  });
+
+  for (const route of routes) {
+    it(`${route} rejects a remote request, even with a dashboard session`, async () => {
+      const response = await proxy(withSession(request(route, { host: "router.example.com" })));
+      expect(response.status).toBe(403);
+    });
+
+    it(`${route} rejects a local request without a dashboard session when requireLogin is off`, async () => {
+      const response = await proxy(localRequest(route, loopback));
+      expect(response.status).toBe(401);
+    });
+
+    it(`${route} allows a local request with a dashboard session`, async () => {
+      const response = await proxy(withSession(localRequest(route, loopback)));
+      expect(response).toBe(mocks.nextResponse);
+    });
+
+    it(`${route} allows the CLI token`, async () => {
+      const response = await proxy(request(route, { host: "router.example.com", "x-9r-cli-token": "cli-token" }));
+      expect(response).toBe(mocks.nextResponse);
+    });
+  }
+});
