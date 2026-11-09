@@ -11,6 +11,7 @@
 - **Factory**: add Muse Spark 1.3 and Nemotron 3.5 Super from Droid 1.2.0.
 
 ## Fixes
+- **Factory**: a connection imported from the Droid CLI now owns its copy of the login. Token refresh no longer reads the macOS Keychain or `~/.factory`, no longer writes rotated tokens back into the Droid CLI store, and never loads the import route; only the explicit, local-only "Import from Droid CLI" action reads the host login (Keychain lookup is async). WorkOS refresh tokens are single-use, so when the Droid CLI and 9router share one imported session, whichever refreshes first signs the other out: on `invalid_grant` the connection asks to re-import or sign in. Sign in with the device code for a session independent of the Droid CLI.
 - **Providers**: keep account up/down as one adjacent swap by restamping the visible list to 1-based ranks in a single reorder transaction, including pools where every API-key row still has priority 1.
 - **Auto-ping**: isolate provider scans and per-account attempts so a stalled Codex or Factory request cannot hold up other accounts; cancel attempts after 60 seconds, retain in-flight ownership until late work settles, and preserve the 15-minute failure cooldown.
 - **Auto-ping quotas**: gate Codex on its normal weekly/monthly limits and Factory Standard-window pings on Standard weekly/monthly limits, without suppressing them for unrelated Review, Spark, or Core quotas.

@@ -773,38 +773,11 @@ export async function refreshFactoryToken(refreshToken, credentials, log) {
           });
           const failure = classifyOAuthRefreshError(errorText, response.status);
           if (failure.permanent) {
-            // If this credential originated from local Droid CLI, check if Droid CLI refreshed
-            // in the terminal and stored a newer valid access token in Keychain/file.
-            if (credentials?.providerSpecificData?.isLocalCli) {
-              try {
-                const autoImport = await import("../../../src/app/api/oauth/factory/auto-import/route.js");
-                const localCreds = autoImport.loadDroidCliCredentials();
-                if (localCreds?.accessToken && localCreds.accessToken !== credentials?.accessToken) {
-                  const localJwt = parseJwtPayload(localCreds.accessToken);
-                  const localExp = localJwt?.exp;
-                  const now = Math.floor(Date.now() / 1000);
-                  if (typeof localExp === "number" && localExp > now + 60) {
-                    log?.info?.("TOKEN_REFRESH", "Recovered Factory session from updated local Droid CLI");
-                    const recoveredExpiresIn = Math.max(1, localExp - now);
-                    const recoveredExpiresAt = new Date(localExp * 1000).toISOString();
-                    return {
-                      accessToken: localCreds.accessToken,
-                      refreshToken: localCreds.refreshToken,
-                      expiresIn: recoveredExpiresIn,
-                      expiresAt: recoveredExpiresAt,
-                      providerSpecificData: {
-                        ...credentials?.providerSpecificData,
-                        ...(localCreds.activeOrganizationId ? { orgId: localCreds.activeOrganizationId } : {}),
-                      },
-                    };
-                  }
-                }
-              } catch {
-                // Fall through to unrecoverable error
-              }
-            }
-
-            log?.error?.("TOKEN_REFRESH", "Factory refresh token already used or invalid. Re-auth required.", {
+            // 9router owns this session's single-use refresh token. A Droid CLI
+            // login it was imported from is never re-read here: re-import or sign in.
+            log?.error?.("TOKEN_REFRESH", credentials?.providerSpecificData?.isLocalCli
+              ? "Factory refresh token already used or invalid. Re-import from the Droid CLI or sign in again."
+              : "Factory refresh token already used or invalid. Re-auth required.", {
               status: response.status,
               code: failure.code,
             });
@@ -832,21 +805,6 @@ export async function refreshFactoryToken(refreshToken, credentials, log) {
           typeof jwt?.exp === "number"
             ? new Date(jwt.exp * 1000).toISOString()
             : new Date(Date.now() + expiresIn * 1000).toISOString();
-
-        if (credentials?.providerSpecificData?.isLocalCli) {
-          try {
-            const autoImport = await import("../../../src/app/api/oauth/factory/auto-import/route.js");
-            if (typeof autoImport.saveDroidCliCredentials === "function") {
-              autoImport.saveDroidCliCredentials({
-                accessToken: data.access_token,
-                refreshToken: data.refresh_token || refreshToken,
-                activeOrganizationId: finalOrgId,
-              });
-            }
-          } catch {
-            // Ignore non-fatal local save failure
-          }
-        }
 
         return {
           accessToken: data.access_token,

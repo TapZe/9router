@@ -16,8 +16,16 @@ if (DATA_FILE !== join(testDir, "db", "data.sqlite") || global._dbAdapter?.insta
   throw new Error("Factory auto-import tests require a fresh disposable database");
 }
 
-const { decryptPayload, encryptPayload, saveDroidCliCredentials, readKeyfileKey,
-  readKeychainKey, loadDroidCliCredentials, GET, POST } = await import("../../src/app/api/oauth/factory/auto-import/route.js");
+const { decryptPayload, readKeychainKey, loadDroidCliCredentials } = await import("../../src/lib/oauth/utils/factoryCredentials.js");
+const { GET, POST } = await import("../../src/app/api/oauth/factory/auto-import/route.js");
+
+// Writes a payload the way the Droid CLI's file-backed store encrypts it.
+function encryptPayload(payload, key) {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const data = Buffer.concat([cipher.update(JSON.stringify(payload), "utf8"), cipher.final()]);
+  return `${iv.toString("base64")}:${cipher.getAuthTag().toString("base64")}:${data.toString("base64")}`;
+}
 const { default: factoryProvider } = await import("../../src/lib/oauth/providers/factory.js");
 
 afterAll(() => {
@@ -42,7 +50,7 @@ describe("Factory Droid Local Auto-Import", () => {
     vi.restoreAllMocks();
   });
 
-  describe("decryptPayload and encryptPayload", () => {
+  describe("decryptPayload", () => {
     const key = crypto.randomBytes(32);
 
     it("encrypts and decrypts valid AES-256-GCM ciphertext roundtrip", () => {
@@ -80,21 +88,13 @@ describe("Factory Droid Local Auto-Import", () => {
     });
   });
 
-  describe("loadDroidCliCredentials and saveDroidCliCredentials", () => {
-    it("does not read Keychain without a local encrypted credential file", () => {
-      expect(readKeychainKey()).toBeNull();
+  describe("loadDroidCliCredentials", () => {
+    it("does not read Keychain without a local encrypted credential file", async () => {
+      expect(await readKeychainKey()).toBeNull();
     });
 
-    it("returns null when no credentials exist in candidate paths", () => {
-      const creds = loadDroidCliCredentials();
-      expect(creds).toBeNull();
-    });
-
-    it("handles saveDroidCliCredentials validation safely", () => {
-      expect(saveDroidCliCredentials(null)).toBe(false);
-      expect(saveDroidCliCredentials({})).toBe(false);
-      expect(saveDroidCliCredentials({ accessToken: "only_access" })).toBe(false);
-      expect(saveDroidCliCredentials({ refreshToken: "only_refresh" })).toBe(false);
+    it("returns null when no credentials exist in candidate paths", async () => {
+      expect(await loadDroidCliCredentials()).toBeNull();
     });
   });
 
@@ -128,7 +128,7 @@ describe("Factory Droid Local Auto-Import", () => {
         whoami: { user: { email: "fixture@example.test", name: "Fixture Account" } },
       });
       try {
-        expect(readKeychainKey()).toBeNull();
+        expect(await readKeychainKey()).toBeNull();
         expect((await GET().then((r) => r.json()))).toMatchObject({ found: true, email: "fixture@example.test", orgId: "org_fixture" });
         const response = await POST();
         expect(response.status).toBe(200);
