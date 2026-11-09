@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import factory from "../../src/lib/oauth/providers/factory.js";
 import { FACTORY_CONFIG, PROVIDERS } from "../../src/lib/oauth/constants/oauth.js";
 import { PROVIDERS as oauthProviders, getProvider } from "../../src/lib/oauth/providers/index.js";
@@ -12,16 +12,10 @@ import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
 // Factory auth requests go through the shared transport; tests stub it here.
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: vi.fn() }));
 
-const originalFetch = global.fetch;
-
 describe("Factory OAuth & Token Management", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     proxyAwareFetch.mockReset();
-  });
-
-  afterEach(() => {
-    global.fetch = originalFetch;
   });
 
   describe("Constants & Registration", () => {
@@ -116,7 +110,7 @@ describe("Factory OAuth & Token Management", () => {
 
   describe("requestDeviceCode", () => {
     it("calls WorkOS device authorize endpoint and returns normalized code object", async () => {
-      global.fetch = vi.fn().mockResolvedValue({
+      proxyAwareFetch.mockResolvedValue({
         ok: true,
         json: async () => ({
           device_code: "workos_dc_12345",
@@ -130,7 +124,7 @@ describe("Factory OAuth & Token Management", () => {
 
       const res = await factory.requestDeviceCode();
 
-      expect(global.fetch).toHaveBeenCalledWith(
+      expect(proxyAwareFetch).toHaveBeenCalledWith(
         "https://api.workos.com/user_management/authorize/device",
         expect.objectContaining({
           method: "POST",
@@ -148,7 +142,7 @@ describe("Factory OAuth & Token Management", () => {
     });
 
     it("throws error when device authorize fails", async () => {
-      global.fetch = vi.fn().mockResolvedValue({
+      proxyAwareFetch.mockResolvedValue({
         ok: false,
         text: async () => "Unauthorized client",
       });
@@ -159,7 +153,7 @@ describe("Factory OAuth & Token Management", () => {
 
   describe("pollToken", () => {
     it("polls WorkOS authenticate endpoint with device_code grant", async () => {
-      global.fetch = vi.fn().mockResolvedValue({
+      proxyAwareFetch.mockResolvedValue({
         ok: true,
         json: async () => ({
           access_token: "token_acc_999",
@@ -179,7 +173,7 @@ describe("Factory OAuth & Token Management", () => {
       expect(result.ok).toBe(true);
       expect(result.data.access_token).toBe("token_acc_999");
       expect(result.data.refresh_token).toBe("token_ref_888");
-      expect(global.fetch).toHaveBeenCalledWith(
+      expect(proxyAwareFetch).toHaveBeenCalledWith(
         "https://api.workos.com/user_management/authenticate",
         expect.objectContaining({
           method: "POST",
@@ -189,7 +183,7 @@ describe("Factory OAuth & Token Management", () => {
     });
 
     it("returns error response for authorization_pending", async () => {
-      global.fetch = vi.fn().mockResolvedValue({
+      proxyAwareFetch.mockResolvedValue({
         ok: false,
         json: async () => ({
           error: "authorization_pending",
@@ -208,7 +202,7 @@ describe("Factory OAuth & Token Management", () => {
       const payload = Buffer.from(JSON.stringify({ org_id: "org_jwt_1" })).toString("base64url");
       const fakeJwt = `eyJhbGciOiJSUzI1NiJ9.${payload}.sig`;
 
-      global.fetch = vi.fn().mockResolvedValue({
+      proxyAwareFetch.mockResolvedValue({
         ok: true,
         json: async () => ({
           org_id: "org_whoami_2",
@@ -240,7 +234,7 @@ describe("Factory OAuth & Token Management", () => {
     });
 
     it("stores the inference region whoami reports", async () => {
-      global.fetch = vi.fn().mockResolvedValue({
+      proxyAwareFetch.mockResolvedValue({
         ok: true,
         json: async () => ({ org_id: "org_1", region: "global", inferenceRegion: "us" }),
       });

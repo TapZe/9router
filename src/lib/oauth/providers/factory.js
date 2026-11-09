@@ -1,5 +1,8 @@
 import { FACTORY_CONFIG } from "../constants/oauth.js";
 import { FACTORY_CLIENT_VERSION, randomTraceparent } from "open-sse/executors/factory.js";
+// proxyAwareFetch, not bare fetch: the shared transport (env proxy, curved
+// dispatcher, keep-alive cap) must not depend on load order.
+import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 
 const WORKOS_CLIENT_ID = "client_01HNM792M5G5G1A2THWPXKFMXB";
 const WORKOS_DEVICE_AUTHORIZE = "https://api.workos.com/user_management/authorize/device";
@@ -39,7 +42,7 @@ const factory = {
     const clientId = config?.clientId || WORKOS_CLIENT_ID;
     const url = config?.deviceCodeUrl || WORKOS_DEVICE_AUTHORIZE;
 
-    const response = await fetch(url, {
+    const response = await proxyAwareFetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -70,7 +73,7 @@ const factory = {
     const clientId = config?.clientId || WORKOS_CLIENT_ID;
     const tokenUrl = config?.tokenUrl || WORKOS_TOKEN;
 
-    const response = await fetch(tokenUrl, {
+    const response = await proxyAwareFetch(tokenUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -111,7 +114,7 @@ const factory = {
 
     // Query /api/cli/whoami to get authoritative user identity, active org, and region
     try {
-      const res = await fetch(`${FACTORY_API}/api/cli/whoami`, {
+      const res = await proxyAwareFetch(`${FACTORY_API}/api/cli/whoami`, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
