@@ -147,7 +147,9 @@ import p147 from "./veoaifree-web.js";
 import p151 from "./uc-web.js";
 import p152 from "./runcrate.js";
 import p153 from "./nace.js";
-import p154 from "./factory.js";
+import p154 from "./sensenova-intl.js";
+// Fork-only provider: kept last so upstream registry order stays identical.
+import p155 from "./factory.js";
 export default [
   p0,
   p1,
@@ -296,4 +298,5 @@ export default [
   p152,
   p153,
   p154,
+  p155,
 ];

@@ -406,7 +406,7 @@ async function doPingConnection(conn, provider, providerConfig, handler, deps, s
   const quotas = usage?.quotas || {};
   const quota = quotas?.[providerConfig.quotaKey];
   if (!quota) return;
-  const resetAt = quota.resetAt || null;
+  let resetAt = quota.resetAt || null;
   if (!resetAt && !providerConfig.pingWhenWindowInactive) return;
 
   if (resetAt && state.resetCache) state.resetCache[key] = resetAt;
@@ -415,7 +415,7 @@ async function doPingConnection(conn, provider, providerConfig, handler, deps, s
   if (!providerConfig.pingWhenWindowInactive && isQuotaExhausted(quota)) return;
 
   const now = Date.now();
-  const resetKey = resetAt ? normalizeResetKey(resetAt) : null;
+  let resetKey = resetAt ? normalizeResetKey(resetAt) : null;
 
   const dueSlot = schedule ? getDuePingSlot(schedule, now) : null;
   const slotPending = Boolean(dueSlot) && connection.lastPingedSlotKey !== dueSlot.key;
@@ -430,6 +430,16 @@ async function doPingConnection(conn, provider, providerConfig, handler, deps, s
       ? normalizeResetKey(connection.lastPingedResetKey || connection.lastPingedResetAt)
       : null;
 
+    // A tick may miss Claude's short lead window and observe the next reset.
+    // Catch up the unpinged cached deadline, without marking that next cycle
+    // as pinged. Keep the fresh reset in resetCache for subsequent ticks.
+    if (!providerConfig.pingWhenResetAtSlides && cachedReset
+      && lastPingedResetKey !== normalizeResetKey(cachedReset)
+      && shouldPingForReset(providerConfig, cachedReset, cachedReset, now)) {
+      resetAt = cachedReset;
+      resetKey = normalizeResetKey(cachedReset);
+    }
+
     if (!shouldPingForReset(providerConfig, cachedReset, resetAt, now)) return;
     if (wasPingedRecently(connection, providerConfig.minPingIntervalMs, now)) return;
     if (resetKey && lastPingedResetKey === resetKey) return;
@@ -440,6 +450,10 @@ async function doPingConnection(conn, provider, providerConfig, handler, deps, s
     return;
   }
 
+  // Retain a caught-up deadline on HTTP failures or thrown transport errors so
+  // the failure cooldown delays its retry rather than discarding the cycle.
+  const catchingUpReset = resetAt !== quota?.resetAt;
+  if (catchingUpReset) state.resetCache[key] = resetAt;
   let ok = false;
   try {
     ok = await handler.sendPing(connection, providerConfig, proxyOptions, deps, signal);
@@ -462,6 +476,7 @@ async function doPingConnection(conn, provider, providerConfig, handler, deps, s
     return;
   }
 
+  if (catchingUpReset) state.resetCache[key] = quota.resetAt;
   if (state.failureCache) delete state.failureCache[key];
   const pingedAt = new Date().toISOString();
   await deps.updateProviderConnection(connection.id, {
