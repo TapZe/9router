@@ -86,11 +86,12 @@ const factory = {
       }),
     });
 
+    // Read the body once: a failed json() has already consumed it.
+    const text = await response.text();
     let data;
     try {
-      data = await response.json();
+      data = JSON.parse(text);
     } catch {
-      const text = await response.text();
       data = { error: "invalid_response", error_description: text };
     }
 

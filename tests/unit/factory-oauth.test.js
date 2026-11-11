@@ -153,20 +153,17 @@ describe("Factory OAuth & Token Management", () => {
 
   describe("pollToken", () => {
     it("polls WorkOS authenticate endpoint with device_code grant", async () => {
-      proxyAwareFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          access_token: "token_acc_999",
-          refresh_token: "token_ref_888",
-          expires_in: 3600,
-          user: {
-            id: "user_123",
-            email: "dev@example.com",
-            first_name: "Droid",
-            last_name: "Engineer",
-          },
-        }),
-      });
+      proxyAwareFetch.mockResolvedValue(new Response(JSON.stringify({
+        access_token: "token_acc_999",
+        refresh_token: "token_ref_888",
+        expires_in: 3600,
+        user: {
+          id: "user_123",
+          email: "dev@example.com",
+          first_name: "Droid",
+          last_name: "Engineer",
+        },
+      }), { status: 200 }));
 
       const result = await factory.pollToken(FACTORY_CONFIG, "workos_dc_12345");
 
@@ -183,17 +180,24 @@ describe("Factory OAuth & Token Management", () => {
     });
 
     it("returns error response for authorization_pending", async () => {
-      proxyAwareFetch.mockResolvedValue({
-        ok: false,
-        json: async () => ({
-          error: "authorization_pending",
-          error_description: "The user has not yet authorized the device.",
-        }),
-      });
+      proxyAwareFetch.mockResolvedValue(new Response(JSON.stringify({
+        error: "authorization_pending",
+        error_description: "The user has not yet authorized the device.",
+      }), { status: 400 }));
 
       const result = await factory.pollToken(FACTORY_CONFIG, "workos_dc_12345");
       expect(result.ok).toBe(false);
       expect(result.data.error).toBe("authorization_pending");
+    });
+
+    it("returns a non-JSON WorkOS reply as invalid_response instead of throwing", async () => {
+      proxyAwareFetch.mockResolvedValue(new Response("<html>502 Bad Gateway</html>", { status: 502 }));
+
+      const result = await factory.pollToken(FACTORY_CONFIG, "workos_dc_12345");
+      expect(result).toEqual({
+        ok: false,
+        data: { error: "invalid_response", error_description: "<html>502 Bad Gateway</html>" },
+      });
     });
   });
 
