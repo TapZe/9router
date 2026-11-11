@@ -417,6 +417,7 @@ async function doPingConnection(conn, provider, providerConfig, handler, deps, s
   const now = Date.now();
   let resetKey = resetAt ? normalizeResetKey(resetAt) : null;
 
+  let catchingUpReset = false;
   const dueSlot = schedule ? getDuePingSlot(schedule, now) : null;
   const slotPending = Boolean(dueSlot) && connection.lastPingedSlotKey !== dueSlot.key;
 
@@ -433,11 +434,14 @@ async function doPingConnection(conn, provider, providerConfig, handler, deps, s
     // A tick may miss Claude's short lead window and observe the next reset.
     // Catch up the unpinged cached deadline, without marking that next cycle
     // as pinged. Keep the fresh reset in resetCache for subsequent ticks.
-    if (!providerConfig.pingWhenResetAtSlides && cachedReset
+    // Lead-window mode only: Codex (sliding reset) and Factory (inactive
+    // window) never ping for a reset that has already passed.
+    if (!providerConfig.pingWhenResetAtSlides && !providerConfig.pingWhenWindowInactive && cachedReset
       && lastPingedResetKey !== normalizeResetKey(cachedReset)
       && shouldPingForReset(providerConfig, cachedReset, cachedReset, now)) {
       resetAt = cachedReset;
       resetKey = normalizeResetKey(cachedReset);
+      catchingUpReset = true;
     }
 
     if (!shouldPingForReset(providerConfig, cachedReset, resetAt, now)) return;
@@ -452,7 +456,6 @@ async function doPingConnection(conn, provider, providerConfig, handler, deps, s
 
   // Retain a caught-up deadline on HTTP failures or thrown transport errors so
   // the failure cooldown delays its retry rather than discarding the cycle.
-  const catchingUpReset = resetAt !== quota?.resetAt;
   if (catchingUpReset) state.resetCache[key] = resetAt;
   let ok = false;
   try {

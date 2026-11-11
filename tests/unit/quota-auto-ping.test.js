@@ -610,6 +610,24 @@ describe("quota auto-ping", () => {
     }));
   });
 
+  it("does not catch up an expired Factory window that other usage already restarted", async () => {
+    // Claude's missed-reset catch-up must not apply to Factory: Factory pings
+    // only to start an inactive window, and a future windowEnd means one is live.
+    deps.getSettings.mockResolvedValue({ factoryAutoPing: { connections: { "factory-1": true } } });
+    deps.getProviderConnections.mockImplementation(async ({ provider }) => (
+      provider === "factory" ? [{ id: "factory-1", provider: "factory", authType: "oauth", accessToken: "token" }] : []
+    ));
+    state.resetCache["factory:factory-1"] = "2026-01-01T11:30:00.000Z";
+    getFactoryUsage.mockResolvedValue({
+      quotas: { standard_5h: { used: 5, total: 100, remaining: 95, resetAt: "2026-01-01T16:50:00.000Z" } },
+    });
+
+    await runQuotaAutoPingTick(deps, state);
+
+    expect(deps.getExecutor).not.toHaveBeenCalled();
+    expect(state.resetCache["factory:factory-1"]).toBe("2026-01-01T16:50:00.000Z");
+  });
+
   it("does not repeat a Factory ping for the same expired window", async () => {
     deps.getSettings.mockResolvedValue({ factoryAutoPing: { connections: { "factory-1": true } } });
     deps.getProviderConnections.mockImplementation(async ({ provider }) => (
