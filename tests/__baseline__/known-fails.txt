@@ -68,3 +68,7 @@ tests/unit/token-refresh-generic.test.js :: refreshAccessToken — config-driven
 tests/unit/token-refresh-generic.test.js :: Cline refresh uses the extension JSON refresh contract
 tests/unit/xai-oauth-service.test.js :: xai/oauth service generates dashboard auth data with CLIProxyAPI PKCE size and discovered endpoints
 tests/unit/xai-oauth-service.test.js :: xai/oauth service exchanges dashboard codes against the discovered xAI token endpoint
+
+# Added in upstream v0.5.119 (2275bc0d) as a node:test file, so vitest finds no suite in it.
+# Same name fails in a run of pure upstream v0.5.119 (54a88d04).
+tests/unit/nvidia-params.test.js :: <suite failed to load>
