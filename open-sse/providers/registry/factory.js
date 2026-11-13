@@ -76,6 +76,7 @@ export default {
 
   models: [
     // Claude & Anthropic family (routed to /api/llm/a/v1/messages)
+    { id: "claude-fable-5.2", name: "Claude Fable 5.2 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-fable-5.1", name: "Claude Fable 5.1 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-fable-5", name: "Claude Fable 5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
     { id: "claude-opus-5-5", name: "Claude Opus 5.5 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
@@ -161,6 +162,8 @@ export default {
     { id: "beam-1.0", name: "Beam 1.0 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
 
     // Google Gemini family (routed to /api/llm/g/v1/generate)
+    { id: "gemini-4-hydrogen", name: "Gemini 4 Hydrogen (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
+    { id: "gemini-4-carbon", name: "Gemini 4 Carbon (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "gemini-4-argon", name: "Gemini 4 Argon (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "garnet-07-15", name: "Garnet 07-15 Preview (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
