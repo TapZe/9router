@@ -207,7 +207,17 @@ export const PROVIDER_PRICING = {
   // does not sync OpenRouter prices. Droid's own rate cards are in Factory credits,
   // so they are not used. Models with no clear OpenRouter equivalent (fast variants,
   // qwen3.8-max, nemotron-3.5-super, Atlas, Aster, Garnet) are left out.
+  // OpenRouter's listings for kimi-k3, glm-5.2, glm-5.3 and deepseek-v4-pro are far
+  // off their makers' prices, so those use the maker's published USD API price
+  // (read 2026-11-13).
   factory: {
+    // https://platform.kimi.ai/docs/pricing/chat (cache write: default 5-minute TTL)
+    "kimi-k3": { input: 3, output: 15, cached: 0.3, reasoning: 15, cache_creation: 3 },
+    // https://docs.z.ai/guides/overview/pricing
+    "glm-5.3": { input: 1.4, output: 4.4, cached: 0.26, reasoning: 4.4 },
+    "glm-5.2": { input: 1.4, output: 4.4, cached: 0.26, reasoning: 4.4 },
+    // https://api-docs.deepseek.com/quick_start/pricing (peak rate; off-peak is half)
+    "deepseek-v4-pro": { input: 1.32, output: 3.96, cached: 0.044, reasoning: 3.96 },
     "claude-fable-5.2": { input: 8, output: 40, cached: 0.2, reasoning: 40, cache_creation: 10 },
     "claude-fable-5.1": { input: 10, output: 50, cached: 0.25, reasoning: 50, cache_creation: 12.5 },
     "claude-fable-5": { input: 10, output: 50, cached: 1, reasoning: 50, cache_creation: 12.5 },
@@ -246,11 +256,8 @@ export const PROVIDER_PRICING = {
     "grok-4.6": { input: 2, output: 6, cached: 0.5, reasoning: 6 },
     "grok-4.5": { input: 2, output: 6, cached: 0.3, reasoning: 6 },
     "kimi-k3.1-pro": { input: 0.2375, output: 8.4114, cached: 0.2, reasoning: 8.4114 },
-    "kimi-k3": { input: 0.192, output: 16, cached: 0.182, reasoning: 16 },
     "kimi-k2.5": { input: 0.5, output: 2.5, cached: 0.15, reasoning: 2.5 },
-    "glm-5.3": { input: 0.084, output: 3.6, cached: 0.079, reasoning: 3.6 },
     "glm-5.3-flash": { input: 0.0399, output: 0.0784, cached: 0.03, reasoning: 0.0784 },
-    "glm-5.2": { input: 0.007, output: 6.8, cached: 0.006, reasoning: 6.8 },
     "glm-5.1": { input: 1.4, output: 4.4, cached: 0.26, reasoning: 4.4 },
     "glm-5": { input: 1, output: 3.2, cached: 0.2, reasoning: 3.2 },
     "glm-4.7": { input: 0.6, output: 2.2, cached: 0.11, reasoning: 2.2 },
@@ -258,7 +265,6 @@ export const PROVIDER_PRICING = {
     "mistral-medium-3.5": { input: 1.5, output: 7.5, reasoning: 7.5 }, // mistralai/mistral-medium-3-5
     "deepseek-v4.1-flash": { input: 0.3, output: 1.2, cached: 0.006, reasoning: 1.2 },
     "deepseek-v4.1-flash-1017": { input: 0.3, output: 1.2, cached: 0.006, reasoning: 1.2 },
-    "deepseek-v4-pro": { input: 0.95526, output: 1.91052, cached: 0.079605, reasoning: 1.91052 },
     "deepseek-v4-flash-0731": { input: 0.0434, output: 0.3, cached: 0.035, reasoning: 0.3 },
     "nemotron-3-ultra": { input: 0.6, output: 2.4, cached: 0.12, reasoning: 2.4 }, // nvidia/nemotron-3-ultra-550b-a55b
     "inkling": { input: 1, output: 4.05, cached: 0.17, reasoning: 4.05 },

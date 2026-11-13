@@ -57,3 +57,22 @@ describe("Factory price overrides", () => {
     expect(await db.getPricingForModel("factory", "claude-fable-5.2")).toEqual({ input: 1, output: 2 });
   });
 });
+
+// OpenRouter's listings for these four are far off their makers' prices
+// (e.g. kimi-k3 at $0.192 in / $16 out), so they use the maker's published API
+// price in USD, read 2026-11-13.
+describe("Factory prices from the model maker", () => {
+  it("prices Kimi K3 at Moonshot's price", () => {
+    expect(getPricingForModel("factory", "kimi-k3")).toEqual({ input: 3, output: 15, cached: 0.3, reasoning: 15, cache_creation: 3 });
+  });
+
+  it("prices GLM 5.2 and 5.3 at Z.ai's price", () => {
+    for (const id of ["glm-5.2", "glm-5.3"]) {
+      expect(getPricingForModel("factory", id)).toEqual({ input: 1.4, output: 4.4, cached: 0.26, reasoning: 4.4 });
+    }
+  });
+
+  it("prices DeepSeek V4 Pro at DeepSeek's peak price", () => {
+    expect(getPricingForModel("factory", "deepseek-v4-pro")).toEqual({ input: 1.32, output: 3.96, cached: 0.044, reasoning: 3.96 });
+  });
+});
