@@ -6,6 +6,8 @@
 //   3. MODEL_PRICING[model]               — canonical model price (provider-agnostic)
 //   4. PATTERN_PRICING                    — glob pattern match (e.g. "codex-*")
 
+import { FACTORY_DROID_MODELS } from "./factoryDroid.js";
+
 /**
  * Namespaces upstream meters at $0. A free model must never inherit a paid
  * rate: the vendor-prefix strip in getPricingForModel() would turn
@@ -197,7 +199,28 @@ export const MODEL_PRICING = {
  * Only include entries where price DIFFERS from MODEL_PRICING.
  * Keyed by provider alias (cc, cx, gc, gh, ...) or provider id (openai, anthropic, ...).
  */
+// Droid 1.10.0 writes provider rates per million tokens in its credit unit:
+// rates.input equals cost.tokenMultiplier, and one unit is 2.5 USD (Sonnet 4.6's
+// 1.2/6 is Anthropic's $3/$15, GPT-5.3 Codex's 0.7/5.6 is OpenAI's $1.75/$14).
+const DROID_RATE_USD = 2.5;
+
+// Factory bills each model at the rate card of the provider Droid routes it to
+// in the global region. Models without a usable card are left to the fallbacks.
+function factoryDroidPricing() {
+  const usd = (rate) => Number((rate * DROID_RATE_USD).toFixed(6));
+  const entries = Object.entries(FACTORY_DROID_MODELS).filter(([, model]) => model.pricing);
+  return Object.fromEntries(entries.map(([id, { pricing }]) => [id, {
+    input: usd(pricing.input),
+    output: usd(pricing.output),
+    ...(pricing.cacheRead !== undefined && { cached: usd(pricing.cacheRead) }),
+    reasoning: usd(pricing.output),
+    ...(pricing.cacheWrite !== undefined && { cache_creation: usd(pricing.cacheWrite) }),
+  }]));
+}
+
 export const PROVIDER_PRICING = {
+  // Factory (Droid) — rate cards from the Droid binary; see factoryDroidPricing.
+  factory: factoryDroidPricing(),
   // GitHub Copilot (gh) — explicit override, matches canonical gpt-5.3-codex rate
   gh: {
     "gpt-5.3-codex": { input: 1.75, output: 14.00, cached: 0.175, reasoning: 14.00, cache_creation: 1.75 },
