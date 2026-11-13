@@ -148,8 +148,9 @@ import p151 from "./uc-web.js";
 import p152 from "./runcrate.js";
 import p153 from "./nace.js";
 import p154 from "./sensenova-intl.js";
+import p155 from "./synthetic.js";
 // Fork-only provider: kept last so upstream registry order stays identical.
-import p155 from "./factory.js";
+import p156 from "./factory.js";
 export default [
   p0,
   p1,
@@ -299,4 +300,5 @@ export default [
   p153,
   p154,
   p155,
+  p156,
 ];

@@ -1312,6 +1312,14 @@
     },
     "format": "openai"
   },
+  "synthetic": {
+    "baseUrl": "https://api.synthetic.new/openai/v1/chat/completions",
+    "validateUrl": "https://api.synthetic.new/v2/quotas",
+    "usage": {
+      "url": "https://api.synthetic.new/v2/quotas"
+    },
+    "format": "openai"
+  },
   "factory": {
     "baseUrl": "https://api.factory.ai/api/llm/o/v1/chat/completions",
     "format": "openai",
