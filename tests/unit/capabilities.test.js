@@ -67,8 +67,8 @@ describe("getCapabilitiesForModel", () => {
       "gpt-6.1-sol-ultrafast": { contextWindow: 1050000, maxOutput: 128000, vision: true, thinkingFormat: "openai", thinkingCanDisable: false },
       "gpt-6-luna-fast": { contextWindow: 1050000, maxOutput: 128000, vision: true, thinkingFormat: "openai" },
       "deepseek-v4.1-flash-1017": { contextWindow: 1040000, maxOutput: 131072, vision: true, thinkingFormat: "openai", thinkingCanDisable: true },
-      "muse-spark-1.2": { contextWindow: 1040000, maxOutput: 131072, vision: false, thinkingFormat: "openai", thinkingCanDisable: false },
-      "muse-spark-1.3": { contextWindow: 1040000, maxOutput: 131072, vision: false, thinkingFormat: "openai", thinkingCanDisable: false },
+      "muse-spark-1.2": { contextWindow: 1040000, maxOutput: 131072, vision: true, thinkingFormat: "openai", thinkingCanDisable: false }, // images on since Droid 1.10.0
+      "muse-spark-1.3": { contextWindow: 1040000, maxOutput: 131072, vision: true, thinkingFormat: "openai", thinkingCanDisable: false },
       "beam-1.0": { contextWindow: 1048576, maxOutput: 32768, vision: false, thinkingFormat: "openai", thinkingCanDisable: false },
     };
     for (const [model, caps] of Object.entries(expected)) {

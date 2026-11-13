@@ -80,8 +80,8 @@ const DROID_1_3_0_LIMITS = {
   "minimax-m3.1-flash": [868928, 131072, true],
   "mistral-large-4": [524288, 64000, true],
   "mistral-medium-3.5": [192000, 64000, true],
-  "muse-spark-1.2": [908928, 131072, false],
-  "muse-spark-1.3": [908928, 131072, false],
+  "muse-spark-1.2": [908928, 131072, true], // images on since Droid 1.10.0
+  "muse-spark-1.3": [908928, 131072, true], // images on since Droid 1.10.0
   "muse-spark-open": [908928, 131072, true],
   "nemotron-3-ultra": [136464, 65536, false],
   "nemotron-3.5-super": [934464, 65536, true],

@@ -1,7 +1,11 @@
 # Unreleased
 
 ## Features
-- **Factory**: report Droid 1.5.0 as the client version. Reasoning efforts, default efforts, context and output limits, image support, and request fields now come from one table generated from the Droid 1.5.0 binary.
+- **Factory**: report Droid 1.10.0 as the client version. Reasoning efforts, default efforts, context and output limits, image support, and request fields now come from one table generated from the Droid 1.10.0 binary.
+- **Factory**: add Claude Fable 5.2, Gemini 4 Hydrogen, and Gemini 4 Carbon from Droid 1.10.0. Fable 5.2 has Fable 5.1's limits, efforts low to max with default high, and no EU provider. Hydrogen has a 1M context with 65K output, defaults to high effort, and works in every region. Carbon matches Argon: global only, default medium. All three take images.
+- **Factory**: send Anthropic thinking block binding (`block_binding`, beta `thinking-binding-controls-2026-08-01`) for Fable 5.1, Fable 5.2, and the Claude 5.5 models on Anthropic, as Droid 1.10.0 does.
+- **Factory**: accept image input on Muse Spark 1.2 and 1.3, as Droid 1.10.0 does.
+- **Factory**: price Factory usage at OpenRouter's listed price for the same upstream model (a static table taken from OpenRouter's public model list on 2026-11-13; 9router does not sync it). Fable 5.2 was billed at the generic Claude rate and Muse Spark Open, Nemotron 3 Ultra, Mistral, Inkling, and Beam had no price. Fast variants, Qwen3.8 Max, Nemotron 3.5 Super, Atlas, Aster, and Garnet have no OpenRouter equivalent and keep the general fallback. Kimi K3, GLM 5.2, GLM 5.3, and DeepSeek V4 Pro use their makers' published USD prices instead (Moonshot, Z.ai, DeepSeek peak rate), because OpenRouter's listings for them are far off. Your own price overrides still win.
 - **Factory**: add Kimi K3.1 Pro from Droid 1.5.0. It takes images, has a 1M context with 131K output, defaults to max effort, and goes to Fireworks in the global region and Baseten in the US. EU orgs get "No providers available" for it, as Droid does.
 - **Factory**: for Qwen3.8 Max, keep the Droid system prompt as the first message and send every later system message as a user message wrapped in `<system-reminder>`, as Droid 1.5.0 does.
 - **Factory**: route each model to the provider Droid 1.3.0 picks for the org's inference region. GLM 5.2, GLM 5.2 Fast, and Nemotron 3 Ultra now go to Baseten, and EU orgs send Claude to Vertex. Connections saved before this change keep their region.
@@ -11,6 +15,7 @@
 - **Factory**: add Muse Spark 1.3 and Nemotron 3.5 Super from Droid 1.2.0.
 
 ## Fixes
+- **Factory usage**: leave out a usage window Factory marks unlimited, as Droid 1.10.0 does, instead of showing it as a quota.
 - **Factory**: a connection imported from the Droid CLI now owns its copy of the login. Token refresh no longer reads the macOS Keychain or `~/.factory`, no longer writes rotated tokens back into the Droid CLI store, and never loads the import route; only the explicit, local-only "Import from Droid CLI" action reads the host login (Keychain lookup is async). WorkOS refresh tokens are single-use, so when the Droid CLI and 9router share one imported session, whichever refreshes first signs the other out: on `invalid_grant` the connection asks to re-import or sign in. Sign in with the device code for a session independent of the Droid CLI.
 - **Providers**: keep account up/down as one adjacent swap by restamping the visible list to 1-based ranks in a single reorder transaction, including pools where every API-key row still has priority 1.
 - **Auto-ping**: isolate provider scans and per-account attempts so a stalled Codex or Factory request cannot hold up other accounts; cancel attempts after 60 seconds, retain in-flight ownership until late work settles, and preserve the 15-minute failure cooldown.

@@ -4,6 +4,8 @@ import { resolveFactoryApiBase, FACTORY_CLIENT_VERSION, randomTraceparent } from
 
 function formatFactoryWindow(window) {
   if (!window || typeof window !== "object") return null;
+  // Droid 1.10.0 hides a window Factory marks unlimited; it has no limit to show.
+  if (window.unlimited) return null;
   const used = Math.max(0, Math.min(100, toFiniteNumber(window.usedPercent ?? window.used_percent, 0)));
   const resetAt = parseResetTime(
     window.windowEnd ||
@@ -54,16 +56,20 @@ export async function getFactoryUsage(accessToken, providerSpecificData = null, 
     const core = limits.core || {};
 
     const quotas = {};
+    const addWindow = (key, window) => {
+      const quota = formatFactoryWindow(window);
+      if (quota) quotas[key] = quota;
+    };
 
     // Standard tier windows
-    if (standard.fiveHour) quotas.standard_5h = formatFactoryWindow(standard.fiveHour);
-    if (standard.weekly) quotas.standard_weekly = formatFactoryWindow(standard.weekly);
-    if (standard.monthly) quotas.standard_monthly = formatFactoryWindow(standard.monthly);
+    addWindow("standard_5h", standard.fiveHour);
+    addWindow("standard_weekly", standard.weekly);
+    addWindow("standard_monthly", standard.monthly);
 
     // Core tier windows
-    if (core.fiveHour) quotas.core_5h = formatFactoryWindow(core.fiveHour);
-    if (core.weekly) quotas.core_weekly = formatFactoryWindow(core.weekly);
-    if (core.monthly) quotas.core_monthly = formatFactoryWindow(core.monthly);
+    addWindow("core_5h", core.fiveHour);
+    addWindow("core_weekly", core.weekly);
+    addWindow("core_monthly", core.monthly);
 
     const extraUsage = typeof data.extraUsageBalanceCents === "number"
       ? {

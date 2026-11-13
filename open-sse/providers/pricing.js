@@ -202,6 +202,86 @@ export const PROVIDER_PRICING = {
   gh: {
     "gpt-5.3-codex": { input: 1.75, output: 14.00, cached: 0.175, reasoning: 14.00, cache_creation: 1.75 },
   },
+  // Factory (Droid) — OpenRouter's listed price for the same upstream model,
+  // from https://openrouter.ai/api/v1/models on 2026-11-13 ($/1M). Static: 9router
+  // does not sync OpenRouter prices. Droid's own rate cards are in Factory credits,
+  // so they are not used. Models with no clear OpenRouter equivalent (fast variants,
+  // qwen3.8-max, nemotron-3.5-super, Atlas, Aster, Garnet) are left out.
+  // OpenRouter's listings for kimi-k3, glm-5.2, glm-5.3 and deepseek-v4-pro are far
+  // off their makers' prices, so those use the maker's published USD API price
+  // (read 2026-11-13).
+  factory: {
+    // https://platform.kimi.ai/docs/pricing/chat (cache write: default 5-minute TTL)
+    "kimi-k3": { input: 3, output: 15, cached: 0.3, reasoning: 15, cache_creation: 3 },
+    // https://docs.z.ai/guides/overview/pricing
+    "glm-5.3": { input: 1.4, output: 4.4, cached: 0.26, reasoning: 4.4 },
+    "glm-5.2": { input: 1.4, output: 4.4, cached: 0.26, reasoning: 4.4 },
+    // https://api-docs.deepseek.com/quick_start/pricing (peak rate; off-peak is half)
+    "deepseek-v4-pro": { input: 1.32, output: 3.96, cached: 0.044, reasoning: 3.96 },
+    "claude-fable-5.2": { input: 8, output: 40, cached: 0.2, reasoning: 40, cache_creation: 10 },
+    "claude-fable-5.1": { input: 10, output: 50, cached: 0.25, reasoning: 50, cache_creation: 12.5 },
+    "claude-fable-5": { input: 10, output: 50, cached: 1, reasoning: 50, cache_creation: 12.5 },
+    "claude-opus-5-5": { input: 4, output: 20, cached: 0.2, reasoning: 20, cache_creation: 5 }, // anthropic/claude-opus-5.5
+    "claude-opus-5": { input: 5, output: 25, cached: 0.5, reasoning: 25, cache_creation: 6.25 },
+    "claude-opus-4-8": { input: 5, output: 25, cached: 0.5, reasoning: 25, cache_creation: 6.25 }, // anthropic/claude-opus-4.8
+    "claude-opus-4-7": { input: 5, output: 25, cached: 0.5, reasoning: 25, cache_creation: 6.25 }, // anthropic/claude-opus-4.7
+    "claude-opus-4-6": { input: 5, output: 25, cached: 0.5, reasoning: 25, cache_creation: 6.25 }, // anthropic/claude-opus-4.6
+    "claude-opus-4-5-20251101": { input: 5, output: 25, cached: 0.5, reasoning: 25, cache_creation: 6.25 }, // anthropic/claude-opus-4.5
+    "claude-sonnet-5-5": { input: 2, output: 10, cached: 0.1, reasoning: 10, cache_creation: 2.5 }, // anthropic/claude-sonnet-5.5
+    "claude-sonnet-5": { input: 2, output: 10, cached: 0.2, reasoning: 10, cache_creation: 2.5 },
+    "claude-sonnet-4-6": { input: 3, output: 15, cached: 0.3, reasoning: 15, cache_creation: 3.75 }, // anthropic/claude-sonnet-4.6
+    "claude-sonnet-4-5-20250929": { input: 3, output: 15, cached: 0.3, reasoning: 15, cache_creation: 3.75 }, // anthropic/claude-sonnet-4.5
+    "claude-haiku-5-5": { input: 0.1, output: 0.5, cached: 0.01, reasoning: 0.5, cache_creation: 0.125 }, // anthropic/claude-haiku-5.5
+    "claude-haiku-4-5-20251001": { input: 1, output: 5, cached: 0.1, reasoning: 5, cache_creation: 1.25 }, // anthropic/claude-haiku-4.5
+    "minimax-m3": { input: 0.3, output: 1.2, cached: 0.06, reasoning: 1.2 },
+    "minimax-m3.1-flash": { input: 0.15, output: 0.6, cached: 0.015, reasoning: 0.6 },
+    "minimax-m2.7": { input: 0.21, output: 0.84, cached: 0.042, reasoning: 0.84 },
+    "gpt-6-astra": { input: 10, output: 50, cached: 1, reasoning: 50, cache_creation: 12.5 },
+    "gpt-6-sol": { input: 2, output: 10, cached: 0.2, reasoning: 10, cache_creation: 2.5 },
+    "gpt-6.1-sol": { input: 2, output: 10, cached: 0.1, reasoning: 10, cache_creation: 2.5 },
+    "gpt-6.1-terra": { input: 1, output: 5, cached: 0.05, reasoning: 5, cache_creation: 1.25 },
+    "gpt-6-luna": { input: 0.1, output: 0.5, cached: 0.01, reasoning: 0.5, cache_creation: 0.125 },
+    "gpt-5.6-sol": { input: 4.4, output: 22, cached: 0.44, reasoning: 22, cache_creation: 5.5 },
+    "gpt-5.6-terra": { input: 2, output: 12, cached: 0.2, reasoning: 12, cache_creation: 2.5 },
+    "gpt-5.6-luna": { input: 0.2, output: 1.2, cached: 0.02, reasoning: 1.2, cache_creation: 0.25 },
+    "gpt-5.5": { input: 5, output: 30, cached: 0.5, reasoning: 30 },
+    "gpt-5.5-pro": { input: 30, output: 180, reasoning: 180 },
+    "gpt-5.4": { input: 2.5, output: 15, cached: 0.25, reasoning: 15 },
+    "gpt-5.4-mini": { input: 0.75, output: 4.5, cached: 0.075, reasoning: 4.5 },
+    "gpt-5.2": { input: 1.75, output: 14, cached: 0.175, reasoning: 14 },
+    "gpt-5.3-codex": { input: 1.75, output: 14, cached: 0.175, reasoning: 14 },
+    "gpt-5.2-codex": { input: 1.75, output: 14, cached: 0.175, reasoning: 14 },
+    "gpt-5.1-codex-max": { input: 1.25, output: 10, cached: 0.125, reasoning: 10 },
+    "grok-4.7": { input: 2, output: 6, cached: 0.5, reasoning: 6 },
+    "grok-4.6": { input: 2, output: 6, cached: 0.5, reasoning: 6 },
+    "grok-4.5": { input: 2, output: 6, cached: 0.3, reasoning: 6 },
+    "kimi-k3.1-pro": { input: 0.2375, output: 8.4114, cached: 0.2, reasoning: 8.4114 },
+    "kimi-k2.5": { input: 0.5, output: 2.5, cached: 0.15, reasoning: 2.5 },
+    "glm-5.3-flash": { input: 0.0399, output: 0.0784, cached: 0.03, reasoning: 0.0784 },
+    "glm-5.1": { input: 1.4, output: 4.4, cached: 0.26, reasoning: 4.4 },
+    "glm-5": { input: 1, output: 3.2, cached: 0.2, reasoning: 3.2 },
+    "glm-4.7": { input: 0.6, output: 2.2, cached: 0.11, reasoning: 2.2 },
+    "mistral-large-4": { input: 0.7, output: 2.1, cached: 0.07, reasoning: 2.1 }, // mistralai/mistral-large-4-0
+    "mistral-medium-3.5": { input: 1.5, output: 7.5, reasoning: 7.5 }, // mistralai/mistral-medium-3-5
+    "deepseek-v4.1-flash": { input: 0.3, output: 1.2, cached: 0.006, reasoning: 1.2 },
+    "deepseek-v4.1-flash-1017": { input: 0.3, output: 1.2, cached: 0.006, reasoning: 1.2 },
+    "deepseek-v4-flash-0731": { input: 0.0434, output: 0.3, cached: 0.035, reasoning: 0.3 },
+    "nemotron-3-ultra": { input: 0.6, output: 2.4, cached: 0.12, reasoning: 2.4 }, // nvidia/nemotron-3-ultra-550b-a55b
+    "inkling": { input: 1, output: 4.05, cached: 0.17, reasoning: 4.05 },
+    "muse-spark-1.2": { input: 1.25, output: 4.25, cached: 0.15, reasoning: 4.25 },
+    "muse-spark-1.3": { input: 1.25, output: 4.25, cached: 0.15, reasoning: 4.25 },
+    "muse-spark-open": { input: 1.25, output: 4.25, cached: 0.15, reasoning: 4.25 },
+    "beam-1.0": { input: 0.3, output: 1, cached: 0.04, reasoning: 1 }, // reflection/beam-1.0-501b-a23b
+    "gemini-4-hydrogen": { input: 1.5, output: 7.5, cached: 0.075, reasoning: 7.5, cache_creation: 0.083333 },
+    "gemini-4-carbon": { input: 2, output: 10, cached: 0.1, reasoning: 10, cache_creation: 0.1875 },
+    "gemini-4-argon": { input: 2, output: 10, cached: 0.1, reasoning: 10, cache_creation: 0.1875 },
+    "gemini-3.8-flash": { input: 0.825, output: 4.125, cached: 0.0825, reasoning: 4.125, cache_creation: 0.041667 },
+    "gemini-3.7-flash": { input: 0.75, output: 3.75, cached: 0.075, reasoning: 3.75, cache_creation: 0.041667 },
+    "gemini-3.6-flash": { input: 0.75, output: 3.75, cached: 0.075, reasoning: 3.75, cache_creation: 0.041667 },
+    "gemini-3.5-flash": { input: 1.5, output: 9, cached: 0.15, reasoning: 9, cache_creation: 0.083333 },
+    "gemini-3-flash-preview": { input: 0.5, output: 3, cached: 0.05, reasoning: 3, cache_creation: 0.083333 },
+    "gemini-3.1-pro-preview": { input: 2, output: 12, cached: 0.2, reasoning: 12, cache_creation: 0.375 },
+  },
   // TokenRouter — exact rates from https://api.tokenrouter.com/api/pricing ($1/1M tokens).
   // Ratio→USD: input = model_ratio×2, output = model_ratio×completion_ratio×2.
   // These override the canonical MODEL_PRICING/PATTERN_PRICING, whose rates often

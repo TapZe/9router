@@ -49,7 +49,7 @@ describe("Factory Kimi K3.1 Pro from Droid 1.5.0", () => {
     expect(response.status).toBe(200);
     expect(url).toBe("https://api.factory.ai/api/llm/o/v1/chat/completions");
     expect(headers["x-api-provider"]).toBe("fireworks");
-    expect(headers["X-Client-Version"]).toBe("1.5.0");
+    expect(headers["X-Client-Version"]).toBe("1.10.0");
     expect(sent).toMatchObject({ model: MODEL, temperature: 1, reasoning_effort: "max", reasoning_history: "preserved" });
   });
 
