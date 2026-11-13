@@ -108,6 +108,25 @@ describe("Factory Usage Service", () => {
     });
   });
 
+  // Droid 1.10.0 hides a window whose unlimited is true, so 9router leaves it out too.
+  it("leaves out a window that Factory marks unlimited", async () => {
+    proxyAwareFetch.mockResolvedValue(jsonResponse({
+      planType: "pro",
+      limits: {
+        standard: {
+          fiveHour: { usedPercent: 0, unlimited: true },
+          weekly: { usedPercent: 20.0, windowEnd: "2026-09-12T00:00:00.000Z", unlimited: false },
+        },
+        core: { monthly: { usedPercent: 0, unlimited: true } },
+      },
+    }));
+
+    const { quotas } = await getFactoryUsage("factory-access-token-123");
+
+    expect(Object.keys(quotas)).toEqual(["standard_weekly"]);
+    expect(quotas.standard_weekly).toMatchObject({ used: 20.0, remaining: 80.0, unlimited: false });
+  });
+
   it("handles HTTP error gracefully", async () => {
     proxyAwareFetch.mockResolvedValue(new Response("Unauthorized", { status: 401 }));
 
