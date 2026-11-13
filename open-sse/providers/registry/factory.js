@@ -25,8 +25,8 @@ export default {
     format: "openai",
     headers: {
       "X-Factory-Client": "cli",
-      "X-Client-Version": "1.5.0",
-      "User-Agent": "factory-cli/1.5.0",
+      "X-Client-Version": "1.10.0",
+      "User-Agent": "factory-cli/1.10.0",
     },
     usage: {
       url: "https://api.factory.ai/api/billing/limits",

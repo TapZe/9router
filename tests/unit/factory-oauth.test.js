@@ -40,8 +40,8 @@ describe("Factory OAuth & Token Management", () => {
       expect(getProvider("factory")).toBe(factory);
     });
 
-    it("reports Droid 1.5.0 as the client version", () => {
-      expect(FACTORY_CLIENT_VERSION).toBe("1.5.0");
+    it("reports Droid 1.10.0 as the client version", () => {
+      expect(FACTORY_CLIENT_VERSION).toBe("1.10.0");
     });
 
     it("keeps registry headers on the executor's Droid client version", () => {

@@ -13,7 +13,7 @@ export const FACTORY_DROID_SYSTEM_PROMPT =
   "Help the user with software engineering tasks using the provided tools.\n" +
   "Ground all analysis, planning, and answers in actual file contents and tool outputs.";
 
-export const FACTORY_CLIENT_VERSION = "1.5.0";
+export const FACTORY_CLIENT_VERSION = "1.10.0";
 export const FACTORY_OPENAI_PLATFORM_ORG = "org-bHuLtG1fGmYk5YaOihAAXFBw";
 export const ANTHROPIC_VERSION = "2023-06-01";
 
