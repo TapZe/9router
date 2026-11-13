@@ -184,17 +184,22 @@ describe("FactoryExecutor", () => {
 
   describe("Claude thinking from Droid 1.3.0", () => {
     const claude = (m, effort) => droidRequestFor(m, "global", effort).body;
+    const BINDING = { prefix_mismatch_behavior: "drop_block" };
 
     it("configures summarized adaptive thinking for current Claude models", () => {
-      for (const m of ["claude-fable-5.1", "claude-fable-5", "claude-opus-5", "claude-opus-5-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5", "claude-sonnet-5-5", "atlas-07-21", "aster-07-15"]) {
+      for (const m of ["claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5", "atlas-07-21", "aster-07-15"]) {
         expect(claude(m, "medium"), m).toEqual({ thinking: { type: "adaptive", display: "summarized" }, output_config: { effort: "medium" } });
+      }
+      // Droid 1.10.0 also binds thinking blocks for these on anthropic.
+      for (const m of ["claude-fable-5.1", "claude-opus-5-5", "claude-sonnet-5-5"]) {
+        expect(claude(m, "medium"), m).toEqual({ thinking: { type: "adaptive", display: "summarized", block_binding: BINDING }, output_config: { effort: "medium" } });
       }
     });
 
     it("sends Droid's off body, which keeps thinking on for Opus 5.5 and Sonnet 5.5", () => {
       expect(claude("claude-sonnet-5", "none")).toEqual({ thinking: { type: "disabled" } });
       // Droid 1.3.0 lists no off effort for Opus 5.5, so a disable request gets its default effort.
-      expect(claude("claude-opus-5-5", "none")).toEqual({ thinking: { type: "adaptive", display: "summarized" }, output_config: { effort: "medium" } });
+      expect(claude("claude-opus-5-5", "none")).toEqual({ thinking: { type: "adaptive", display: "summarized", block_binding: BINDING }, output_config: { effort: "medium" } });
       expect(claude("claude-sonnet-5-5", "none")).toEqual({ thinking: { type: "between_tools" }, output_config: { effort: "high" } });
       expect(claude("claude-opus-4-7", "minimal").output_config).toEqual({ effort: "high" });
     });
@@ -536,7 +541,7 @@ describe("FactoryExecutor", () => {
       const transformed = executor.transformRequest("claude-fable-5.1", body, true);
 
       expect(transformed.system).toEqual([{ type: "text", text: FACTORY_DROID_SYSTEM_PROMPT }]);
-      expect(transformed.thinking).toEqual({ type: "adaptive", display: "summarized" });
+      expect(transformed.thinking).toEqual({ type: "adaptive", display: "summarized", block_binding: { prefix_mismatch_behavior: "drop_block" } });
       expect(transformed.output_config).toEqual({ effort: "high" });
       expect(transformed.max_tokens).toBe(4096);
     });
@@ -548,7 +553,7 @@ describe("FactoryExecutor", () => {
       expect(disabled.output_config).toBeUndefined();
 
       const opus55 = executor.transformRequest("claude-opus-5-5", { thinking: { type: "disabled" } }, true);
-      expect(opus55.thinking).toEqual({ type: "adaptive", display: "summarized" });
+      expect(opus55.thinking).toEqual({ type: "adaptive", display: "summarized", block_binding: { prefix_mismatch_behavior: "drop_block" } });
       expect(opus55.output_config).toEqual({ effort: "medium" });
 
       const enabled = executor.transformRequest("claude-opus-4-7", { reasoning_effort: "xhigh" }, true);
@@ -562,7 +567,7 @@ describe("FactoryExecutor", () => {
         expect(transformed.output_config, model).toEqual({ effort: "low" });
       }
       const opus55 = executor.transformRequest("claude-opus-5-5", { output_config: { effort: "minimal" } }, true);
-      expect(opus55.thinking).toEqual({ type: "adaptive", display: "summarized" });
+      expect(opus55.thinking).toEqual({ type: "adaptive", display: "summarized", block_binding: { prefix_mismatch_behavior: "drop_block" } });
       expect(opus55.output_config).toEqual({ effort: "medium" });
     });
 
