@@ -1,6 +1,7 @@
 # Unreleased
 
 ## Features
+- **Gemini Web**: name new account slots from their authenticated Google profile during cookie verification. Use the matching account-menu display name or the active account email, keep cookie-session labels separate, and preserve existing account names.
 - **Factory**: report Droid 1.10.0 as the client version. Reasoning efforts, default efforts, context and output limits, image support, and request fields now come from one table generated from the Droid 1.10.0 binary.
 - **Factory**: add Claude Fable 5.2, Gemini 4 Hydrogen, and Gemini 4 Carbon from Droid 1.10.0. Fable 5.2 has Fable 5.1's limits, efforts low to max with default high, and no EU provider. Hydrogen has a 1M context with 65K output, defaults to high effort, and works in every region. Carbon matches Argon: global only, default medium. All three take images.
 - **Factory**: send Anthropic thinking block binding (`block_binding`, beta `thinking-binding-controls-2026-08-01`) for Fable 5.1, Fable 5.2, and the Claude 5.5 models on Anthropic, as Droid 1.10.0 does.
@@ -15,6 +16,13 @@
 - **Factory**: add Muse Spark 1.3 and Nemotron 3.5 Super from Droid 1.2.0.
 
 ## Fixes
+- **Gemini Web**: keep cancellation active while native HTTP response bodies are being read.
+- **Gemini Web**: make retained cookie sessions reusable through a dedicated reconnect form that asks only for account slots and a proxy setting. Deleting the last account keeps the saved cookies until the user deletes the empty session.
+- **Model tests**: let Gemini Web chat and image tests use their native bootstrap and generation budgets instead of aborting at 15 seconds. Other providers keep the existing deadline.
+- **Gemini Web**: do not retry a consumed generation on another account when Google reports a different model. Cancelling or timing out a captured-cookie save now stops verification and prevents a late database write.
+- **Gemini Web**: reject control bytes in account names and email labels read from Google's bootstrap page.
+- **Gemini Web**: enforce request deadlines for HTTP-proxy connections as well as direct and SOCKS connections. Restore legacy cookie connections into shared sessions during database import, even after Gemini was already used in the running process.
+- **Images**: restore the image handler's logger import so Codex can skip accounts without image entitlement.
 - **Factory usage**: leave out a usage window Factory marks unlimited, as Droid 1.10.0 does, instead of showing it as a quota.
 - **Factory**: a connection imported from the Droid CLI now owns its copy of the login. Token refresh no longer reads the macOS Keychain or `~/.factory`, no longer writes rotated tokens back into the Droid CLI store, and never loads the import route; only the explicit, local-only "Import from Droid CLI" action reads the host login (Keychain lookup is async). WorkOS refresh tokens are single-use, so when the Droid CLI and 9router share one imported session, whichever refreshes first signs the other out: on `invalid_grant` the connection asks to re-import or sign in. Sign in with the device code for a session independent of the Droid CLI.
 - **Providers**: keep account up/down as one adjacent swap by restamping the visible list to 1-based ranks in a single reorder transaction, including pools where every API-key row still has priority 1.

@@ -3,6 +3,8 @@ import { resolveProviderId } from "@/shared/constants/providers.js";
 import { unwrapClineEnvelope } from "open-sse/shared/clineEnvelope.js";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { GEMINI_WEB_LIMITS } from "open-sse/executors/gemini-web/config.js";
+import { resolveProviderAlias } from "open-sse/services/model.js";
 
 const CLI_TOKEN_SALT = "9r-cli-auth";
 
@@ -58,6 +60,12 @@ async function getInternalHeaders() {
 export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:${process.env.PORT || UPDATER_CONFIG.appPort}`) {
   const headers = await getInternalHeaders();
   const start = Date.now();
+  const providerId = resolveProviderId(String(model).split("/")[0]);
+  // Gemini's reasoning and image requests can outlast the generic 15-second probe.
+  const geminiTimeoutMs = GEMINI_WEB_LIMITS.bootstrapTimeoutMs + GEMINI_WEB_LIMITS.generationTimeoutMs;
+  const requestTimeoutMs = resolveProviderAlias(providerId) === "gemini-web"
+    ? geminiTimeoutMs + (kind === "image" ? GEMINI_WEB_LIMITS.downloadTimeoutMs : 0)
+    : 15000;
 
   if (kind === "embedding") {
     const res = await fetch(`${baseUrl}/api/v1/embeddings`, {
@@ -87,7 +95,7 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
       method: "POST",
       headers,
       body: JSON.stringify({ model, prompt: "test" }),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(requestTimeoutMs),
     });
     const latencyMs = Date.now() - start;
     const rawText = await res.text().catch(() => "");
@@ -178,7 +186,7 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
       stream: false,
       messages: [{ role: "user", content: "hi" }],
     }),
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(requestTimeoutMs),
   });
   const latencyMs = Date.now() - start;
 
@@ -188,7 +196,6 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
 
   // Unwrap before the choices checks below. No-op for providers that do not
   // opt in via transport.quirks.clineEnvelope.
-  const providerId = resolveProviderId(String(model).split("/")[0]);
   parsed = unwrapClineEnvelope(parsed, providerId);
 
   if (!res.ok) {

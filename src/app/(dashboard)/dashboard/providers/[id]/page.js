@@ -27,6 +27,7 @@ import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
 import CustomConfigCard from "./CustomConfigCard";
 import AutoPingScheduleModal from "./AutoPingScheduleModal";
 import WebLoginButton, { WEB_LOGIN_PROVIDERS } from "../components/WebLoginButton.js";
+import GeminiWebSessionPanel, { isGeminiWebProvider } from "./GeminiWebSessionPanel";
 import MinimaxLeaseButton from "../components/MinimaxLeaseButton.js";
 import { AUTO_PING_SETTINGS_KEYS, getScheduleSlotLabels } from "@/shared/services/quotaPingSchedule";
 
@@ -47,6 +48,7 @@ export default function ProviderDetailPage() {
   const params = useParams();
   const router = useRouter();
   const providerId = params.id;
+  const isGeminiWeb = isGeminiWebProvider(providerId);
   const { getCaps } = useModelCaps();
   const [connections, setConnections] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -63,6 +65,9 @@ export default function ProviderDetailPage() {
   const [showEditNodeModal, setShowEditNodeModal] = useState(false);
   const [showBulkProxyModal, setShowBulkProxyModal] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState(null);
+  const [geminiPanel, setGeminiPanel] = useState({ open: false, mode: "manage", connection: null });
+  const [geminiSessions, setGeminiSessions] = useState([]);
+  const [geminiModels, setGeminiModels] = useState([]);
   const [modelAliases, setModelAliases] = useState({});
   const [customModels, setCustomModels] = useState([]);
   const [headerImgError, setHeaderImgError] = useState(false);
@@ -124,6 +129,12 @@ export default function ProviderDetailPage() {
   };
 
   const triggerApiKeyConnection = () => {
+    // Gemini credentials are a shared cookie jar plus account slots, so the
+    // API-key modal has nothing valid to collect for it.
+    if (isGeminiWeb) {
+      setGeminiPanel({ open: true, mode: "manage", connection: null });
+      return;
+    }
     setAddConnectionError("");
     setShowAddApiKeyModal(true);
   };
@@ -164,9 +175,11 @@ export default function ProviderDetailPage() {
   const supportsApiKeyAuth = !!APIKEY_PROVIDERS[providerId] || authModes.includes("apikey");
   const isFreeNoAuth = !!FREE_PROVIDERS[providerId]?.noAuth;
   const staticModels = getModelsByProviderId(providerId);
-  const models = LIVE_MODEL_CATALOG_PROVIDERS.has(providerId) && liveModels.length > 0
-    ? liveModels
-    : applyQoderModelNames(staticModels, customModels, getProviderAlias(providerId));
+  const models = isGeminiWeb && geminiModels.length > 0
+    ? geminiModels
+    : LIVE_MODEL_CATALOG_PROVIDERS.has(providerId) && liveModels.length > 0
+      ? liveModels
+      : applyQoderModelNames(staticModels, customModels, getProviderAlias(providerId));
   const providerAlias = getProviderAlias(providerId);
   
   const isOpenAICompatible = isOpenAICompatibleProvider(providerId);
@@ -536,6 +549,49 @@ export default function ProviderDetailPage() {
     return () => { cancelled = true; };
   }, [providerId, connections]);
 
+  // Gemini Web cookie sessions and their per-account catalogs. The static
+  // registry only carries the image task; chat models are discovered per slot,
+  // so every active account is asked and the results are unioned by id.
+  useEffect(() => {
+    if (!isGeminiWeb) {
+      setGeminiSessions([]);
+      setGeminiModels([]);
+      return;
+    }
+    let cancelled = false;
+    fetch("/api/providers/gemini-web/sessions", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled) setGeminiSessions(Array.isArray(data?.sessions) ? data.sessions : []);
+      })
+      .catch(() => {});
+
+    const active = connections.filter((entry) => entry.isActive !== false && entry.id);
+    if (active.length === 0) {
+      setGeminiModels([]);
+      return () => { cancelled = true; };
+    }
+    Promise.all(
+      active.map((entry) =>
+        fetch(`/api/providers/${entry.id}/models`, { cache: "no-store" })
+          .then(async (res) => ({ ok: res.ok, data: await res.json().catch(() => null) }))
+          .catch(() => null)
+      )
+    ).then((results) => {
+      if (cancelled) return;
+      const byId = new Map();
+      for (const result of results) {
+        if (!result?.ok) continue;
+        for (const model of result.data?.models || []) {
+          if (!model?.id || byId.has(model.id)) continue;
+          byId.set(model.id, model);
+        }
+      }
+      setGeminiModels([...byId.values()]);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [isGeminiWeb, connections]);
+
   // Fetch suggested models from provider's public API (if configured)
   useEffect(() => {
     const fetcher = (OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId] || FREE_PROVIDERS[providerId] || FREE_TIER_PROVIDERS[providerId])?.modelsFetcher;
@@ -743,10 +799,11 @@ export default function ProviderDetailPage() {
     setOneByOneStopping(false);
     setOneByOneCurrentConnectionId(null);
     setOneByOneResults(queuedState);
-    setOneByOneSummary({ total: connections.length, completed: 0, passed: 0, failed: 0, stopped: false });
+    setOneByOneSummary({ total: connections.length, completed: 0, passed: 0, failed: 0, unverified: 0, stopped: false });
 
     let passed = 0;
     let failed = 0;
+    let unverified = 0;
 
     try {
       for (let index = 0; index < connections.length; index += 1) {
@@ -756,6 +813,7 @@ export default function ProviderDetailPage() {
             completed: index,
             passed,
             failed,
+            unverified,
             stopped: true,
           });
           break;
@@ -771,9 +829,14 @@ export default function ProviderDetailPage() {
         try {
           const res = await fetch(`/api/providers/${connection.id}/test`, { method: "POST" });
           const data = await res.json();
-          const valid = !!data.valid;
+          // Gemini answers are three-state: an unreachable probe is unverified,
+          // which must not be displayed as an invalid credential.
+          const isUnverified = data?.verification === "unknown";
+          const valid = data?.verification ? data.verification === "valid" : !!data.valid;
 
-          if (valid) {
+          if (isUnverified) {
+            unverified += 1;
+          } else if (valid) {
             passed += 1;
           } else {
             failed += 1;
@@ -782,7 +845,7 @@ export default function ProviderDetailPage() {
           setOneByOneResults((prev) => ({
             ...prev,
             [connection.id]: {
-              state: valid ? "success" : "failed",
+              state: isUnverified ? "unverified" : valid ? "success" : "failed",
               error: valid ? null : (data.error || null),
             },
           }));
@@ -802,6 +865,7 @@ export default function ProviderDetailPage() {
           completed: index + 1,
           passed,
           failed,
+          unverified,
           stopped: false,
         });
 
@@ -1055,6 +1119,7 @@ export default function ProviderDetailPage() {
 
 
   const isSelected = (connectionId) => selectedConnectionIds.includes(connectionId);
+  const geminiSessionById = new Map(geminiSessions.map((session) => [session.id, session]));
 
   const connectionsList = (
     <div className="flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03] max-h-[500px] overflow-y-auto pr-1">
@@ -1106,11 +1171,18 @@ export default function ProviderDetailPage() {
                   }
                 }}
                 onEdit={() => {
+                  // Linked Gemini rows own no API key; their name/priority/proxy
+                  // live in the session panel, never in the generic modal.
+                  if (isGeminiWeb) {
+                    setGeminiPanel({ open: true, mode: "account", connection: conn });
+                    return;
+                  }
                   setSelectedConnection(conn);
                   setShowEditModal(true);
                 }}
                 onDelete={() => handleDelete(conn.id)}
                 oneByOneStatus={oneByOneResults[conn.id] || null}
+                geminiWebSession={isGeminiWeb ? geminiSessionById.get(conn.providerSpecificData?.geminiWebSessionId) || null : null}
               />
             </div>
           </div>
@@ -1653,7 +1725,18 @@ export default function ProviderDetailPage() {
                 ) : (
                   <>
                     {!isCompatible && WEB_LOGIN_PROVIDERS.has(providerId) && (
-                      <WebLoginButton providerId={providerId} onConnected={fetchConnections} />
+                      isGeminiWeb ? (
+                        <Button
+                          size="sm"
+                          icon="language"
+                          variant="secondary"
+                          onClick={() => setGeminiPanel({ open: true, mode: "browser", connection: null })}
+                        >
+                          {translate("Login via Browser")}
+                        </Button>
+                      ) : (
+                        <WebLoginButton providerId={providerId} onConnected={fetchConnections} />
+                      )
                     )}
                     {!isCompatible && MCODE_LEASE_PROVIDERS.has(providerId) && (
                       <MinimaxLeaseButton providerId={providerId} onConnected={fetchConnections} />
@@ -1693,6 +1776,9 @@ export default function ProviderDetailPage() {
                     <span>Completed: {oneByOneSummary.completed}</span>
                     <span>Passed: {oneByOneSummary.passed}</span>
                     <span>Failed: {oneByOneSummary.failed}</span>
+                    {oneByOneSummary.unverified > 0 && (
+                      <span className="text-yellow-600 dark:text-yellow-400">Unverified: {oneByOneSummary.unverified}</span>
+                    )}
                     {oneByOneSummary.stopped && (
                       <span className="text-amber-600 dark:text-amber-400">Stopped</span>
                     )}
@@ -1719,7 +1805,19 @@ export default function ProviderDetailPage() {
               {!isCompatible && (
                 <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
                   {WEB_LOGIN_PROVIDERS.has(providerId) && (
-                    <WebLoginButton providerId={providerId} onConnected={fetchConnections} />
+                    isGeminiWeb ? (
+                      <Button
+                        size="sm"
+                        icon="language"
+                        variant="secondary"
+                        onClick={() => setGeminiPanel({ open: true, mode: "browser", connection: null })}
+                        className="w-full sm:w-auto"
+                      >
+                        {translate("Login via Browser")}
+                      </Button>
+                    ) : (
+                      <WebLoginButton providerId={providerId} onConnected={fetchConnections} />
+                    )
                   )}
                   {MCODE_LEASE_PROVIDERS.has(providerId) && (
                     <MinimaxLeaseButton providerId={providerId} onConnected={fetchConnections} />
@@ -1931,7 +2029,7 @@ export default function ProviderDetailPage() {
         />
       )}
       <AddApiKeyModal
-        isOpen={showAddApiKeyModal}
+        isOpen={showAddApiKeyModal && !isGeminiWeb}
         provider={providerId}
         providerName={providerInfo.name}
         isCompatible={isCompatible}
@@ -1950,12 +2048,23 @@ export default function ProviderDetailPage() {
         }}
       />
       <EditConnectionModal
-        isOpen={showEditModal}
+        isOpen={showEditModal && !isGeminiWeb}
         connection={selectedConnection}
         proxyPools={proxyPools}
         onSave={handleUpdateConnection}
         onClose={() => setShowEditModal(false)}
       />
+      {isGeminiWeb && (
+        <GeminiWebSessionPanel
+          isOpen={geminiPanel.open}
+          mode={geminiPanel.mode}
+          connection={geminiPanel.connection}
+          connections={connections}
+          proxyPools={proxyPools}
+          onSaved={fetchConnections}
+          onClose={() => setGeminiPanel((prev) => ({ ...prev, open: false }))}
+        />
+      )}
       {isCompatible && (
         <EditCompatibleNodeModal
           isOpen={showEditNodeModal}

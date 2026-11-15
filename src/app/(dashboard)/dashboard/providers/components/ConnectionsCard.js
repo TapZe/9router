@@ -6,6 +6,7 @@ import { swapConnectionOrder, swappedPriorityWrites } from "@/shared/utils/swapC
 import PropTypes from "prop-types";
 import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
 import WebLoginButton from "./WebLoginButton";
+import GeminiWebSessionPanel, { GeminiWebAccountBadges, isGeminiWebProvider } from "@/app/(dashboard)/dashboard/providers/[id]/GeminiWebSessionPanel";
 
 // ── CooldownTimer ──────────────────────────────────────────────
 function CooldownTimer({ until }) {
@@ -32,7 +33,7 @@ function CooldownTimer({ until }) {
 CooldownTimer.propTypes = { until: PropTypes.string.isRequired };
 
 // ── ConnectionRow ──────────────────────────────────────────────
-function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete }) {
+function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, geminiWebSession = null }) {
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
   const [updatingProxy, setUpdatingProxy] = useState(false);
   const [isCooldown, setIsCooldown] = useState(false);
@@ -119,6 +120,7 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
             <Badge variant={getStatusVariant()} size="sm" dot>
               {connection.isActive === false ? "disabled" : (effectiveStatus || "Unknown")}
             </Badge>
+            <GeminiWebAccountBadges connection={connection} session={geminiWebSession} />
             {hasAnyProxy && <Badge variant={proxyBadgeVariant} size="sm">Proxy</Badge>}
             {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
             {connection.lastError && connection.isActive !== false && (
@@ -193,6 +195,7 @@ ConnectionRow.propTypes = {
   onUpdateProxy: PropTypes.func,
   onEdit: PropTypes.func.isRequired,
   onDelete: PropTypes.func.isRequired,
+  geminiWebSession: PropTypes.object,
 };
 
 // ── AddApiKeyModal ─────────────────────────────────────────────
@@ -298,6 +301,7 @@ AddApiKeyModal.propTypes = {
 // ── ConnectionsCard ────────────────────────────────────────────
 // Self-contained card: fetches, displays and manages all connections for a provider.
 export default function ConnectionsCard({ providerId, isOAuth, loginProviderId = null }) {
+  const isGeminiWeb = isGeminiWebProvider(providerId);
   const [connections, setConnections] = useState([]);
   const [proxyPools, setProxyPools] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -307,6 +311,22 @@ export default function ConnectionsCard({ providerId, isOAuth, loginProviderId =
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("1");
   const [confirmState, setConfirmState] = useState(null);
+  const [geminiSessions, setGeminiSessions] = useState([]);
+  const [geminiPanel, setGeminiPanel] = useState({ open: false, mode: "manage", connection: null });
+
+  const fetchGeminiSessions = useCallback(async () => {
+    if (!isGeminiWebProvider(providerId)) {
+      setGeminiSessions([]);
+      return;
+    }
+    try {
+      const res = await fetch("/api/providers/gemini-web/sessions", { cache: "no-store" });
+      const data = await res.json();
+      if (res.ok) setGeminiSessions(Array.isArray(data.sessions) ? data.sessions : []);
+    } catch {
+      // A failed session list only hides names; connections still render.
+    }
+  }, [providerId]);
 
   const fetch_ = useCallback(async () => {
     try {
@@ -325,7 +345,8 @@ export default function ConnectionsCard({ providerId, isOAuth, loginProviderId =
       setProviderStickyLimit(override.stickyRoundRobinLimit != null ? String(override.stickyRoundRobinLimit) : "1");
     } catch (e) { console.log("ConnectionsCard fetch error:", e); }
     finally { setLoading(false); }
-  }, [providerId]);
+    await fetchGeminiSessions();
+  }, [providerId, fetchGeminiSessions]);
 
   useEffect(() => { fetch_(); }, [fetch_]);
 
@@ -438,9 +459,28 @@ export default function ConnectionsCard({ providerId, isOAuth, loginProviderId =
             <p className="text-sm text-text-muted">No connections yet</p>
             <div className="flex flex-wrap gap-2">
               {loginProviderId && (
-                <WebLoginButton providerId={loginProviderId} onConnected={fetch_} />
+                isGeminiWeb ? (
+                  <Button
+                    size="sm"
+                    icon="language"
+                    variant="secondary"
+                    onClick={() => setGeminiPanel({ open: true, mode: "browser", connection: null })}
+                  >
+                    Login via Browser
+                  </Button>
+                ) : (
+                  <WebLoginButton providerId={loginProviderId} onConnected={fetch_} />
+                )
               )}
-              <Button size="sm" icon="add" onClick={() => setShowAddModal(true)}>Add Connection</Button>
+              <Button
+                size="sm"
+                icon="add"
+                onClick={() => (isGeminiWeb
+                  ? setGeminiPanel({ open: true, mode: "manage", connection: null })
+                  : setShowAddModal(true))}
+              >
+                Add Connection
+              </Button>
             </div>
           </div>
         ) : (
@@ -458,15 +498,44 @@ export default function ConnectionsCard({ providerId, isOAuth, loginProviderId =
                   onMoveDown={() => handleSwapPriority(idx, idx + 1)}
                   onToggleActive={(isActive) => handleToggleActive(conn.id, isActive)}
                   onUpdateProxy={(poolId) => handleUpdateProxy(conn.id, poolId)}
-                  onEdit={() => { setSelectedConnection(conn); setShowEditModal(true); }}
+                  onEdit={() => {
+                    if (isGeminiWeb) {
+                      setGeminiPanel({ open: true, mode: "account", connection: conn });
+                      return;
+                    }
+                    setSelectedConnection(conn);
+                    setShowEditModal(true);
+                  }}
                   onDelete={() => handleDelete(conn.id)}
+                  geminiWebSession={isGeminiWeb
+                    ? geminiSessions.find((session) => session.id === conn.providerSpecificData?.geminiWebSessionId) || null
+                    : null}
                 />
               ))}
             </div>
             <div className="mt-4 flex justify-stretch gap-2 sm:justify-start">
-              <Button size="sm" icon="add" onClick={() => setShowAddModal(true)}>Add</Button>
+              <Button
+                size="sm"
+                icon="add"
+                onClick={() => (isGeminiWeb
+                  ? setGeminiPanel({ open: true, mode: "manage", connection: null })
+                  : setShowAddModal(true))}
+              >
+                Add
+              </Button>
               {loginProviderId && (
-                <WebLoginButton providerId={loginProviderId} onConnected={fetch_} />
+                isGeminiWeb ? (
+                  <Button
+                    size="sm"
+                    icon="language"
+                    variant="secondary"
+                    onClick={() => setGeminiPanel({ open: true, mode: "browser", connection: null })}
+                  >
+                    Login via Browser
+                  </Button>
+                ) : (
+                  <WebLoginButton providerId={loginProviderId} onConnected={fetch_} />
+                )
               )}
             </div>
           </>
@@ -474,19 +543,31 @@ export default function ConnectionsCard({ providerId, isOAuth, loginProviderId =
       </Card>
 
       <AddApiKeyModal
-        isOpen={showAddModal}
+        isOpen={showAddModal && !isGeminiWeb}
         provider={providerId}
         proxyPools={proxyPools}
         onSave={handleSaveApiKey}
         onClose={() => setShowAddModal(false)}
       />
       <EditConnectionModal
-        isOpen={showEditModal}
+        isOpen={showEditModal && !isGeminiWeb}
         connection={selectedConnection}
         proxyPools={proxyPools}
         onSave={handleUpdateConnection}
         onClose={() => setShowEditModal(false)}
       />
+
+      {isGeminiWeb && (
+        <GeminiWebSessionPanel
+          isOpen={geminiPanel.open}
+          mode={geminiPanel.mode}
+          connection={geminiPanel.connection}
+          connections={connections}
+          proxyPools={proxyPools}
+          onSaved={fetch_}
+          onClose={() => setGeminiPanel((prev) => ({ ...prev, open: false }))}
+        />
+      )}
 
       {/* Confirm Modal */}
       <ConfirmModal

@@ -1,9 +1,22 @@
 import { NextResponse } from "next/server";
 import { createProviderConnection, deleteProviderConnection, getProviderConnections, updateProviderConnection } from "@/models";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
-import { startWebLogin, getWebLoginStatus, cancelWebLogin, listWebLoginProfiles } from "open-sse/services/webLogin.js";
+import {
+  startWebLogin,
+  getWebLoginStatus,
+  getPublicWebLoginStatus,
+  cancelWebLogin,
+  listWebLoginProfiles,
+  captureWebLogin,
+  beginWebLoginSave,
+} from "open-sse/services/webLogin.js";
 import { getWebLoginConfig, listWebLoginProviders } from "open-sse/services/webLoginConfig.js";
 import { fetchWebIdentity } from "open-sse/services/webIdentity.js";
+import {
+  assertGeminiWebMutationOrigin,
+  createGeminiWebSession,
+  updateGeminiWebSession,
+} from "@/lib/geminiWebAccounts.js";
 
 /**
  * Interactive web login: open a headed browser at the provider's login page,
@@ -18,6 +31,49 @@ export async function GET(request) {
   const provider = request.nextUrl.searchParams.get("provider");
   if (!provider) {
     return NextResponse.json({ providers: listWebLoginProviders(), profiles: listWebLoginProfiles() });
+  }
+  if (provider === "gemini-web") {
+    const publicStatus = getPublicWebLoginStatus(provider);
+    if (!publicStatus) {
+      return NextResponse.json({ error: "No login session for this provider" }, { status: 404 });
+    }
+    if (publicStatus.status === "captured") {
+      try {
+        assertGeminiWebMutationOrigin(request);
+      } catch (error) {
+        return NextResponse.json({ error: error.message, code: error.code }, { status: 403 });
+      }
+      const view = await beginWebLoginSave(provider, {
+        commit: async (payload) => {
+          if (payload.signal?.aborted) {
+            const err = new Error("Cancelled");
+            err.status = 499;
+            throw err;
+          }
+          const slots = payload.authUsers == null ? [payload.authUser] : payload.authUsers;
+          const saved = payload.cookieSessionId
+            ? await updateGeminiWebSession(payload.cookieSessionId, {
+                expectedRevision: payload.expectedRevision,
+                cookieHeader: payload.cookieHeader,
+                authUsers: slots,
+                proxyPoolId: null,
+              }, { signal: payload.signal })
+            : await createGeminiWebSession({
+                name: getWebLoginStatus(provider)?.name,
+                cookieHeader: payload.cookieHeader,
+                authUsers: slots,
+                proxyPoolId: null,
+                signal: payload.signal,
+              });
+          return {
+            sessionId: saved.session?.id,
+            connectionIds: (saved.connections || []).map((row) => row.id),
+          };
+        },
+      });
+      return NextResponse.json(view);
+    }
+    return NextResponse.json(publicStatus);
   }
   const session = getWebLoginStatus(provider);
   if (!session) {
@@ -114,7 +170,6 @@ export async function GET(request) {
   });
 }
 
-// POST /api/providers/web-login {provider, profile?} → start login window
 export async function POST(request) {
   try {
     const body = await request.json();
@@ -123,10 +178,32 @@ export async function POST(request) {
     if (!getWebLoginConfig(provider)) {
       return NextResponse.json({ error: `Web login not supported for "${provider}"` }, { status: 400 });
     }
+    if (provider === "gemini-web") {
+      assertGeminiWebMutationOrigin(request);
+      if (body?.action === "capture") {
+        const status = await captureWebLogin(provider, {
+          authUsers: body.authUsers,
+          pageId: body.pageId,
+        });
+        return NextResponse.json(status);
+      }
+      const session = await startWebLogin(provider, profile, {
+        name: body.name,
+        geminiWebSessionId: body.geminiWebSessionId,
+        expectedRevision: body.expectedRevision,
+        authUsers: body.authUsers,
+      });
+      return NextResponse.json(getPublicWebLoginStatus(provider) || {
+        provider,
+        profile: session.profile,
+        status: session.status,
+      }, { status: 202 });
+    }
     const session = await startWebLogin(provider, profile);
     return NextResponse.json({ provider, profile: session.profile, status: session.status }, { status: 202 });
   } catch (error) {
-    return NextResponse.json({ error: error?.message || "Failed to start login" }, { status: 500 });
+    const status = Number(error?.status) || 500;
+    return NextResponse.json({ error: error?.message || "Failed to start login", code: error?.code }, { status });
   }
 }
 
@@ -135,6 +212,13 @@ export async function DELETE(request) {
   const provider = request.nextUrl.searchParams.get("provider");
   if (!provider) {
     return NextResponse.json({ error: "provider is required" }, { status: 400 });
+  }
+  if (provider === "gemini-web") {
+    try {
+      assertGeminiWebMutationOrigin(request);
+    } catch (error) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 403 });
+    }
   }
   return NextResponse.json({ cancelled: cancelWebLogin(provider) });
 }

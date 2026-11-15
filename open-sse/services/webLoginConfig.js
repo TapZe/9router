@@ -29,6 +29,16 @@ export const WEB_LOGIN_CONFIGS = {
       { type: "cookie", name: "__Secure-1PSID" },
       { type: "cookie", name: "__Secure-1PSIDTS", optional: true },
     ],
+    // One browser profile can hold several Google accounts at once, and every
+    // account is addressed by the /u/N/ slot of its tab. Capturing is therefore
+    // an explicit step: the caller picks the tab and the slot set before any
+    // cookie is persisted. Other providers stay on auto-complete capture.
+    explicitCapture: true,
+    // The native protocol replays the whole Google jar (NID/AEC/SID along with
+    // PSID/PSIDTS), so a token-only header would break the session on use.
+    fullCookieJar: true,
+    capturePageHost: "gemini.google.com",
+    captureAppPath: "/app",
   },
   "muse-web": {
     loginUrl: "https://muse.ai/",
