@@ -24,6 +24,16 @@ Identity fields follow Google's private web format and can change. The selected-
 
 Cookie headers grant access to the Google session. Paste them only into the local session form. Session responses do not return cookie values. Function tools, video, music, Canvas, and Deep Research are not supported.
 
+### Saving cookies on a server
+
+Use HTTPS when opening the dashboard over a network. The cookie-paste dialog sends the header to your 9router server; copying it in the browser alone does not verify or save it.
+
+Gemini session changes require a same-origin dashboard request. The guard recognizes the request URL, the incoming Host with its request scheme, and configured `BASE_URL` or `NEXT_PUBLIC_BASE_URL` origins. Browser `Sec-Fetch-Site: same-origin` metadata also supports reverse proxies that rewrite the internal host or terminate TLS. Forwarded host headers alone do not grant access.
+
+An older build may report `Gemini Web mutation origin is not allowed` when its configured URL is still localhost. Set the server's `BASE_URL` to the exact dashboard origin, including its scheme and port, and restart as a workaround. The repaired guard accepts genuine same-origin dashboard requests without requiring that workaround. Cross-site requests and cookie-authenticated requests without Origin or Referer remain rejected.
+
+For older browsers without Fetch Metadata, a proxy that rewrites Host to an internal address still needs `BASE_URL` set to the public dashboard origin. Keep both configured base URLs aligned with this deployment.
+
 ## Observed routing
 
 | Piece | Observation |

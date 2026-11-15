@@ -74,19 +74,34 @@ export async function ensureLegacyGeminiWebPromotion() {
 
 function originOf(value) {
   try {
-    return new URL(value).origin;
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password
+      ? url.origin
+      : null;
   } catch {
     return null;
   }
 }
 
-function configuredOrigin(request) {
-  const configured = process.env.BASE_URL || process.env.NEXT_PUBLIC_BASE_URL;
-  if (configured) {
-    const origin = originOf(configured);
-    if (origin) return origin;
+function mutationOrigins(request) {
+  const origins = new Set([
+    originOf(request.url),
+    originOf(process.env.BASE_URL),
+    originOf(process.env.NEXT_PUBLIC_BASE_URL),
+  ].filter(Boolean));
+  const host = header(request, "host").trim();
+  if (host && originOf(request.url)) {
+    const candidate = originOf(`${new URL(request.url).protocol}//${host}`);
+    if (candidate && new URL(candidate).host.toLowerCase() === host.toLowerCase()) {
+      origins.add(candidate);
+    }
   }
-  return originOf(request.url);
+  return origins;
+}
+
+function matchesMutationOrigin(request, origins, source) {
+  // Fetch Metadata is browser-controlled and survives TLS termination and Host rewrites.
+  return Boolean(source) && (origins.has(source) || header(request, "sec-fetch-site") === "same-origin");
 }
 
 function header(request, name) {
@@ -103,9 +118,17 @@ function hasBrowserMetadata(request) {
 }
 
 export function assertGeminiWebMutationOrigin(request) {
-  const expected = configuredOrigin(request);
-  if (!expected) {
+  const expected = mutationOrigins(request);
+  if (expected.size === 0) {
     const error = new Error("Gemini Web mutation origin could not be determined");
+    error.status = 403;
+    error.code = "gemini_web_origin_denied";
+    throw error;
+  }
+
+  const site = header(request, "sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "none") {
+    const error = new Error("Gemini Web mutation origin is not allowed");
     error.status = 403;
     error.code = "gemini_web_origin_denied";
     throw error;
@@ -113,7 +136,8 @@ export function assertGeminiWebMutationOrigin(request) {
 
   const originHeader = header(request, "origin").trim();
   if (originHeader) {
-    if (originHeader === "null" || !originOf(originHeader) || originOf(originHeader) !== expected) {
+    const source = originOf(originHeader);
+    if (originHeader !== source || !matchesMutationOrigin(request, expected, source)) {
       const error = new Error("Gemini Web mutation origin is not allowed");
       error.status = 403;
       error.code = "gemini_web_origin_denied";
@@ -124,7 +148,7 @@ export function assertGeminiWebMutationOrigin(request) {
 
   const referer = header(request, "referer").trim();
   const refererOrigin = referer ? originOf(referer) : null;
-  if (refererOrigin === expected) return;
+  if (matchesMutationOrigin(request, expected, refererOrigin)) return;
 
   if (hasBrowserAuth(request) || hasBrowserMetadata(request)) {
     const error = new Error("Gemini Web mutation origin is not allowed");
