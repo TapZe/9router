@@ -14,6 +14,7 @@ import {
   clearStickyComboSession,
   orderModelsByChoice,
 } from "./systemoneRouter.js";
+import { isNonReplayableResponse } from "../utils/replayPolicy.js";
 
 // Peek a 2xx combo response for real content. Returns null for non-SSE responses (leave
 // them untouched). For SSE, returns { outcome: "content"|"empty", finishReason, response }
@@ -365,6 +366,7 @@ export async function handleComboChat({
   sessionSticky = true,
   confidenceThreshold = 0.8,
   resolveSmartChoice = null,
+  signal = null,
 }) {
   let rotatedModels = models;
   let activeStickyModel = null;
@@ -468,12 +470,23 @@ export async function handleComboChat({
   let lastStatus = null;
   let requestScopedResult = null;
 
+  const cancelled = () => Boolean(signal?.aborted);
+  const cancelResponse = () => new Response(
+    JSON.stringify({ error: { message: "Request cancelled", code: "request_aborted" } }),
+    { status: 499, headers: { "Content-Type": "application/json" } }
+  );
+
+  if (cancelled()) return cancelResponse();
+
   for (let i = 0; i < rotatedModels.length; i++) {
+    if (cancelled()) return cancelResponse();
     const modelStr = rotatedModels[i];
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
       const result = await handleSingleModel(body, modelStr);
+      if (cancelled() || result?.status === 499) return cancelled() ? cancelResponse() : result;
+      if (isNonReplayableResponse(result)) return result;
       
       // Success (2xx). A 2xx is necessary but NOT sufficient: Gemini aborts (e.g.
       // MALFORMED_FUNCTION_CALL) still return 200 and stream empty content, which would
@@ -613,7 +626,9 @@ export async function handleComboChat({
       if (!lastStatus) lastStatus = result.status;
       log.warn("COMBO", `Model ${modelStr} failed, trying next`, { status: result.status });
     } catch (error) {
-      // Catch unexpected exceptions to ensure fallback continues
+      if (cancelled() || error?.name === "AbortError" || error?.status === 499) {
+        return cancelResponse();
+      }
       if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
         clearStickyComboSession(comboName, sessionId);
       }

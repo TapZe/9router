@@ -4,6 +4,7 @@ import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { getExecutor } from "../executors/index.js";
 import { getImageAdapter } from "./imageProviders/index.js";
 import { urlToBase64 } from "./imageProviders/_base.js";
+import { markNonReplayableResponse } from "../utils/replayPolicy.js";
 
 function serializeRequestBody(requestBody) {
   if (typeof FormData !== "undefined" && requestBody instanceof FormData) return requestBody;
@@ -37,6 +38,7 @@ export async function handleImageGenerationCore({
   onCredentialsRefreshed,
   onRequestSuccess,
   onUsage,
+  signal,
 }) {
   const { provider, model } = modelInfo;
 
@@ -56,7 +58,7 @@ export async function handleImageGenerationCore({
   if (adapter.useExecutor && adapter.executeViaExecutor) {
     try {
       log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..." (executor)`);
-      const responseBody = await adapter.executeViaExecutor(model, body, credentials, log);
+      const responseBody = await adapter.executeViaExecutor(model, body, credentials, log, { signal });
       if (onRequestSuccess) await onRequestSuccess();
       const normalized = adapter.normalize(responseBody, body.prompt);
       const finalBody = (normalized.created && Array.isArray(normalized.data)) ? normalized : responseBody;
@@ -71,26 +73,29 @@ export async function handleImageGenerationCore({
           const buf = Buffer.from(b64, "base64");
           const fmt = (body.output_format || "png").toLowerCase();
           const mime = fmt === "jpeg" || fmt === "jpg" ? "image/jpeg" : fmt === "webp" ? "image/webp" : "image/png";
-          return {
-            success: true,
-            response: new Response(buf, {
-              headers: { "Content-Type": mime, "Content-Disposition": `inline; filename="image.${fmt === "jpeg" ? "jpg" : fmt}"`, "Access-Control-Allow-Origin": "*" },
-            }),
-          };
+          const response = new Response(buf, {
+            headers: { "Content-Type": mime, "Content-Disposition": `inline; filename="image.${fmt === "jpeg" ? "jpg" : fmt}"`, "Access-Control-Allow-Origin": "*" },
+          });
+          if (provider === "gemini-web" || provider === "gweb") markNonReplayableResponse(response);
+          return { success: true, response };
         }
       }
 
-      return {
-        success: true,
-        response: new Response(JSON.stringify(finalBody), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        }),
-      };
+      const jsonResponse = new Response(JSON.stringify(finalBody), {
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      });
+      if (provider === "gemini-web" || provider === "gweb") markNonReplayableResponse(jsonResponse);
+      return { success: true, response: jsonResponse };
     } catch (error) {
       const status = error.status || HTTP_STATUS.BAD_GATEWAY;
       const errMsg = formatProviderError(error, provider, model, status);
       log?.debug?.("IMAGE", `Executor error: ${errMsg}`);
-      return createErrorResult(status, errMsg, error.resetsAtMs);
+      const errorResult = createErrorResult(status, errMsg, error.resetsAtMs);
+      if (error.nonReplayable || error.code === "gemini_web_no_image") {
+        markNonReplayableResponse(errorResult.response);
+        errorResult.nonReplayable = true;
+      }
+      return errorResult;
     }
   }
 

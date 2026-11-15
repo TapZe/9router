@@ -120,6 +120,14 @@ export function factoryEffortFor(modelId, requested) {
 // Returns valid thinking levels for a model, or null when the model has no reasoning.
 export function getThinkingLevels(provider, model) {
   if (provider === "kiro" && resolveKiroEffortPath(model) === null) return null;
+  if (provider === "gemini-web" || provider === "gweb") {
+    const id = String(model || "").replace(/\([^()]+\)\s*$/, "");
+    const baseId = id.includes("/") ? id.split("/").pop() : id;
+    if (baseId === "gemini-image") return null;
+    const caps = getCapabilitiesForModel(provider, model);
+    if (!caps.reasoning) return null;
+    return ["low", "medium", "high"];
+  }
   const caps = getCapabilitiesForModel(provider, model);
   if (!caps.reasoning) return null;
   const thinkingProvider = provider === "fy" || provider === "droid" ? "factory" : provider;

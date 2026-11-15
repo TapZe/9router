@@ -889,6 +889,23 @@ export function getCapabilitiesForModel(provider, model) {
     };
   }
 
+  // Gemini Web chat/image must not inherit canonical Gemini-family tools or
+  // measured context windows. Limits stay on DEFAULT until measured.
+  if (provider === "gemini-web" || provider === "gweb") {
+    const id = String(baseModel || model);
+    if (id === "gemini-image") {
+      return { ...DEFAULT_CAPABILITIES, tools: false, imageOutput: true };
+    }
+    return {
+      ...DEFAULT_CAPABILITIES,
+      tools: false,
+      vision: true,
+      reasoning: true,
+      thinkingFormat: "openai",
+      thinkingCanDisable: false,
+    };
+  }
+
   // 1. Provider-specific override
   if (provider) {
     const providerCaps = PROVIDER_CAPABILITIES[provider];

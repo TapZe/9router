@@ -6,6 +6,11 @@ import {
   deleteProviderConnection,
 } from "@/models";
 import { toProviderConnectionResponse, usesAwsCredentialForm } from "@/lib/providerConnectionResponse";
+import {
+  assertGeminiWebMutationOrigin,
+  detachGeminiWebConnection,
+  isGeminiWebProvider,
+} from "@/lib/geminiWebAccounts.js";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -100,6 +105,24 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
 
+    if (isGeminiWebProvider(existing.provider)) {
+      assertGeminiWebMutationOrigin(request);
+      const blocked = [];
+      if (apiKey) blocked.push("apiKey");
+      if (body.cookie) blocked.push("cookie");
+      if (providerSpecificData) {
+        for (const field of ["geminiWebSessionId", "authUser", "geminiWebModelCatalog", "cookie", "__Secure-1PSID", "__Secure-1PSIDTS"]) {
+          if (Object.prototype.hasOwnProperty.call(providerSpecificData, field)) blocked.push(field);
+        }
+      }
+      if (blocked.length) {
+        return NextResponse.json(
+          { error: "Use /api/providers/gemini-web/sessions to change Gemini Web cookies or slots", fields: blocked },
+          { status: 400 }
+        );
+      }
+    }
+
     const proxyConfig = normalizeProxyConfig(body);
     if (proxyConfig.error) {
       return NextResponse.json({ error: proxyConfig.error }, { status: 400 });
@@ -163,15 +186,29 @@ export async function PUT(request, { params }) {
 
     return NextResponse.json({ connection: toProviderConnectionResponse(updated) });
   } catch (error) {
+    if (error?.status === 403) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 403 });
+    }
     console.log("Error updating connection:", error);
     return NextResponse.json({ error: "Failed to update connection" }, { status: 500 });
   }
 }
 
-// DELETE /api/providers/[id] - Delete connection
 export async function DELETE(request, { params }) {
   try {
     const { id } = await params;
+    const existing = await getProviderConnectionById(id);
+    if (!existing) {
+      return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+    }
+    if (isGeminiWebProvider(existing.provider)) {
+      assertGeminiWebMutationOrigin(request);
+      const detached = await detachGeminiWebConnection(id);
+      if (!detached) {
+        return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+      }
+      return NextResponse.json({ message: "Connection deleted successfully" });
+    }
 
     const deleted = await deleteProviderConnection(id);
     if (!deleted) {
@@ -180,6 +217,9 @@ export async function DELETE(request, { params }) {
 
     return NextResponse.json({ message: "Connection deleted successfully" });
   } catch (error) {
+    if (error?.status === 403) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 403 });
+    }
     console.log("Error deleting connection:", error);
     return NextResponse.json({ error: "Failed to delete connection" }, { status: 500 });
   }

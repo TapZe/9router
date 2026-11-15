@@ -5,6 +5,12 @@ import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { getAntigravityQuotaCache, getAntigravityModelQuota } from "./antigravityQuota.js";
 import * as log from "../utils/logger.js";
+import {
+  ensureLegacyGeminiWebPromotion,
+  geminiWebAccountIsUsable,
+  hydrateGeminiWebCredentials,
+  isGeminiWebProvider,
+} from "@/lib/geminiWebAccounts.js";
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
@@ -71,6 +77,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       };
     }
 
+    if (isGeminiWebProvider(providerId)) {
+      await ensureLegacyGeminiWebPromotion();
+    }
     const connections = await getProviderConnections({ provider: providerId, isActive: true });
     log.debug("AUTH", `${provider} | total connections: ${connections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
 
@@ -87,6 +96,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
+      if (isGeminiWebProvider(providerId) && !geminiWebAccountIsUsable(c)) return false;
       const enabled = c.providerSpecificData?.enabledModels;
       if (providerId === "codex" && Array.isArray(enabled) && enabled.length && requestedModel && !enabled.includes(requestedModel)) return false;
       // Antigravity: skip if live quota exhausted for this model
@@ -201,7 +211,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
 
-    return {
+    const selected = {
       authType: connection.authType,
       apiKey: connection.apiKey,
       accessToken: connection.accessToken,
@@ -223,12 +233,13 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         strictProxy: resolvedProxy.strictProxy === true,
       },
       connectionId: connection.id,
-      // Include current status for optimization check
       testStatus: connection.testStatus,
       lastError: connection.lastError,
-      // Pass full connection for clearAccountError to read modelLock_* keys
       _connection: connection
     };
+    return isGeminiWebProvider(providerId)
+      ? hydrateGeminiWebCredentials(selected)
+      : selected;
   } finally {
     if (resolveMutex) resolveMutex();
   }

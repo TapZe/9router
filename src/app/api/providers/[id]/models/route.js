@@ -16,7 +16,7 @@ import { resolveClineModels, resolveClinepassModels } from "open-sse/services/cl
 import { NOUS_MODELS_URL, normalizeNousModels } from "open-sse/services/nous.js";
 import { resolveCommandCodeModels } from "open-sse/services/commandcodeModels.js";
 import codexProvider from "open-sse/providers/registry/codex.js";
-
+import { hydrateGeminiWebCredentials, isGeminiWebProvider } from "@/lib/geminiWebAccounts.js";
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 
 // Model discovery must identify as the same Codex CLI version as inference.
@@ -571,6 +571,20 @@ export async function GET(request, { params }) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
 
+    if (isGeminiWebProvider(connection.provider)) {
+      const credentials = await hydrateGeminiWebCredentials(connection);
+      const proxyOptions = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+      const { resolveGeminiWebModels } = await import("open-sse/executors/gemini-web.js");
+      const models = await resolveGeminiWebModels(credentials, {
+        forceRefresh: true,
+        proxyOptions,
+      });
+      return NextResponse.json({
+        provider: connection.provider,
+        connectionId: connection.id,
+        models,
+      });
+    }
     if (isOpenAICompatibleProvider(connection.provider)) {
       const baseUrl = connection.providerSpecificData?.baseUrl;
       if (!baseUrl) {

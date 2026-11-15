@@ -1,794 +1,815 @@
-// GeminiWebExecutor — Gemini Web Session Provider
+// GeminiWebExecutor — Gemini Web session provider (native protocol).
 //
-// Routes requests through Google Gemini's web interface using browser
-// cookies + Playwright automation. Translates between OpenAI chat
-// completions format and Gemini's web UI.
+// Routes requests through Gemini's own web endpoints using the account cookie
+// jar plus one Google account slot, and exposes the result as OpenAI chat
+// completions or generated image bytes. No browser is launched per request.
 //
-// Auth: Cookie-based (__Secure-1PSID + __Secure-1PSIDTS from gemini.google.com)
-// Method: Playwright browser automation
-//
-// Note: Streaming is pseudo-streaming — waits for full Gemini response then
-// sends as single SSE chunk. Gemini's StreamGenerate endpoint returns complete
-// responses, not chunked streams.
+// Auth: full Cookie request header (__Secure-1PSID + __Secure-1PSIDTS) shared
+// by every slot of that browser session; the slot selects the Google account.
+// Execution is stateless: the whole message history is sent as one prompt and
+// every generation starts a fresh Google turn.
+
+import { randomUUID } from "node:crypto";
 
 import { BaseExecutor } from "./base.js";
 import { SSE_DONE, SSE_HEADERS_NO_BUFFER } from "../utils/sseConstants.js";
-import { isMissingBrowserExecutable, resolveSystemChromeExecutable, launchChromiumWithFallback } from "./browserExecutableCheck.js";
-import { loadRuntimeDep } from "../services/lazyRuntime.js";
-import { normalizeGeminiCookieInput } from "../utils/geminiCookies.js";
-import { toPlaywrightCookies } from "../utils/webCookieAuth.js";
-import { prepareToolMessages } from "../translator/webTools.js";
-import { buildToolModeResponse } from "./chatgptWebTools.js";
+import { FORMATS } from "../translator/formats.js";
+import { extractThinking, parseSuffix } from "../translator/concerns/thinkingUnified.js";
+import { estimateUsage } from "../utils/usageTracking.js";
+import { markNonReplayableResponse } from "../utils/replayPolicy.js";
 import {
-  checkGeminiWebUnsupportedControls,
+  GEMINI_WEB_ORIGIN,
   GEMINI_WEB_UNSUPPORTED_CONTROL_CODE,
-  isForcingToolChoice,
-  requestsThinkingBudget,
-} from "./gemini-web/capabilities.js";
+  GEMINI_WEB_UPSTREAM_ERROR_CODE,
+  geminiWebError,
+  parseRetryAfter,
+  unsupportedControl,
+  upstreamError,
+} from "./gemini-web/config.js";
+import { checkGeminiWebUnsupportedControls } from "./gemini-web/capabilities.js";
+import { buildImagePrompt } from "./gemini-web/imageGen.js";
 import {
-  describeModeSelectionFailure,
-  selectGeminiExtendedThinking,
-  selectGeminiModel,
-} from "./gemini-web/modeSelection.js";
-import { readReplyState, waitForGeminiReply } from "./gemini-web/domCapture.js";
-import { buildImagePrompt, waitForGeminiImage } from "./gemini-web/imageGen.js";
+  assertGeminiWebInputImageBudget,
+  decodeGeminiWebImageDataUrl,
+  downloadGeminiWebImage,
+  uploadGeminiWebImage,
+} from "./gemini-web/media.js";
+import { resolveGeminiModel } from "./gemini-web/models.js";
+import { generateGeminiWeb } from "./gemini-web/protocol.js";
+import {
+  publicGeminiWebModels,
+  resolveGeminiWebSession,
+  resetGeminiWebSessionCache,
+} from "./gemini-web/session.js";
+import { decodeGeminiWebStream } from "./gemini-web/stream.js";
 
-// ─── Constants ──────────────────────────────────────────────────────────────
+export { resetGeminiWebSessionCache };
 
-const GEMINI_URL = "https://gemini.google.com/app";
-/** Response-label fallback when no `model` was requested at all. */
-const DEFAULT_MODEL_ID = "gemini-2.5-pro";
+/** Client-facing endpoint when a request could not reach Google. */
+const GEMINI_WEB_CLIENT_URL = `${GEMINI_WEB_ORIGIN}/app`;
 
-export { isMissingBrowserExecutable } from "./browserExecutableCheck.js";
+const ABORT_CODE = "request_aborted";
+const MODEL_NOT_FOUND_CODE = "model_not_found";
+const MODEL_MISMATCH_CODE = "upstream_model_mismatch";
+const NO_IMAGE_CODE = "gemini_web_no_image";
 
-const GEMINI_USER_AGENT =
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
+export const GEMINI_WEB_VERIFICATION_UNKNOWN = "GEMINI_WEB_VERIFICATION_UNKNOWN";
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ─── Request shaping ────────────────────────────────────────────────────────
 
-// Module-level (not a per-request closure) so browserLease's
-// `slot.launch === launch` check reuses the process instead of relaunching.
-async function launchGeminiChromium(options) {
-  const { chromium } = await loadRuntimeDep("playwright-core");
-  const executablePath = resolveSystemChromeExecutable();
-  return launchChromiumWithFallback(chromium, { ...options, ...(executablePath ? { executablePath } : {}) });
-}
-
-function formatChatCompletion(content, model, finishReason = "stop") {
-  return {
-    id: `chatcmpl-${Date.now()}`,
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: finishReason, logprobs: null }],
-    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-  };
-}
-
-function formatStreamChunk(content, model, finishReason = null) {
-  return {
-    id: `chatcmpl-${Date.now()}`,
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, delta: content ? { content } : {}, finish_reason: finishReason }],
-  };
+function imageUrlOf(part) {
+  if (!part || typeof part !== "object") return null;
+  if (part.type !== "image_url" && part.type !== "input_image" && part.type !== "image") {
+    return null;
+  }
+  const raw = part.image_url;
+  if (typeof raw === "string") return raw;
+  if (raw && typeof raw === "object" && typeof raw.url === "string") return raw.url;
+  if (typeof part.url === "string") return part.url;
+  return null;
 }
 
 /**
- * Flatten the OpenAI-style multi-turn `messages[]` into the single plain-text
- * prompt typed into the Gemini web UI.
- *
- * gemini-web drives a real browser page and captures only the FIRST
- * `StreamGenerate` response, so it has no upstream conversation id to thread
- * across turns. It is therefore a stateless, single-turn provider: flattening
- * the full history into one prompt is the accepted fallback so the web UI
- * still sees the conversation.
- *
- * Single-turn requests with NO system message are preserved byte-for-byte
- * (only the final user message is returned). A single-turn request that DOES
- * carry a system message prepends it the same way the multi-turn branch does.
- * Multi-turn requests emit a labeled transcript:
- *
- *   System:
- *   <system text>
- *
- *   Previous conversation:
- *   User: ...
- *   Assistant: ...
- *
- *   Current user message:
- *   <last user message>
+ * Flatten one message's content into text, replacing each image part with a
+ * stable `[Image N]` marker at its own position. Only a user turn may carry
+ * images; anything else has no upload target.
  */
-export function buildGeminiPrompt(messages) {
-  const textMessages = messages.filter(
-    (m) => typeof m.content === "string" && m.content.trim().length > 0
-  );
+function flattenContent(content, images, allowImages) {
+  if (typeof content === "string") return content.trim() ? content : "";
+  if (!Array.isArray(content)) return "";
 
-  const userMessages = textMessages.filter((m) => m.role === "user");
-  const lastUser = userMessages[userMessages.length - 1];
+  const parts = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    if (part.type === "text" || part.type === "input_text") {
+      if (typeof part.text === "string" && part.text) parts.push(part.text);
+      continue;
+    }
+    if (!allowImages) continue;
+    const url = imageUrlOf(part);
+    if (url === null) continue;
+    images.push(url);
+    parts.push(`[Image ${images.length}]`);
+  }
+  return parts.join(" ").trim();
+}
+
+/**
+ * Flatten the whole message list once, so the prompt and the upload list can
+ * never disagree about image order or numbering.
+ */
+function flattenMessages(messages) {
+  const images = [];
+  const turns = [];
+  let hasUserTurn = false;
+
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!message || typeof message !== "object") continue;
+    const allowImages = message.role === "user";
+    const text = flattenContent(message.content, images, allowImages);
+    if (allowImages && text) hasUserTurn = true;
+    if (!text) continue;
+    turns.push({ role: message.role, content: text });
+  }
+
+  return { turns, images, hasUserTurn };
+}
+
+function promptFromTurns(turns) {
+  const userTurns = turns.filter((turn) => turn.role === "user");
+  const lastUser = userTurns[userTurns.length - 1];
   const lastUserContent = lastUser?.content ?? "";
-  const lastUserIdx = lastUser ? textMessages.lastIndexOf(lastUser) : -1;
+  const lastUserIdx = lastUser ? turns.lastIndexOf(lastUser) : -1;
 
-  // Prior conversation = every user/assistant turn before the final user turn.
-  const priorTurns = textMessages.filter(
-    (m, i) => i < lastUserIdx && (m.role === "user" || m.role === "assistant")
+  const priorTurns = turns.filter(
+    (turn, index) => index < lastUserIdx && (turn.role === "user" || turn.role === "assistant")
   );
-
-  const systemText = textMessages
-    .filter((m) => m.role === "system")
-    .map((m) => m.content)
+  const systemText = turns
+    .filter((turn) => turn.role === "system")
+    .map((turn) => turn.content)
     .join("\n\n");
 
-  // Single-turn (no earlier user/assistant turns) with no system message:
-  // byte-for-byte the original single-message derivation.
+  // Single-turn without a system message: the message is the prompt verbatim.
   if (priorTurns.length === 0 && !systemText) return lastUserContent;
-
-  // Single-turn with a system message: prepend it instead of dropping it.
   if (priorTurns.length === 0) return `System:\n${systemText}\n\n${lastUserContent}`;
-
-  const historyLines = priorTurns.map(
-    (m) => `${m.role === "assistant" ? "Assistant" : "User"}: ${m.content}`
-  );
 
   const parts = [];
   if (systemText) parts.push(`System:\n${systemText}`);
-  parts.push(`Previous conversation:\n${historyLines.join("\n\n")}`);
+  parts.push(
+    `Previous conversation:\n${priorTurns
+      .map((turn) => `${turn.role === "assistant" ? "Assistant" : "User"}: ${turn.content}`)
+      .join("\n\n")}`
+  );
   parts.push(`Current user message:\n${lastUserContent}`);
   return parts.join("\n\n");
 }
 
 /**
- * Build the plain-text prompt typed into the Gemini web UI when a tool
- * contract is active — every system message (the client's own instruction(s)
- * plus the synthetic tool contract that `prepareToolMessages()` appends last)
- * prepended, in order, to the last user message. gemini-web only ever sends
- * a single flat string (no native message array), so the tool contract and
- * the user's ask are concatenated.
- *
- * Everything except the current ask has to be rendered: an assistant turn that
- * called a tool and the `role: "tool"` result for it are the only evidence
- * Gemini Web gets that the tool already ran. Dropping them made the model
- * re-issue the same call with a fresh id, looping until the client's tool
- * limit stopped it.
- *
- * The boundary must be the current ask itself, not "everything before it": a
- * tool round usually arrives as `system, user, assistant(tool_calls), tool`
- * with NO message after the result, so slicing at `lastUserIdx` threw away the
- * very turns the fix was for.
+ * Flatten the OpenAI-style multi-turn `messages[]` into the single prompt this
+ * provider sends. Image parts keep their position as `[Image N]`, numbered in
+ * message/part order; the matching uploads use the same numbering.
  */
-export function buildGeminiToolPrompt(effectiveMessages) {
-  const toolPrompt = effectiveMessages
-    .filter((m) => m.role === "system" && typeof m.content === "string")
-    .map((m) => m.content)
-    .join("\n\n");
-  const lastUserIdx = effectiveMessages.map((m) => m.role).lastIndexOf("user");
-  const lastUserMsg = lastUserIdx >= 0 ? effectiveMessages[lastUserIdx] : undefined;
-  const userText = typeof lastUserMsg?.content === "string" ? lastUserMsg.content : "";
+export function buildGeminiPrompt(messages) {
+  return promptFromTurns(flattenMessages(messages).turns);
+}
 
-  const prior = [];
-  for (const [index, m] of effectiveMessages.entries()) {
-    if (index === lastUserIdx) continue; // rendered below as the current ask
-    if (typeof m.content === "string" && m.content.trim()) {
-      if (m.role === "user") prior.push(`User: ${m.content}`);
-      else if (m.role === "assistant") prior.push(`Assistant: ${m.content}`);
-      else if (m.role === "tool") {
-        const id = typeof m.tool_call_id === "string" ? m.tool_call_id : "";
-        prior.push(id ? `Tool result [${id}]: ${m.content}` : `Tool result: ${m.content}`);
-      }
-    }
-    const calls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
-    for (const call of calls) {
-      const name = typeof call.function?.name === "string" ? call.function.name : "tool";
-      const args = typeof call.function?.arguments === "string" ? call.function.arguments : "{}";
-      const id = typeof call.id === "string" ? ` [${call.id}]` : "";
-      prior.push(`Assistant requested tool${id}: ${name}(${args})`);
+function decodeInputImages(imageUrls) {
+  const decoded = [];
+  for (const url of imageUrls) {
+    try {
+      decoded.push(decodeGeminiWebImageDataUrl(url));
+    } catch (error) {
+      if (Number(error?.status) === 413) throw error;
+      throw unsupportedControl(
+        error instanceof Error && error.message
+          ? error.message
+          : "Gemini Web image input is not a supported PNG, JPEG or WebP data URL"
+      );
     }
   }
+  assertGeminiWebInputImageBudget(decoded.map((image) => image.data.length));
+  return decoded;
+}
 
-  // Single-turn: system contract + the current ask.
-  if (prior.length === 0) return toolPrompt ? `${toolPrompt}\n\n${userText}` : userText;
+function slotHeaderValue(credentials) {
+  const authUser = credentials?.providerSpecificData?.authUser;
+  if (authUser === undefined || authUser === null || authUser === "") return "default";
+  return String(authUser);
+}
 
+function sanitizedBody(model, body, stream) {
+  return {
+    model,
+    messages: Array.isArray(body?.messages) ? body.messages : [],
+    stream: Boolean(stream),
+  };
+}
+
+// ─── Response shaping ───────────────────────────────────────────────────────
+
+function safeMessage(error, fallback = "Gemini Web request failed") {
+  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const message = raw.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  return message ? message.slice(0, 400) : fallback;
+}
+
+function errorStatus(error) {
+  const status = Number(error?.status);
+  if (Number.isFinite(status) && status >= 400 && status <= 599) return status;
+  return 502;
+}
+
+function errorCode(status, error) {
+  if (typeof error?.code === "string" && error.code) return error.code;
+  if (status === 404) return MODEL_NOT_FOUND_CODE;
+  if (status >= 500) return GEMINI_WEB_UPSTREAM_ERROR_CODE;
+  return GEMINI_WEB_UNSUPPORTED_CONTROL_CODE;
+}
+
+function errorResponse(error, { nonReplayable = false } = {}) {
+  const status = errorStatus(error);
+  const payload = {
+    error: {
+      message: safeMessage(error),
+      type: status >= 500 ? "upstream_error" : "invalid_request_error",
+      code: errorCode(status, error),
+    },
+  };
+  if (typeof error?.param === "string" && error.param) payload.error.param = error.param;
+
+  const headers = { "Content-Type": "application/json" };
+  if (Number.isFinite(Number(error?.retryAfter))) {
+    headers["Retry-After"] = String(Math.max(0, Math.ceil(Number(error.retryAfter))));
+  }
+  const response = new Response(JSON.stringify(payload), { status, headers });
+  return nonReplayable ? markNonReplayableResponse(response) : response;
+}
+
+function abortError() {
+  return geminiWebError("The Gemini Web request was aborted", {
+    status: 499,
+    code: ABORT_CODE,
+  });
+}
+
+function modelNotFoundError(error) {
+  if (Number(error?.status) === 404) {
+    return geminiWebError(safeMessage(error, "Gemini Web model not found"), {
+      status: 404,
+      code: MODEL_NOT_FOUND_CODE,
+    });
+  }
+  return error;
+}
+
+function modelMismatchError(expected) {
+  return geminiWebError(
+    `Gemini Web answered with a different model than "${expected}"; refusing to mislabel the result`,
+    { status: 502, code: MODEL_MISMATCH_CODE }
+  );
+}
+
+function noImageError() {
+  const error = upstreamError("Gemini Web completed the image request without returning an image");
+  error.code = NO_IMAGE_CODE;
+  return error;
+}
+
+/** A generation that may already have been accepted must never be replayed. */
+function isAmbiguousGenerationError(error) {
+  const status = Number(error?.status);
+  if (status === 400 || status === 401 || status === 403 || status === 429) return false;
+  return true;
+}
+
+function buildLinkBlock(images) {
+  return images
+    .map((image, index) => `![Generated image ${index + 1}](<${image.url}>)`)
+    .join("\n\n");
+}
+
+/**
+ * Answer text first, then one Markdown link per distinct generated image. The
+ * links are Google-hosted and belong to the same browser session, so they can
+ * expire; `/v1/images/generations` remains the portable byte form.
+ */
+function composeContent(text, images) {
   const parts = [];
-  if (toolPrompt) parts.push(toolPrompt);
-  parts.push(`Previous conversation:\n${prior.join("\n\n")}`);
-  parts.push(`Current user message:\n${userText}`);
+  if (typeof text === "string" && text.trim()) parts.push(text);
+  if (images.length > 0) parts.push(buildLinkBlock(images));
   return parts.join("\n\n");
 }
 
-/**
- * Tool mode: wrap the buffered Gemini response text in the standard OpenAI
- * completion shape, then delegate to the shared `buildToolModeResponse()` —
- * parses `<tool>{...}</tool>` blocks out of the text into `tool_calls`
- * (malformed JSON degrades to ordinary `content`, never throws) and replays
- * either buffered JSON or a terminal SSE chunk depending on `stream`.
- */
-export async function buildGeminiToolResponse(responseText, requestedTools, stream, model, cid, created) {
-  const bufferedJson = new Response(JSON.stringify(formatChatCompletion(responseText, model)), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
+function usagePayload(usage, requestBody, outputLength) {
+  if (usage) {
+    return {
+      prompt_tokens: usage.promptTokens || 0,
+      completion_tokens: usage.completionTokens || 0,
+      total_tokens: usage.totalTokens || 0,
+    };
+  }
+  return estimateUsage(requestBody, outputLength, FORMATS.OPENAI);
+}
+
+// ─── Dispatch helpers ───────────────────────────────────────────────────────
+
+async function upstreamFailure(response) {
+  await response.body?.cancel?.().catch?.(() => {});
+  const status = Number(response.status);
+  const retryAfter = parseRetryAfter(response.headers?.get?.("retry-after"));
+  const message =
+    status === 401 || status === 403 || status === 429
+      ? `Gemini Web generation was rejected with HTTP ${status}`
+      : `Gemini Web generation failed with HTTP ${status}`;
+  return geminiWebError(message, {
+    status: Number.isFinite(status) ? status : 502,
+    retryAfter,
   });
-  return buildToolModeResponse(bufferedJson, requestedTools, stream, {
-    cid,
-    created,
-    model,
-    idSeed: "gwe",
-  });
 }
 
-const GEMINI_APP_ERROR_TEXT =
-  /something went wrong|try again later|unusual traffic|verify you are human/i;
-const GEMINI_QUOTA_TEXT =
-  /used all of your requests|quota will reset|quota exceeded|reached your limit/i;
-
-/**
- * Watch the app's batchexecute RPCs for a quota rejection.
- *
- * When an account is out of requests Gemini does not render the composer — it
- * replies inside a background XHR and bounces the page to the marketing root,
- * which is indistinguishable from a dead session by page content alone.
- *
- * @returns {() => string|null} read the captured quota message, if any
- */
-function watchGeminiQuota(page) {
-  let quota = null;
-  const onResponse = (res) => {
-    if (quota || !/\/BardChatUi\/data\/batchexecute/.test(res.url())) return;
-    void res
-      .text()
-      .then((text) => {
-        if (!GEMINI_QUOTA_TEXT.test(text)) return;
-        quota = "Gemini says this account is out of quota: \"You've used all of your requests for this feature\" — wait for the reset, or add another account";
-      })
-      .catch(() => {});
-  };
-  page.on("response", onResponse);
-  return () => quota;
-}
-
-/**
- * Detect a Gemini app page that loaded but cannot serve a conversation.
- *
- * gemini.google.com/app bounces back to the marketing root when it refuses the
- * session (expired Google cookie, Gemini Apps Activity off, flagged account),
- * and the "Chat with Gemini" button then surfaces a generic error card. Both
- * cases otherwise only show up as an opaque `waitForSelector` timeout, so name
- * the real cause instead.
- *
- * @returns {Promise<null | string>} null when the composer is usable, else a message
- */
-async function geminiAppBlocker(page, readQuota = () => null) {
-  const composer = await page.locator(".ql-editor, [contenteditable='true']").count();
-  if (composer > 0) return null;
-  const quota = readQuota();
-  if (quota) return quota;
-  const text = await page.evaluate(() => document.body?.innerText?.slice(0, 2000) ?? "").catch(() => "");
-  if (GEMINI_APP_ERROR_TEXT.test(text)) {
-    return "Gemini refused the request (\"Something went wrong\") — the Google account cannot open Gemini. Sign in again, or enable Gemini Apps Activity for the account";
+async function collectEvents(body, { signal, knownModelIds }) {
+  const state = { text: "", reasoning: "", images: [], usage: null, modelId: null };
+  for await (const event of decodeGeminiWebStream(body, { signal, knownModelIds })) {
+    if (event.type === "text") state.text = event.text;
+    else if (event.type === "reasoning") state.reasoning = event.text;
+    else if (event.type === "images") state.images.push(...event.images);
+    else if (event.type === "usage") state.usage = event.usage;
+    else if (event.type === "model" && event.modelId) state.modelId = event.modelId;
   }
-  // Session refused: /app lands on the marketing splash (no route match, or a
-  // visible "Chat with Gemini" CTA when the bounce kept the /app URL). The
-  // quota RPC lands ~1s after the bounce, so give it a moment before blaming
-  // the session — otherwise an out-of-quota account reads as "sign in again".
-  const url = page.url();
-  const marketing = /chat with gemini/i.test(text) || !/\/app(\/|$|\?)/.test(url);
-  if (marketing) {
-    for (let i = 0; i < 12; i++) {
-      const late = readQuota();
-      if (late) return late;
-      await page.waitForTimeout(400);
-    }
-    return "Gemini did not open a chat session — open dashboard/providers/gemini-web, click Login via Browser and sign in to Google again (the account may also need Gemini Apps Activity enabled)";
+  return state;
+}
+
+function imageTaskModel(models) {
+  const list = Array.isArray(models) ? models : [];
+  const chosen = list.find((model) => model.id === "gemini-auto") || list[0];
+  if (!chosen) {
+    throw upstreamError("Gemini Web returned no image-capable model for this account");
   }
-  return null;
-}
-
-/**
- * Open the Gemini app with the quota watcher already attached — the rejection
- * RPC fires during the initial load, so attaching after `goto` misses it.
- *
- * @returns {Promise<() => string|null>} quota reader for waitForGeminiComposer
- */
-async function openGeminiApp(page) {
-  const readQuota = watchGeminiQuota(page);
-  await page.goto(GEMINI_URL, { waitUntil: "domcontentloaded", timeout: 20000 });
-  return readQuota;
-}
-
-/**
- * Wait for the composer, polling so a refused session is reported by cause
- * instead of as a bare selector timeout.
- */
-async function waitForGeminiComposer(page, readQuota = () => null, timeout = 10000) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    const composer = await page.locator(".ql-editor, [contenteditable='true']").count();
-    if (composer > 0) {
-      return page.waitForSelector(".ql-editor, [contenteditable='true']", { timeout: 5000 });
-    }
-    const blocker = await geminiAppBlocker(page, readQuota);
-    if (blocker) throw new Error(blocker);
-    await page.waitForTimeout(400);
-  }
-  const quota = readQuota();
-  if (quota) throw new Error(quota);
-  const url = page.url();
-  throw new Error(`Gemini composer did not appear within ${Math.round(timeout / 1000)}s (final URL: ${url})`);
-}
-
-/**
- * Parse cookie string, stripping attributes (Path, Domain, Expires, etc.)
- * Input: full browser cookie string or just "name=value; name2=value2"
- * Output: array of { name, value } pairs
- */
-function parseCookies(raw) {
-  return raw
-    .split(";")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => {
-      const eqIdx = part.indexOf("=");
-      if (eqIdx === -1) return null;
-      const name = part.substring(0, eqIdx).trim();
-      const value = part.substring(eqIdx + 1).trim();
-      // Skip cookie attributes that aren't name=value pairs
-      if (!name || !value) return null;
-      const lowerName = name.toLowerCase();
-      if (
-        ["path", "domain", "expires", "max-age", "secure", "httponly", "samesite"].includes(
-          lowerName
-        )
-      ) {
-        return null;
-      }
-      return { name, value };
-    })
-    .filter(Boolean);
-}
-
-function readCredentialString(value) {
-  if (typeof value !== "string") return "";
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : "";
-}
-
-function readProviderSpecificString(providerSpecificData, keys) {
-  if (
-    !providerSpecificData ||
-    typeof providerSpecificData !== "object" ||
-    Array.isArray(providerSpecificData)
-  ) {
-    return "";
-  }
-  for (const key of keys) {
-    const value = readCredentialString(providerSpecificData[key]);
-    if (value) return value;
-  }
-  return "";
-}
-
-function resolveGeminiWebCookie(credentials) {
-  const directCookie =
-    readCredentialString(credentials?.apiKey) ||
-    readCredentialString(credentials?.cookie);
-  if (directCookie) return normalizeGeminiCookieInput(directCookie);
-
-  const providerSpecificData = credentials?.providerSpecificData;
-  const cookie = readProviderSpecificString(providerSpecificData, ["cookie"]);
-  if (cookie) return normalizeGeminiCookieInput(cookie);
-
-  const psid = readProviderSpecificString(providerSpecificData, ["__Secure-1PSID"]);
-  const psidts = readProviderSpecificString(providerSpecificData, ["__Secure-1PSIDTS"]);
-  return [
-    psid ? normalizeGeminiCookieInput(psid, "__Secure-1PSID") : "",
-    psidts ? normalizeGeminiCookieInput(psidts, "__Secure-1PSIDTS") : "",
-  ]
-    .filter(Boolean)
-    .join("; ");
-}
-
-function errorResponse(status, error, extraHeaders = {}) {
-  return new Response(JSON.stringify({ error }), {
-    status,
-    headers: { "Content-Type": "application/json", ...extraHeaders },
-  });
+  return chosen;
 }
 
 // ─── Executor ───────────────────────────────────────────────────────────────
 
 export class GeminiWebExecutor extends BaseExecutor {
   constructor() {
-    super("gemini-web", { id: "gemini-web", baseUrl: GEMINI_URL });
+    super("gemini-web", { id: "gemini-web", baseUrl: GEMINI_WEB_CLIENT_URL });
   }
 
   /**
-   * testConnection — validates the cookie format without making a network call
-   * or launching Playwright. Returns true when the cookie is non-empty and
-   * contains at least one name=value pair with a non-empty value.
+   * Boolean compatibility probe. Only a definitive result maps to true/false;
+   * an inconclusive probe throws so route health is never guessed.
    */
-  async testConnection(credentials) {
-    try {
-      const cookie = resolveGeminiWebCookie(credentials);
-      if (!cookie) return false;
-      const pairs = parseCookies(cookie);
-      return pairs.some((p) => p.value.length > 0);
-    } catch {
-      return false;
-    }
+  async testConnection(credentials, options = {}) {
+    const result = await probeGeminiWebConnection(credentials, options);
+    if (result.status === "valid") return true;
+    if (result.status === "invalid") return false;
+    const error = new Error(result.error || "Gemini Web verification is inconclusive");
+    error.code = GEMINI_WEB_VERIFICATION_UNKNOWN;
+    throw error;
   }
 
-  async execute({ model, body, stream, credentials, signal, log }) {
-    const requestBody = body || {};
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions, transport }) {
+    const requestBody = body && typeof body === "object" ? body : {};
+    const requestedModel = typeof model === "string" ? model : "";
+    const wantsStream = Boolean(stream);
+    const result = (response, reportedModel = requestedModel) => ({
+      response,
+      url: GEMINI_WEB_CLIENT_URL,
+      headers: { "x-gemini-web-slot": slotHeaderValue(credentials) },
+      transformedBody: sanitizedBody(reportedModel, requestBody, wantsStream),
+    });
 
-    // The current Gemini web client is agentic: it only uses its own built-in
-    // tools (web search, weather, canvas …) and answers around prompt-level
-    // tool contracts instead of emitting calls — verified live across plausible
-    // and implausible tool shapes. Fail fast with a clean 400
-    // rather than a doomed emulation.
-    const requestedTools = requestBody.tools;
-    const requestedFunctions = requestBody.functions;
-    if (requestedTools != null && (!Array.isArray(requestedTools) || requestedTools.length > 0)) {
-      return {
-        response: errorResponse(400, "Gemini Web does not support OpenAI function tools"),
-        url: GEMINI_URL,
-        headers: {},
-        transformedBody: body,
-      };
-    }
-    if (requestedFunctions != null && (!Array.isArray(requestedFunctions) || requestedFunctions.length > 0)) {
-      return {
-        response: errorResponse(400, "Gemini Web does not support legacy function tools"),
-        url: GEMINI_URL,
-        headers: {},
-        transformedBody: body,
-      };
+    if (signal?.aborted) {
+      return result(errorResponse(abortError()));
     }
 
-    // `reasoning_effort` (Extended Thinking): eligible Gemini accounts DO
-    // expose a real Extended Thinking toggle in the UI, so it is attempted,
-    // verified via read-back, and only THEN rejected if it cannot be confirmed.
-    const wantsExtendedThinking = requestsThinkingBudget(requestBody.reasoning_effort);
-
-    const cookie = resolveGeminiWebCookie(credentials);
-    if (!cookie) {
-      return {
-        response: errorResponse(401, "Missing Gemini cookies"),
-        url: GEMINI_URL,
-        headers: {},
-        transformedBody: body,
-      };
+    // 1. Controls Gemini Web structurally cannot honor.
+    const violation = checkGeminiWebUnsupportedControls(requestBody, requestedModel);
+    if (violation) {
+      const error = unsupportedControl(violation.message);
+      error.param = violation.param;
+      log?.debug?.("GEMINI-WEB", `Rejected request: unsupported ${violation.param}`);
+      return result(errorResponse(error));
     }
 
-    const messages = requestBody.messages || [];
+    // 2. Prompt and image input, validated before any network call.
+    const { cleanModel } = parseModelSuffix(requestedModel);
+    let prompt;
+    let inputImages;
+    try {
+      const flattened = flattenMessages(requestBody.messages);
+      prompt = promptFromTurns(flattened.turns);
+      if (!prompt || !flattened.hasUserTurn) {
+        throw geminiWebError("No user message found", {
+          status: 400,
+          code: GEMINI_WEB_UNSUPPORTED_CONTROL_CODE,
+        });
+      }
+      inputImages = decodeInputImages(flattened.images);
+    } catch (error) {
+      return result(errorResponse(error));
+    }
 
-    // gemini-web is stateless (a fresh /app page per request), so the full
-    // multi-turn history is flattened into the single prompt to preserve prior
-    // context across turns.
-    const prompt = buildGeminiPrompt(messages);
+    // 3. Account session (bootstrap + optional PSIDTS rotation).
+    let resolved;
+    try {
+      resolved = await resolveGeminiWebSession(credentials, {
+        signal,
+        proxyOptions,
+        transport,
+      });
+    } catch (error) {
+      if (signal?.aborted || error?.name === "AbortError") return result(errorResponse(abortError()));
+      log?.debug?.("GEMINI-WEB", `Bootstrap failed with HTTP ${errorStatus(error)}`);
+      return result(errorResponse(error));
+    }
 
-    // A system-only request (no user message at all) must still 400 — since
-    // the system text is prepended, `prompt` alone is no longer a reliable
-    // "no user message" signal.
-    const hasUserMessage = messages.some(
-      (m) => m.role === "user" && typeof m.content === "string" && m.content.trim().length > 0
+    // 4. Model routing: an account-specific catalog entry, never a substitute.
+    let routing;
+    try {
+      routing = resolveGeminiModel(cleanModel, resolved.session.models);
+    } catch (error) {
+      return result(errorResponse(modelNotFoundError(error), cleanModel));
+    }
+
+    const reportedModel = cleanModel || routing.id;
+    const knownModelIds = new Set(
+      (resolved.session.models || [])
+        .map((entry) => entry.modelId)
+        .filter((value) => typeof value === "string" && value)
     );
 
-    if (!prompt || !hasUserMessage) {
-      return {
-        response: errorResponse(400, "No user message found"),
-        url: GEMINI_URL,
-        headers: {},
-        transformedBody: body,
-      };
-    }
-
-    // Resolved up front — also drives the in-browser mode-selection step
-    // below, before anything is typed.
-    const modelId = model || DEFAULT_MODEL_ID;
-
-    let browser = null;
-    let context = null;
-    let abortBrowser = null;
+    // 5. Upload every input image, in prompt order, then generate one turn.
+    let upstream;
+    let dispatched = false;
     try {
-      if (signal?.aborted) {
-        throw signal.reason instanceof Error ? signal.reason : new Error("Request aborted");
-      }
-      const { acquireGeminiBrowser } = await import("./gemini-web/browserLease.js");
-      browser = await acquireGeminiBrowser(launchGeminiChromium);
-      // Holder so the abort listener keeps working after the streaming path
-      // moves context ownership into the ReadableStream.
-      const session = { context: null };
-      abortBrowser = () => {
-        void session.context?.close().catch(() => {});
-      };
-      signal?.addEventListener("abort", abortBrowser, { once: true });
-
-      context = await browser.newContext({
-        userAgent: GEMINI_USER_AGENT,
-      });
-      session.context = context;
-
-      await context.addCookies(toPlaywrightCookies(cookie, ".google.com"));
-
-      const page = await context.newPage();
-
-      const readQuota = await openGeminiApp(page);
-      if (signal?.aborted) {
-        throw signal.reason instanceof Error ? signal.reason : new Error("Request aborted");
-      }
-      // The composer selector is the readiness check. A fixed sleep ran even
-      // when the editor was already there, and still raced a slow load.
-      await waitForGeminiComposer(page, readQuota);
-
-      // Verify the requested Gemini UI mode is actually active BEFORE anything
-      // is typed. `gemini-3.1-pro` is the mode gemini.google.com/app already
-      // opens to (no interaction attempted); every other advertised model is
-      // switched to and its active-mode indicator is read back — a confirmed
-      // match is required, or the request is rejected instead of silently
-      // running the account default under the requested model's label.
-      if (model) {
-        const modelSelection = await selectGeminiModel(page, modelId);
-        if (!modelSelection.confirmed) {
-          log?.warn?.(
-            "GEMINI-WEB",
-            `Rejected request: could not confirm Gemini UI mode for "${modelId}" (${modelSelection.reason})`
-          );
-          return {
-            response: errorResponse(
-              400,
-              {
-                message: describeModeSelectionFailure(modelId, modelSelection.reason),
-                type: "invalid_request_error",
-                code: GEMINI_WEB_UNSUPPORTED_CONTROL_CODE,
-              }
-            ),
-            url: GEMINI_URL,
-            headers: {},
-            transformedBody: body,
-          };
-        }
-      }
-
-      // Extended Thinking: same detect-and-verify, fail-closed pattern as
-      // model selection above — attempted only when requested, never assumed
-      // available.
-      if (wantsExtendedThinking) {
-        const thinkingSelection = await selectGeminiExtendedThinking(page);
-        if (!thinkingSelection.confirmed) {
-          log?.warn?.(
-            "GEMINI-WEB",
-            `Rejected request: could not confirm Extended Thinking is available (${thinkingSelection.reason})`
-          );
-          return {
-            response: errorResponse(
-              400,
-              {
-                message: describeModeSelectionFailure("Extended Thinking", thinkingSelection.reason),
-                type: "invalid_request_error",
-                code: GEMINI_WEB_UNSUPPORTED_CONTROL_CODE,
-              }
-            ),
-            url: GEMINI_URL,
-            headers: {},
-            transformedBody: body,
-          };
-        }
-      }
-
-      // Type and send message
-      const inputEl = await waitForGeminiComposer(page, readQuota);
-      await inputEl.click();
-      // insertText() dispatches a DOM `input` event atomically instead of a
-      // per-character keydown/keypress/keyup sequence — an embedded `\n` in
-      // `prompt` no longer fires the composer's Enter-submits-the-message
-      // handler before this function's own explicit Enter below. It also
-      // removes the fixed 10ms/char typing cost that made long prompts race
-      // the 30s response-wait timeout.
-      await page.keyboard.insertText(prompt);
-      await page.waitForTimeout(300);
-      await page.keyboard.press("Enter");
-
-      // Reply capture is DOM-based (see ./gemini-web/domCapture.js): the
-      // current client streams over batchexecute rpcids that Google rotates,
-      // and those bodies can't be re-read via CDP once the stream completes.
-      const baseReply = await readReplyState(page);
-
-      if (hasTools) {
-        const responseText = await waitForGeminiReply({
-          page,
-          baseCount: baseReply.count,
-          baseText: baseReply.lastText,
-          signal,
-        });
-        const cid = `chatcmpl-gwe-${crypto.randomUUID().slice(0, 12)}`;
-        const created = Math.floor(Date.now() / 1000);
-        const toolResponse = await buildGeminiToolResponse(
-          responseText,
-          requestedTools,
-          Boolean(stream),
-          modelId,
-          cid,
-          created
-        );
-        return { response: toolResponse, url: GEMINI_URL, headers: {}, transformedBody: body };
-      }
-
-      if (stream) {
-        const encoder = new TextEncoder();
-        const streamPage = page;
-        const streamContext = context;
-        const streamBrowser = browser;
-        context = null; // ownership moves into the stream
-        browser = null;
-        const readable = new ReadableStream(
+      const files = [];
+      for (const [index, image] of inputImages.entries()) {
+        const uploaded = await uploadGeminiWebImage(
+          resolved.session,
           {
-            async start(controller) {
-              try {
-                await waitForGeminiReply({
-                  page: streamPage,
-                  baseCount: baseReply.count,
-                  baseText: baseReply.lastText,
-                  signal,
-                  onDelta: (delta) => {
-                    controller.enqueue(
-                      encoder.encode(`data: ${JSON.stringify(formatStreamChunk(delta, modelId))}\n\n`)
-                    );
-                  },
-                });
-                controller.enqueue(
-                  encoder.encode(`data: ${JSON.stringify(formatStreamChunk("", modelId, "stop"))}\n\n`)
-                );
-                controller.enqueue(encoder.encode(SSE_DONE));
-                controller.close();
-              } catch (error) {
-                controller.enqueue(
-                  encoder.encode(
-                    `data: ${JSON.stringify({ error: { message: error.message || "gemini-web stream failed" } })}\n\n`
-                  )
-                );
-                controller.enqueue(encoder.encode(SSE_DONE));
-                controller.close();
-              } finally {
-                await streamPage.close().catch(() => {});
-                await streamContext.close().catch(() => {});
-                const { releaseGeminiBrowser } = await import("./gemini-web/browserLease.js");
-                await releaseGeminiBrowser(streamBrowser);
-              }
-            },
+            data: image.data,
+            mimeType: image.mime,
+            name: `image_${index + 1}.${image.extension}`,
           },
-          { highWaterMark: 16384 }
+          { signal, proxyOptions, transport }
         );
-        return {
-          response: new Response(readable, {
-            status: 200,
-            headers: { ...SSE_HEADERS_NO_BUFFER },
-          }),
-          url: GEMINI_URL,
-          headers: {},
-          transformedBody: body,
-        };
+        files.push(uploaded);
       }
 
-      const responseText = await waitForGeminiReply({
-        page,
-        baseCount: baseReply.count,
-        baseText: baseReply.lastText,
+      dispatched = true;
+      upstream = await generateGeminiWeb({
+        session: resolved.session,
+        authUser: resolved.authUser,
+        model: routing,
+        prompt,
+        files,
+        thinkingLevel: resolveRequestedThinking(requestBody, requestedModel),
         signal,
+        proxyOptions,
+        transport,
       });
-      return {
-        response: new Response(JSON.stringify(formatChatCompletion(responseText, modelId)), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-        url: GEMINI_URL,
-        headers: {},
-        transformedBody: body,
-      };
+
+      if (!upstream.ok) {
+        throw await upstreamFailure(upstream);
+      }
     } catch (error) {
-      const rawMessage = error instanceof Error ? error.message : "Unknown error";
-      // A missing Playwright browser is a host/config problem, not a transient
-      // upstream fault. Surface an actionable error and tag it with the
-      // connection-cooldown hint so accountFallback skips the provider circuit
-      // breaker and applies a short, non-exponential cooldown instead of
-      // looping on a retryable 500.
-      if (isMissingBrowserExecutable(rawMessage)) {
-        return {
-          response: errorResponse(
-            503,
-            "Gemini Web needs a Chrome/Chromium binary. Install Google Chrome, set NINEROUTER_BROWSER_BIN " +
-              "or CHROME_PATH to an existing Chrome, or run `npx playwright-core install chromium`."
-          ),
-          url: GEMINI_URL,
-          headers: {},
-          transformedBody: body,
-        };
+      if (signal?.aborted || error?.name === "AbortError") {
+        return result(errorResponse(abortError()), reportedModel);
       }
-      // Playwright selector/click timeout errors are terminal — they indicate
-      // the page DOM does not match expectations (e.g. Gemini changed their UI
-      // or the session is so expired it lands on a different page). Return 400
-      // so the account-fallback system does NOT retry this request as a
-      // transient 5xx.
-      if (
-        error instanceof Error &&
-        (error.name === "TimeoutError" ||
-          rawMessage.includes("waitForSelector") ||
-          rawMessage.includes("Timeout") ||
-          rawMessage.includes("actionability") ||
-          rawMessage.includes("interception"))
-      ) {
-        return {
-          response: errorResponse(400, rawMessage),
-          url: GEMINI_URL,
-          headers: {},
-          transformedBody: body,
-        };
-      }
-      return {
-        response: errorResponse(500, rawMessage),
-        url: GEMINI_URL,
-        headers: {},
-        transformedBody: body,
-      };
-    } finally {
-      if (abortBrowser) signal?.removeEventListener("abort", abortBrowser);
-      // Close this request's context. The Chromium process stays warm until it
-      // has been idle.
-      try {
-        await context?.close();
-      } catch {
-        /* ignore close errors */
-      }
-      if (browser) {
-        const { releaseGeminiBrowser } = await import("./gemini-web/browserLease.js");
-        await releaseGeminiBrowser(browser);
-      }
+      return result(
+        errorResponse(error, { nonReplayable: dispatched && isAmbiguousGenerationError(error) }),
+        reportedModel
+      );
     }
+
+    const includeUsage = Boolean(requestBody.stream_options?.include_usage);
+
+    if (!wantsStream) {
+      let collected;
+      try {
+        collected = await collectEvents(upstream.body, { signal, knownModelIds });
+      } catch (error) {
+        if (signal?.aborted || error?.name === "AbortError") {
+          return result(errorResponse(abortError()), reportedModel);
+        }
+        return result(errorResponse(error, { nonReplayable: true }), reportedModel);
+      }
+      if (collected.modelId && collected.modelId !== routing.modelId) {
+        return result(errorResponse(modelMismatchError(cleanModel), { nonReplayable: true }), reportedModel);
+      }
+
+      const content = composeContent(collected.text, collected.images);
+      if (!content) {
+        return result(errorResponse(upstreamError("Gemini Web did not return an answer"), {
+          nonReplayable: true,
+        }), reportedModel);
+      }
+
+      const message = { role: "assistant", content };
+      if (collected.reasoning) message.reasoning_content = collected.reasoning;
+
+      const payload = {
+        id: `chatcmpl-gw-${randomUUID().slice(0, 24)}`,
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: reportedModel,
+        choices: [{ index: 0, message, finish_reason: "stop", logprobs: null }],
+        usage: usagePayload(
+          collected.usage,
+          requestBody,
+          content.length + (collected.reasoning?.length || 0)
+        ),
+      };
+
+      return result(
+        markNonReplayableResponse(
+          new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        ),
+        reportedModel
+      );
+    }
+
+    const response = streamCompletion({
+      upstream,
+      signal,
+      requestBody,
+      knownModelIds,
+      routing,
+      reportedModel,
+      requestedModel: cleanModel,
+      includeUsage,
+    });
+    return result(markNonReplayableResponse(response), reportedModel);
   }
 
   /**
-   * Generate image(s) through the Gemini web UI's built-in image generation,
-   * then download the rendered image in-page as base64.
-   * Used by the /v1/images/generations adapter.
+   * Generate images through the image task. `gemini-image` resolves to the
+   * account's advertised Auto entry (or its first entry); the caller's `n` is
+   * honored by collecting multiple images from one turn before asking again.
    *
-   * @returns {Promise<Array<{ b64: string, mime: string, width?: number, height?: number }>>}
+   * @returns {Promise<Array<{ b64: string, mime: string }>>}
    */
-  async generateMedia({ prompt, n = 1, size, credentials, signal, log }) {
-    if (!prompt) throw new Error("prompt is required for image generation");
-    const cookie = resolveGeminiWebCookie(credentials);
-    if (!cookie) throw new Error("Missing Gemini cookies");
+  async generateMedia({ prompt, n = 1, size, credentials, signal, log, proxyOptions, transport }) {
+    if (typeof prompt !== "string" || !prompt.trim()) {
+      throw geminiWebError("prompt is required for image generation", { status: 400 });
+    }
+    const wanted = Math.max(1, Math.min(4, Number(n) || 1));
 
-    const results = [];
-    for (let i = 0; i < Math.max(1, n); i++) {
-      let browser = null;
-      let context = null;
-      try {
-        const { acquireGeminiBrowser } = await import("./gemini-web/browserLease.js");
-        browser = await acquireGeminiBrowser(launchGeminiChromium);
-        context = await browser.newContext({ userAgent: GEMINI_USER_AGENT });
-        await context.addCookies(toPlaywrightCookies(cookie, ".google.com"));
-        const page = await context.newPage();
-        const readQuota = await openGeminiApp(page);
-        const inputEl = await waitForGeminiComposer(page, readQuota);
-        await inputEl.click();
-        await page.keyboard.insertText(buildImagePrompt(prompt, size));
-        await page.waitForTimeout(300);
-        await page.keyboard.press("Enter");
-        const media = await waitForGeminiImage(page, { signal });
-        results.push(media);
-      } finally {
-        try {
-          await context?.close();
-        } catch {
-          /* ignore close errors */
-        }
-        if (browser) {
-          const { releaseGeminiBrowser } = await import("./gemini-web/browserLease.js");
-          await releaseGeminiBrowser(browser);
+    const resolved = await resolveGeminiWebSession(credentials, {
+      signal,
+      proxyOptions,
+      transport,
+    });
+    const routing = imageTaskModel(resolved.session.models);
+    const knownModelIds = new Set(
+      (resolved.session.models || [])
+        .map((entry) => entry.modelId)
+        .filter((value) => typeof value === "string" && value)
+    );
+
+    const images = [];
+    let accepted = false;
+    try {
+      while (images.length < wanted) {
+        const upstream = await generateGeminiWeb({
+          session: resolved.session,
+          authUser: resolved.authUser,
+          model: routing,
+          prompt: buildImagePrompt(prompt, size),
+          files: [],
+          thinkingLevel: "low",
+          signal,
+          proxyOptions,
+          transport,
+        });
+        if (!upstream.ok) throw await upstreamFailure(upstream);
+        accepted = true;
+
+        const collected = await collectEvents(upstream.body, { signal, knownModelIds });
+        if (collected.images.length === 0) throw noImageError();
+
+        for (const image of collected.images) {
+          if (images.length >= wanted) break;
+          images.push(
+            await downloadGeminiWebImage(resolved.session, image, {
+              signal,
+              proxyOptions,
+              transport,
+              authUser: resolved.authUser,
+            })
+          );
         }
       }
+    } catch (error) {
+      if (signal?.aborted || error?.name === "AbortError") {
+        throw geminiWebError("The Gemini Web image request was aborted", {
+          status: 499,
+          code: ABORT_CODE,
+        });
+      }
+      // A rejected generation (401/403/429) was never accepted, so account
+      // fallback is still safe; anything after acceptance must not replay.
+      const status = Number(error?.status);
+      const rejected = status === 400 || status === 401 || status === 403 || status === 429;
+      if (accepted || !rejected) error.nonReplayable = true;
+      throw error;
     }
-    return results;
+
+    return images.map((image) => ({ b64: image.b64, mime: image.mime }));
   }
+}
+
+// ─── Streaming ──────────────────────────────────────────────────────────────
+
+function streamCompletion({
+  upstream,
+  signal,
+  requestBody,
+  knownModelIds,
+  routing,
+  reportedModel,
+  requestedModel,
+  includeUsage,
+}) {
+  const encoder = new TextEncoder();
+  const id = `chatcmpl-gw-${randomUUID().slice(0, 24)}`;
+  const created = Math.floor(Date.now() / 1000);
+  const state = { closed: false };
+
+  const chunk = (delta, finish = null) => ({
+    id,
+    object: "chat.completion.chunk",
+    created,
+    model: reportedModel,
+    choices: [{ index: 0, delta, finish_reason: finish, logprobs: null }],
+  });
+
+  const readable = new ReadableStream(
+    {
+      async start(controller) {
+        const send = (payload) => {
+          if (state.closed) return false;
+          try {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+            return true;
+          } catch {
+            state.closed = true;
+            return false;
+          }
+        };
+        const finish = () => {
+          if (state.closed) return;
+          state.closed = true;
+          try {
+            controller.close();
+          } catch {
+            // The client may already have closed the stream.
+          }
+        };
+
+        let emittedText = "";
+        let emittedReasoning = "";
+        let usage = null;
+        const pendingImages = [];
+
+        try {
+          send(chunk({ role: "assistant", content: "" }));
+          for await (const event of decodeGeminiWebStream(upstream.body, {
+            signal,
+            knownModelIds,
+          })) {
+            if (event.type === "text") {
+              if (event.text.length > emittedText.length) {
+                send(chunk({ content: event.text.slice(emittedText.length) }));
+              }
+              if (event.text.length >= emittedText.length) emittedText = event.text;
+              continue;
+            }
+            if (event.type === "reasoning") {
+              if (event.text.length > emittedReasoning.length) {
+                send(chunk({ reasoning_content: event.text.slice(emittedReasoning.length) }));
+              }
+              if (event.text.length >= emittedReasoning.length) emittedReasoning = event.text;
+              continue;
+            }
+            if (event.type === "images") {
+              pendingImages.push(...event.images);
+              continue;
+            }
+            if (event.type === "usage") {
+              usage = event.usage;
+              continue;
+            }
+            if (event.type === "model" && event.modelId && event.modelId !== routing.modelId) {
+              throw modelMismatchError(requestedModel);
+            }
+          }
+
+          if (pendingImages.length > 0) {
+            const block = buildLinkBlock(pendingImages);
+            send(chunk({ content: emittedText ? `\n\n${block}` : block }));
+          }
+
+          send(chunk({}, "stop"));
+          if (includeUsage) {
+            send({
+              id,
+              object: "chat.completion.chunk",
+              created,
+              model: reportedModel,
+              choices: [],
+              usage: usagePayload(
+                usage,
+                requestBody,
+                emittedText.length + emittedReasoning.length
+              ),
+            });
+          }
+          if (!state.closed) controller.enqueue(encoder.encode(SSE_DONE));
+        } catch (error) {
+          if (signal?.aborted || error?.name === "AbortError") {
+            send({ error: { message: "The Gemini Web request was aborted", type: "aborted", code: ABORT_CODE } });
+          } else {
+            send({
+              error: {
+                message: safeMessage(error, "Gemini Web stream failed"),
+                type: "upstream_error",
+                code: errorCode(errorStatus(error), error),
+              },
+            });
+          }
+        } finally {
+          finish();
+        }
+      },
+      cancel() {
+        state.closed = true;
+        try {
+          void upstream.body?.cancel?.().catch?.(() => {});
+        } catch {
+          // The body may be locked by the decoder that is already tearing down.
+        }
+      },
+    },
+    { highWaterMark: 16384 }
+  );
+
+  return new Response(readable, { status: 200, headers: { ...SSE_HEADERS_NO_BUFFER } });
+}
+
+// ─── Thinking intent ────────────────────────────────────────────────────────
+
+/**
+ * Resolve the wire thinking enum from the model suffix or the body. The suffix
+ * wins, matching the rest of the translator pipeline; validation already ran.
+ */
+function resolveRequestedThinking(body, model) {
+  const { override } = parseModelSuffix(model);
+  if (override?.mode === "level") return override.level;
+  if (override?.mode === "auto") return "auto";
+
+  const intent = extractThinkingIntent(body);
+  if (!intent) return "low";
+  if (intent.mode === "auto") return "auto";
+  if (intent.mode === "level") return intent.level;
+  return "low";
+}
+
+// Kept local so a model suffix and the thinking guard always agree.
+function parseModelSuffix(model) {
+  if (typeof model !== "string" || !model) return { cleanModel: model, override: null };
+  return parseSuffix(model);
+}
+
+function extractThinkingIntent(body) {
+  return extractThinking(body);
+}
+
+// ─── Provider-level helpers used by routes ──────────────────────────────────
+
+function classifyProbeFailure(error) {
+  const status = Number(error?.status);
+  const message = safeMessage(error, "Gemini Web verification failed");
+
+  if (status === 401 || status === 403 || status === 400) return { status: "invalid", error: message };
+  if (status === 429) return { status: "unknown", error: message };
+  if (/not signed in|cannot select models|no usable models|no available models/i.test(message)) {
+    return { status: "invalid", error: message };
+  }
+  return { status: "unknown", error: message };
+}
+
+/**
+ * Three-state connection probe. Only signed-in bootstrap + model discovery
+ * count as valid; a refused session or an account that cannot select models is
+ * invalid; transport uncertainty is unknown.
+ */
+export async function probeGeminiWebConnection(credentials, options = {}) {
+  try {
+    const { session } = await resolveGeminiWebSession(credentials, { ...options, forceRefresh: true });
+    return { status: "valid", ...(session.account ? { account: session.account } : {}) };
+  } catch (error) {
+    return classifyProbeFailure(error);
+  }
+}
+
+/**
+ * Resolve this account's public chat catalog. Private routing ids, capacities
+ * and model numbers stay inside the runtime cache.
+ */
+export async function resolveGeminiWebModels(credentials, options = {}) {
+  const { forceRefresh = false, signal, proxyOptions, transport } = options || {};
+  const resolved = await resolveGeminiWebSession(credentials, {
+    forceRefresh,
+    signal,
+    proxyOptions,
+    transport,
+  });
+  return publicGeminiWebModels(resolved.session.models);
 }
 
 export default GeminiWebExecutor;

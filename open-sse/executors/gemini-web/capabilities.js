@@ -1,28 +1,26 @@
 // Request-contract guards for the Gemini Web executor.
 //
-// gemini-web is not an API client. It launches Playwright, types ONE flat
-// prompt string into the gemini.google.com `.ql-editor` contenteditable,
-// presses Enter, and captures the first `StreamGenerate` response off the page.
-// There is no JSON request body on the wire, which makes two OpenAI controls
-// structurally impossible to honor:
+// Gemini Web is not a generic OpenAI upstream: it drives one native
+// StreamGenerate call per turn. Two classes of client controls have no wire
+// representation there, so they are rejected before any upstream request
+// instead of being silently dropped:
 //
-//   • `reasoning_effort` — no field exists to carry a thinking budget.
-//   • forced `tool_choice` — the tools support gemini-web does have is the
-//     prompt-emulation shim: it ASKS the model, in prose, to answer with
-//     `<tool>{...}</tool>` and parses whatever comes back. That is best-effort
-//     by construction. "required" / "any" / a named function is a GUARANTEE,
-//     and a prompt cannot make one.
-//
-// Deliberately NOT rejected — these are already satisfied or already work:
-//   • `reasoning_effort: "none" | "minimal"` — a non-thinking provider
-//     trivially complies.
-//   • `tool_choice: "auto" | "none"` and plain `tools[]` — the emulation path.
+//   • tool calling — Gemini Web's own agentic tools are not the OpenAI
+//     function-calling contract, and a forced tool_choice is a guarantee a
+//     prompt cannot make.
+//   • thinking control — Google exposes exactly low/medium/high, and its
+//     thought summaries are not a caller-controlled token budget.
+
+import { extractThinking, parseSuffix } from "../../translator/concerns/thinkingUnified.js";
 
 /** `error.code` on every compatibility rejection raised here. */
 export const GEMINI_WEB_UNSUPPORTED_CONTROL_CODE = "unsupported_control_for_provider";
 
-/** Effort levels a non-thinking provider already complies with. */
-const SATISFIED_EFFORT_LEVELS = new Set(["none", "minimal"]);
+/** Effort levels Gemini Web can encode on the wire. */
+const SUPPORTED_LEVELS = new Set(["low", "medium", "high"]);
+
+/** Level names that mean "let Gemini choose", resolved to the low enum. */
+const AUTOMATIC_LEVELS = new Set(["", "auto", "default", "automatic"]);
 
 /** `tool_choice` strings that demand a tool call rather than merely offering one. */
 const FORCING_TOOL_CHOICE_STRINGS = new Set(["required", "any"]);
@@ -38,8 +36,7 @@ function normalizeString(value) {
  * True when `tool_choice` demands a tool call. Covers the OpenAI strings
  * ("required"), the Anthropic-flavored ones the translators also emit ("any"),
  * and the object forms that name a function or force any tool. "auto" / "none"
- * and every unrecognized shape are treated as non-forcing — this guard only
- * blocks contracts it is certain gemini-web cannot keep.
+ * and every unrecognized shape are treated as non-forcing.
  */
 export function isForcingToolChoice(toolChoice) {
   const asString = normalizeString(toolChoice);
@@ -53,28 +50,84 @@ export function isForcingToolChoice(toolChoice) {
   return false;
 }
 
-/** True when `reasoning_effort` asks for MORE thinking than "none at all". */
-export function requestsThinkingBudget(reasoningEffort) {
-  const effort = normalizeString(reasoningEffort);
-  if (effort === null) return false;
-  return !SATISFIED_EFFORT_LEVELS.has(effort);
+function nonEmptyList(value) {
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+const THINKING_DISABLED_MESSAGE =
+  'Model provider "gemini-web" cannot disable thinking. Gemini Web always returns Google\'s ' +
+  'thought summary, so "none"/"off"/disabled thinking cannot be honored. Use "low", "medium" or "high".';
+
+const THINKING_BUDGET_MESSAGE =
+  'Model provider "gemini-web" cannot honor a token budget. Gemini Web exposes only low, medium ' +
+  "and high effort; remove the budget or select one of those levels.";
+
+function unsupportedLevelMessage(level) {
+  return (
+    `Model provider "gemini-web" does not support thinking level "${level}". ` +
+    'Use "low", "medium" or "high".'
+  );
 }
 
 /**
- * Inspect an OpenAI-shaped request body for controls gemini-web cannot honor.
- * Returns the first violation found, or `null` when the request is servable.
+ * The thinking intent carried by the model suffix wins over the body, mirroring
+ * the rest of the translator pipeline. Both are rejected before normalization.
  */
-export function checkGeminiWebUnsupportedControls(body) {
+function thinkingViolation(body, model) {
+  const { override } = parseSuffix(typeof model === "string" ? model : null);
+  if (override) {
+    if (override.mode === "none") return { param: "model", message: THINKING_DISABLED_MESSAGE };
+    if (override.mode === "budget") {
+      return {
+        param: "model",
+        message: `Model provider "gemini-web" cannot honor the token budget in the model suffix. ${THINKING_BUDGET_MESSAGE}`,
+      };
+    }
+    if (override.mode === "level" && !SUPPORTED_LEVELS.has(override.level)) {
+      return { param: "model", message: unsupportedLevelMessage(override.level) };
+    }
+  }
+
+  const intent = extractThinking(body);
+  if (!intent) return null;
+  if (intent.mode === "none") return { param: "reasoning_effort", message: THINKING_DISABLED_MESSAGE };
+  if (intent.mode === "budget") return { param: "thinking", message: THINKING_BUDGET_MESSAGE };
+  if (intent.mode === "level") {
+    const level = normalizeString(intent.level);
+    if (level === null) return null;
+    if (AUTOMATIC_LEVELS.has(level) || SUPPORTED_LEVELS.has(level)) return null;
+    return { param: "reasoning_effort", message: unsupportedLevelMessage(level) };
+  }
+  // mode "auto" means the caller left depth to the provider.
+  return null;
+}
+
+/**
+ * Inspect an OpenAI-shaped request body (plus the requested model suffix) for
+ * controls Gemini Web cannot honor. Returns the first violation found, or
+ * `null` when the request is servable.
+ */
+export function checkGeminiWebUnsupportedControls(body, model = null) {
   if (!body || typeof body !== "object") return null;
 
-  if (requestsThinkingBudget(body.reasoning_effort)) {
+  if (nonEmptyList(body.tools)) {
     return {
-      param: "reasoning_effort",
+      param: "tools",
       message:
-        'Model provider "gemini-web" does not support "reasoning_effort". It drives the ' +
-        "gemini.google.com web UI through a typed prompt and has no thinking-budget control " +
-        'to set, so any effort above "minimal" would be silently ignored. Remove ' +
-        '"reasoning_effort" (or send "none"/"minimal") or route to a reasoning-capable model.',
+        'Model provider "gemini-web" does not support OpenAI function tools. It drives one native ' +
+        "Gemini Web turn and never emits caller-defined tool calls. Remove \"tools\" or route to a " +
+        "model with native function calling.",
+    };
+  }
+
+  if (nonEmptyList(body.functions)) {
+    return {
+      param: "functions",
+      message:
+        'Model provider "gemini-web" does not support legacy function tools. Remove "functions" or ' +
+        "route to a model with native function calling.",
     };
   }
 
@@ -82,13 +135,10 @@ export function checkGeminiWebUnsupportedControls(body) {
     return {
       param: "tool_choice",
       message:
-        'Model provider "gemini-web" cannot guarantee a forced tool call. Its tool support is ' +
-        "prompt-emulated — the model is asked to emit a tool block and may answer with prose " +
-        'instead — so "tool_choice" values that require one ("required", "any", or a named ' +
-        'function) cannot be honored. Use "auto" to keep best-effort tool calling, or route to ' +
-        "a model with native function calling.",
+        'Model provider "gemini-web" cannot guarantee a forced tool call: it has no OpenAI tool ' +
+        'contract at all. Remove "tool_choice" or route to a model with native function calling.',
     };
   }
 
-  return null;
+  return thinkingViolation(body, model);
 }

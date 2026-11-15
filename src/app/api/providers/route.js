@@ -10,6 +10,7 @@ import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
 import { toProviderConnectionResponse } from "@/lib/providerConnectionResponse";
+import { assertGeminiWebMutationOrigin, isGeminiWebProvider } from "@/lib/geminiWebAccounts.js";
 
 export const dynamic = "force-dynamic";
 
@@ -85,6 +86,13 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const provider = normalizeProviderId(body.provider);
+    if (isGeminiWebProvider(provider)) {
+      assertGeminiWebMutationOrigin(request);
+      return NextResponse.json(
+        { error: "Use POST /api/providers/gemini-web/sessions to add Gemini Web cookie sessions" },
+        { status: 400 }
+      );
+    }
     const { apiKey, name, displayName, priority, globalPriority, defaultModel, testStatus } = body;
     const proxyConfig = normalizeProxyConfig(body);
     if (proxyConfig.error) {

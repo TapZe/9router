@@ -15,23 +15,22 @@ export default {
   },
   category: "webCookie",
   authType: "cookie",
-  // No "llm": chat models stay API-reachable but are hidden from LLM lists —
-  // this provider is surfaced through the image media pages only.
-  serviceKinds: ["image"],
-  authHint: "Paste your __Secure-1PSID (and __Secure-1PSIDTS) cookie value(s) from gemini.google.com",
+  // Chat models are discovered per signed-in Google account, so the static
+  // catalog carries only the stable image task; `/v1/models` publishes the
+  // account catalogs from their verified snapshots.
+  serviceKinds: ["llm", "image"],
+  apiKeyOptionalWith: "geminiWebSessionId",
+  authHint:
+    "Paste the complete Cookie request header from gemini.google.com: DevTools → Network → reload → select batchexecute?rpcids=otAQ7b → Request Headers → Cookie. Use the account tab's /u/N/ slot.",
   transport: {
     baseUrl: "https://gemini.google.com/app",
     format: "openai",
     authType: "cookie",
   },
-  // `supportsReasoning` is omitted deliberately: the executor drives the
-  // gemini.google.com web UI by typing a prompt, so it has no thinking-budget
-  // control to set and never surfaces `reasoning_content`. Tool calling is
-  // prompt-emulated only (translator/webTools.js), never native.
+  // `supportsReasoning` is omitted deliberately: the account decides which
+  // chat models exist, and effort is validated by the executor against the
+  // three levels Gemini Web can encode.
   models: [
-    { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro" },
-    { id: "gemini-3.7-flash", name: "Gemini 3.7 Flash" },
-    { id: "gemini-3.1-flash-lite", name: "Gemini 3.1 Flash-Lite" },
     { id: "gemini-image", name: "Gemini Image (web)", params: ["n", "size"], kind: "image" },
   ],
 };

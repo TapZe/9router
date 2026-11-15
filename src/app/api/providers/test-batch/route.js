@@ -96,6 +96,7 @@ export async function POST(request) {
           diagnosis: data.diagnosis || null,
           statusCode: data.statusCode || null,
           testedAt: data.testedAt || new Date().toISOString(),
+          ...(data.verification ? { verification: data.verification } : {}),
         });
       } catch (error) {
         results.push({

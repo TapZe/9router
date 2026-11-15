@@ -18,6 +18,7 @@ import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { upstreamResponseHeaders } from "open-sse/utils/upstreamHeaders.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
+import { isNonReplayableResponse } from "open-sse/utils/replayPolicy.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
@@ -162,6 +163,7 @@ export async function handleChat(request, clientRawRequest = null) {
             log,
           })
         : null,
+      signal: request?.signal,
     });
   }
 
@@ -180,7 +182,8 @@ export async function handleChat(request, clientRawRequest = null) {
       ),
       log,
       comboName: modelStr,
-      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
+      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings),
+      signal: request?.signal,
     });
   }
 
@@ -257,6 +260,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               log,
             })
           : null,
+        signal: request?.signal,
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });
@@ -352,12 +356,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
-        // "Consecutive" strikes: a success clears the breaker for this pair.
         clearAntigravityStrikes(credentials.connectionId, model);
-      }
+      },
+      clientSignal: request?.signal,
     });
 
     if (result.success) return result.response;
+    if (result.nonReplayable || isNonReplayableResponse(result.response) || isNonReplayableResponse(result)) {
+      return result.response || result;
+    }
 
     // Antigravity 409/429: refresh live quota to get exact resetAt before locking
     let quotaResetMs = null;

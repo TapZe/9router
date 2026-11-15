@@ -15,7 +15,8 @@ export async function POST(request, { params }) {
       valid: result.valid,
       error: result.error,
       refreshed: result.refreshed || false,
-    });
+      ...(result.verification ? { verification: result.verification } : {}),
+    }, { status: result.verification === "unknown" ? 503 : 200 });
   } catch (error) {
     console.log("Error testing connection:", error);
     return NextResponse.json({ error: "Test failed" }, { status: 500 });

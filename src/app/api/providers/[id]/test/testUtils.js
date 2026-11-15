@@ -1044,6 +1044,37 @@ export async function testSingleConnection(id) {
   const start = Date.now();
   let result;
 
+  if (connection.provider === "gemini-web" || connection.provider === "gweb") {
+    const { hydrateGeminiWebCredentials } = await import("@/lib/geminiWebAccounts.js");
+    const { probeGeminiWebConnection } = await import("open-sse/executors/gemini-web.js");
+    const credentials = await hydrateGeminiWebCredentials(connection);
+    const probe = await probeGeminiWebConnection(credentials, { proxyOptions: effectiveProxy });
+    const latencyMs = Date.now() - start;
+    const testedAt = new Date().toISOString();
+    if (probe.status === "unknown") {
+      return {
+        valid: false,
+        error: probe.error || "Gemini Web could not be verified",
+        verification: "unknown",
+        latencyMs,
+        testedAt,
+      };
+    }
+    const valid = probe.status === "valid";
+    await updateProviderConnection(id, {
+      testStatus: valid ? "active" : "error",
+      lastError: valid ? null : (probe.error || "Invalid Gemini Web session"),
+      lastErrorAt: valid ? null : testedAt,
+    });
+    return {
+      valid,
+      error: valid ? null : probe.error,
+      verification: probe.status,
+      latencyMs,
+      testedAt,
+    };
+  }
+
   if (connection.authType === "apikey" || connection.authType === "cookie") {
     result = await testApiKeyConnection(connection, effectiveProxy);
   } else {

@@ -9,6 +9,7 @@ import {
 } from "@/shared/constants/providers";
 import { getProviderConnections, getCombos, getCustomModels, getModelAliases } from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
+import { isGeminiWebProvider, unionGeminiWebCatalogIds } from "@/lib/geminiWebAccounts.js";
 import { getKeyAccessContext, filterModelsListForKey } from "@/sse/services/keyAccess.js";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
@@ -476,25 +477,32 @@ export async function buildModelsList(kindFilter, options = {}) {
       let liveModelKindById = new Map();
       let liveCapabilitiesById = new Map();
 
-      let rawModelIds = hasExplicitEnabledModels
-        ? Array.from(
-            new Set(
-              enabledModels.filter(
-                (modelId) => typeof modelId === "string" && modelId.trim() !== "",
+      let rawModelIds;
+      if (isGeminiWebProvider(providerId)) {
+        rawModelIds = unionGeminiWebCatalogIds(connections);
+        for (const staticModel of providerModels) {
+          if (modelKind(staticModel) === "image" && !rawModelIds.includes(staticModel.id)) {
+            rawModelIds.push(staticModel.id);
+          }
+        }
+      } else {
+        rawModelIds = hasExplicitEnabledModels
+          ? Array.from(
+              new Set(
+                enabledModels.filter(
+                  (modelId) => typeof modelId === "string" && modelId.trim() !== "",
+                ),
               ),
-            ),
-          )
-        : providerModels.map((model) => model.id);
+            )
+          : providerModels.map((model) => model.id);
+      }
 
-      if (isCompatibleProvider && rawModelIds.length === 0 && !skipDynamicFetch) {
+      if (!isGeminiWebProvider(providerId) && isCompatibleProvider && rawModelIds.length === 0 && !skipDynamicFetch) {
         rawModelIds = await fetchCompatibleModelIds(conn);
       }
 
-      // Config-driven live catalog override (e.g. Kiro returns dynamic
-      // -thinking/-agentic variants per account). On failure, fall back to
-      // whatever rawModelIds already holds.
       const liveResolver = LIVE_MODEL_RESOLVERS[providerId];
-      if (liveResolver && !hasExplicitEnabledModels) {
+      if (!isGeminiWebProvider(providerId) && liveResolver && !hasExplicitEnabledModels) {
         try {
           const live = await liveResolver(conn);
           if (live?.models?.length) {

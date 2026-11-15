@@ -7,7 +7,21 @@ export function usesAwsCredentialForm(provider) {
 export function toProviderConnectionResponse(connection) {
   const { apiKey, accessToken, refreshToken, idToken, ...safe } = connection;
 
-  if (!usesAwsCredentialForm(connection.provider) || !connection.providerSpecificData) {
+  if (!connection.providerSpecificData) return safe;
+
+  if (connection.provider === "gemini-web" || connection.provider === "gweb") {
+    const {
+      cookie,
+      __Secure_1PSID,
+      ["__Secure-1PSID"]: psid,
+      __Secure_1PSIDTS,
+      ["__Secure-1PSIDTS"]: psidts,
+      ...providerSpecificData
+    } = connection.providerSpecificData;
+    return { ...safe, providerSpecificData };
+  }
+
+  if (!usesAwsCredentialForm(connection.provider)) {
     return safe;
   }
 
