@@ -305,7 +305,7 @@ function evictOldest(cacheMap) {
   }
 }
 
-async function getOrCreateDirectAgent(key, insecure, keepAliveTimeout, keepAliveMaxTimeout) {
+async function getOrCreateDirectAgent(key, insecure, keepAliveTimeout, keepAliveMaxTimeout, maxHeaderSize) {
   const cached = directDispatchers.get(key);
   if (cached) return cached;
   const { Agent } = await import("undici");
@@ -314,33 +314,44 @@ async function getOrCreateDirectAgent(key, insecure, keepAliveTimeout, keepAlive
     connect: buildConnectOptions(insecure),
     keepAliveTimeout,
     keepAliveMaxTimeout,
+    ...(maxHeaderSize ? { maxHeaderSize } : {}),
   });
   directDispatchers.set(key, agent);
   return agent;
+}
+
+function normalizeMaxHeaderSize(maxHeaderSize) {
+  return Number.isInteger(maxHeaderSize) && maxHeaderSize > 0 ? maxHeaderSize : null;
 }
 
 /**
  * Shared direct dispatcher with capped keep-alive TTL. Prevents undici from
  * reusing idle sockets that upstream edges (NVIDIA NIM, Cloudflare) silently
  * dropped without sending a TCP RST.
+ *
+ * `maxHeaderSize` is optional: callers that omit it keep the original default
+ * limit and the original cache entry.
  */
-export function getDirectDispatcher(insecure = false) {
+export function getDirectDispatcher(insecure = false, maxHeaderSize) {
   const { keepAliveTimeout, keepAliveMaxTimeout } = resolveKeepAliveTimeouts();
-  const key = `direct::${insecure ? "insecure" : "secure"}::${keepAliveTimeout}::${keepAliveMaxTimeout}`;
-  return getOrCreateDirectAgent(key, insecure, keepAliveTimeout, keepAliveMaxTimeout);
+  const headerSize = normalizeMaxHeaderSize(maxHeaderSize);
+  const key = `direct::${insecure ? "insecure" : "secure"}::${keepAliveTimeout}::${keepAliveMaxTimeout}${headerSize ? `::h${headerSize}` : ""}`;
+  return getOrCreateDirectAgent(key, insecure, keepAliveTimeout, keepAliveMaxTimeout, headerSize);
 }
 
 /**
  * No-keep-alive retry dispatcher (`keepAliveTimeout: 1ms`) — guarantees a fresh
  * TCP/TLS connection after a poisoned pooled socket or a connect timeout.
  */
-export function getFreshRetryDispatcher(insecure = false) {
-  const key = `fresh::${insecure ? "insecure" : "secure"}`;
+export function getFreshRetryDispatcher(insecure = false, maxHeaderSize) {
+  const headerSize = normalizeMaxHeaderSize(maxHeaderSize);
+  const key = `fresh::${insecure ? "insecure" : "secure"}${headerSize ? `::h${headerSize}` : ""}`;
   return getOrCreateDirectAgent(
     key,
     insecure,
     FRESH_RETRY_KEEPALIVE_TIMEOUT_MS,
-    FRESH_RETRY_KEEPALIVE_TIMEOUT_MS
+    FRESH_RETRY_KEEPALIVE_TIMEOUT_MS,
+    headerSize
   );
 }
 
@@ -349,13 +360,16 @@ export function getFreshRetryDispatcher(insecure = false) {
  * Always returns a dispatcher — the direct path needs the custom Agent too,
  * otherwise the default global agent's ClientHello gets RST-ed by DPI.
  */
-async function getDispatcher(proxyUrl, insecure = false, forceFreshSocket = false) {
+async function getDispatcher(proxyUrl, insecure = false, forceFreshSocket = false, maxHeaderSize) {
   const normalized = normalizeProxyUrl(proxyUrl);
+  const headerSize = normalizeMaxHeaderSize(maxHeaderSize);
   if (!normalized) {
-    return forceFreshSocket ? getFreshRetryDispatcher(insecure) : getDirectDispatcher(insecure);
+    return forceFreshSocket
+      ? getFreshRetryDispatcher(insecure, headerSize)
+      : getDirectDispatcher(insecure, headerSize);
   }
 
-  const key = `${normalized}::${insecure ? "insecure" : "secure"}`;
+  const key = `${normalized}::${insecure ? "insecure" : "secure"}${headerSize ? `::h${headerSize}` : ""}`;
   if (!proxyDispatchers.has(key)) {
     // Evict oldest entry if max size reached
     if (proxyDispatchers.size >= MEMORY_CONFIG.proxyDispatchersMaxSize) {
@@ -366,6 +380,7 @@ async function getDispatcher(proxyUrl, insecure = false, forceFreshSocket = fals
       uri: normalized,
       connect: EYEBALLS_CONNECT,
       requestTls: { ecdhCurve: TLS_ECDH_CURVE, ...(insecure ? { rejectUnauthorized: false } : {}) },
+      ...(headerSize ? { maxHeaderSize: headerSize } : {}),
     });
     proxyDispatchers.set(key, dispatcher);
   }
@@ -377,12 +392,28 @@ function isBodyReplaySafe(body) {
   return !(body && typeof body.getReader === "function" && body.locked);
 }
 
+/**
+ * Protocol adapters that declare `proxyProtocols` only handle those schemes;
+ * everything else must use the undici dispatcher, which can still enforce the
+ * same header limit. Adapters without the list keep the all-proxy behavior.
+ */
+function adapterHandlesProxy(directFetch, proxyUrl) {
+  const protocols = directFetch?.proxyProtocols;
+  if (!Array.isArray(protocols) || protocols.length === 0) return true;
+  try {
+    return protocols.includes(new URL(proxyUrl).protocol);
+  } catch {
+    return false;
+  }
+}
+
 async function fetchWithTlsFallback(url, options, proxyUrl, forceFreshSocket = false) {
+  const maxHeaderSize = options.maxHeaderSize;
   try {
     // Protocol adapters may need Node's HTTP/1 transport on the direct path.
     // Keep proxy/no-proxy resolution and strict-proxy enforcement here.
     if (!proxyUrl && options.directFetch) return await options.directFetch(url, options);
-    const dispatcher = await getDispatcher(proxyUrl, false, forceFreshSocket);
+    const dispatcher = await getDispatcher(proxyUrl, false, forceFreshSocket, maxHeaderSize);
     return await rawFetch(url, { ...options, dispatcher });
   } catch (err) {
     const isStrictSsl = options.strictTls === true || process.env.STRICT_SSL === "true" || process.env.STRICT_SSL === "1";
@@ -392,7 +423,7 @@ async function fetchWithTlsFallback(url, options, proxyUrl, forceFreshSocket = f
       }
       // ponytail: in-memory insecure agent fallback for self-signed MITM corporate/antivirus certs
       console.warn(`[ProxyFetch] TLS cert verification failed (${err.cause?.code || err.code}), retrying with insecure TLS: ${url}`);
-      const insecureDispatcher = await getDispatcher(proxyUrl, true, forceFreshSocket);
+      const insecureDispatcher = await getDispatcher(proxyUrl, true, forceFreshSocket, maxHeaderSize);
       return await rawFetch(url, { ...options, dispatcher: insecureDispatcher });
     }
 
@@ -508,7 +539,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   // Only adapters that declare `proxyCapable` opt in — any other adapter
   // ignores the proxy URL and would leave over the direct interface, so they
   // keep the undici path below.
-  if (proxyUrl && options?.directFetch?.proxyCapable === true) {
+  if (proxyUrl && options?.directFetch?.proxyCapable === true && adapterHandlesProxy(options.directFetch, proxyUrl)) {
     try {
       const res = await options.directFetch(url, { ...options, proxyUrl }, proxyUrl);
       // Reported only after the adapter that holds the tunnel returned.

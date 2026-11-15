@@ -65,7 +65,7 @@ function connToRow(c) {
   };
 }
 
-function upsert(db, c) {
+export function upsertConnectionInTransaction(db, c) {
   const r = connToRow(c);
   db.run(
     `INSERT INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt)
@@ -120,7 +120,7 @@ export async function getProviderConnectionById(id) {
 // MAX(priority)+1, which sorts after every existing row, so the order is
 // identical with or without the rewrite. Skipping it there is what makes
 // import O(1) per key instead of O(pool) — see createProviderConnection.
-function reorderInTx(db, providerId) {
+export function reorderConnectionsInTransaction(db, providerId) {
   const list = db.all(`SELECT * FROM providerConnections WHERE provider = ?`, [providerId]).map(rowToConn);
   list.sort((a, b) => {
     const pDiff = (a.priority || 0) - (b.priority || 0);
@@ -225,7 +225,7 @@ export async function createProviderConnection(data) {
       }
       const normalized = resetHealthStateOnActivation(existing, data);
       const merged = { ...existing, ...normalized, updatedAt: now };
-      upsert(db, merged);
+      upsertConnectionInTransaction(db, merged);
       result = merged;
       return;
     }
@@ -261,7 +261,7 @@ export async function createProviderConnection(data) {
     }
     if (data.email !== undefined) conn.email = data.email;
 
-    upsert(db, conn);
+    upsertConnectionInTransaction(db, conn);
     // No reorderInTx here. `conn.priority` is already MAX(priority)+1, so the
     // row sorts last and the resulting order is what reorderInTx would have
     // produced anyway. The rewrite cost ~2N statements per insert — O(pool) —
@@ -283,8 +283,8 @@ export async function updateProviderConnection(id, data) {
     const existing = rowToConn(row);
     const normalized = resetHealthStateOnActivation(existing, data);
     const merged = { ...existing, ...normalized, updatedAt: new Date().toISOString() };
-    upsert(db, merged);
-    if (data.priority !== undefined) reorderInTx(db, existing.provider);
+    upsertConnectionInTransaction(db, merged);
+    if (data.priority !== undefined) reorderConnectionsInTransaction(db, existing.provider);
     result = merged;
   });
   return result;
@@ -327,10 +327,10 @@ export async function setProviderConnectionPriorities(entries) {
     const now = new Date().toISOString();
     connections = prepared.map(({ existing, priority }) => {
       const merged = { ...existing, priority, updatedAt: now };
-      upsert(db, merged);
+      upsertConnectionInTransaction(db, merged);
       return merged;
     });
-    reorderInTx(db, provider);
+    reorderConnectionsInTransaction(db, provider);
   });
 
   if (error) return { ok: false, error };
@@ -345,7 +345,7 @@ export async function deleteProviderConnection(id) {
     const row = db.get(`SELECT provider FROM providerConnections WHERE id = ?`, [id]);
     if (!row) return;
     db.run(`DELETE FROM providerConnections WHERE id = ?`, [id]);
-    reorderInTx(db, row.provider);
+    reorderConnectionsInTransaction(db, row.provider);
     ok = true;
   });
   return ok;
@@ -360,7 +360,7 @@ export async function deleteProviderConnectionsByProvider(providerId) {
 
 export async function reorderProviderConnections(providerId) {
   const db = await getAdapter();
-  db.transaction(() => reorderInTx(db, providerId));
+  db.transaction(() => reorderConnectionsInTransaction(db, providerId));
 }
 
 export async function cleanupProviderConnections() {
@@ -388,7 +388,7 @@ export async function cleanupProviderConnections() {
         cleaned++;
         dirty = true;
       }
-      if (dirty) upsert(db, conn);
+      if (dirty) upsertConnectionInTransaction(db, conn);
     }
   });
   return cleaned;

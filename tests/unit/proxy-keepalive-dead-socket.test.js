@@ -248,3 +248,203 @@ describe("undici keep-alive dead-socket protection & fresh-socket retry", () => 
     expect(streamBody.stream_options).toEqual({ include_usage: true });
   });
 });
+
+describe("proxyFetch response-header limit and adapter proxy-protocol filtering", () => {
+  const savedEnv = { ...process.env };
+
+  beforeEach(() => {
+    // An earlier case replaces the whole proxyFetch module with a single
+    // export. Unmock before resetModules so this describe gets the real
+    // dispatchers and the legacy proxy test keeps its own mock.
+    vi.doUnmock("../../open-sse/utils/proxyFetch.js");
+    vi.doUnmock("undici");
+    vi.resetModules();
+    process.env = { ...savedEnv };
+    delete process.env.HTTPS_PROXY;
+    delete process.env.https_proxy;
+    delete process.env.HTTP_PROXY;
+    delete process.env.http_proxy;
+    delete process.env.ALL_PROXY;
+    delete process.env.all_proxy;
+    delete process.env.NO_PROXY;
+    delete process.env.no_proxy;
+  });
+
+  afterEach(() => {
+    process.env = { ...savedEnv };
+    vi.doUnmock("../../open-sse/utils/proxyFetch.js");
+    vi.doUnmock("undici");
+  });
+
+  it("keeps dispatcher identity when maxHeaderSize is omitted and separates configured agents", async () => {
+    const { getDirectDispatcher, getFreshRetryDispatcher, resetDirectDispatchersForTests } =
+      await import("../../open-sse/utils/proxyFetch.js");
+    resetDirectDispatchersForTests();
+
+    const directDefault = await getDirectDispatcher();
+    const directExplicitDefault = await getDirectDispatcher(false);
+    const directLarge = await getDirectDispatcher(false, 2 * 1024 * 1024);
+    const freshDefault = await getFreshRetryDispatcher();
+    const freshLarge = await getFreshRetryDispatcher(false, 2 * 1024 * 1024);
+
+    expect(directDefault).toBe(directExplicitDefault);
+    expect(directLarge).not.toBe(directDefault);
+    expect(freshLarge).not.toBe(freshDefault);
+  });
+
+  it("fetches a large response header through the direct Node adapter", async () => {
+    const { startHeaderServer } = await import("../fixtures/gemini-web/loopbackServers.js");
+    const { geminiWebHttp1Fetch } = await import(
+      "../../open-sse/executors/gemini-web/transport.js"
+    );
+    const server = await startHeaderServer({ headerBytes: 64 * 1024 });
+    try {
+      const response = await geminiWebHttp1Fetch(server.url, {
+        method: "GET",
+        maxHeaderSize: 2 * 1024 * 1024,
+        strictTls: true,
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-large-header")).toHaveLength(64 * 1024);
+      expect(await response.text()).toBe("ok");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("fetches a large response header through an HTTP CONNECT proxy", async () => {
+    const { startHeaderServer, startHttpConnectProxy } = await import(
+      "../fixtures/gemini-web/loopbackServers.js"
+    );
+    const { geminiWebDirectFetch } = await import(
+      "../../open-sse/executors/gemini-web/transport.js"
+    );
+    const { proxyAwareFetch } = await import("../../open-sse/utils/proxyFetch.js");
+    const target = await startHeaderServer({ headerBytes: 64 * 1024 });
+    const proxy = await startHttpConnectProxy();
+    try {
+      const response = await proxyAwareFetch(
+        target.url,
+        {
+          method: "GET",
+          maxHeaderSize: 2 * 1024 * 1024,
+          strictTls: true,
+          directFetch: geminiWebDirectFetch,
+        },
+        { enabled: true, url: proxy.url, strictProxy: true }
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-large-header")).toHaveLength(64 * 1024);
+      expect(await response.text()).toBe("ok");
+      expect(proxy.connectCount()).toBe(1);
+    } finally {
+      await proxy.close();
+      await target.close();
+    }
+  });
+
+  it.each(["socks5h", "socks5", "socks4", "socks4a", "socks"])(
+    "fetches a large response header through a real %s loopback handshake",
+    async (scheme) => {
+      const { startHeaderServer, startSocks5Proxy, startSocks4Proxy } = await import(
+        "../fixtures/gemini-web/loopbackServers.js"
+      );
+      const { geminiWebDirectFetch } = await import(
+        "../../open-sse/executors/gemini-web/transport.js"
+      );
+      const { proxyAwareFetch } = await import("../../open-sse/utils/proxyFetch.js");
+      const target = await startHeaderServer({ headerBytes: 64 * 1024 });
+      const proxy = scheme.startsWith("socks4")
+        ? await startSocks4Proxy()
+        : await startSocks5Proxy();
+      const targetPort = new URL(target.url).port;
+      try {
+        const response = await proxyAwareFetch(
+          `http://localhost:${targetPort}/`,
+          {
+            method: "GET",
+            maxHeaderSize: 2 * 1024 * 1024,
+            strictTls: true,
+            directFetch: geminiWebDirectFetch,
+          },
+          {
+            enabled: true,
+            url: `${scheme}://${new URL(proxy.url).host}`,
+            strictProxy: true,
+          }
+        );
+        expect(response.status).toBe(200);
+        expect(response.headers.get("x-large-header")).toHaveLength(64 * 1024);
+        expect(await response.text()).toBe("ok");
+        expect(proxy.handshakes()).toBe(1);
+      } finally {
+        await proxy.close();
+        await target.close();
+      }
+    }
+  );
+
+  it("keeps all-proxy behavior for adapters without proxyProtocols and restricts declared schemes", async () => {
+    const { proxyAwareFetch, resetDirectDispatchersForTests } = await import(
+      "../../open-sse/utils/proxyFetch.js"
+    );
+    resetDirectDispatchersForTests();
+
+    const unrestricted = vi.fn(async () => new Response("adapter-response"));
+    unrestricted.proxyCapable = true;
+    const unrestrictedResponse = await proxyAwareFetch(
+      "https://gemini.google.com/app",
+      { method: "GET", directFetch: unrestricted },
+      { enabled: true, url: "socks5://127.0.0.1:1", strictProxy: true }
+    );
+    expect(await unrestrictedResponse.text()).toBe("adapter-response");
+    expect(unrestricted).toHaveBeenCalledTimes(1);
+
+    const restricted = vi.fn(async () => new Response("adapter-response"));
+    restricted.proxyCapable = true;
+    restricted.proxyProtocols = ["socks:", "socks5:", "socks5h:", "socks4:", "socks4a:"];
+    const error = await proxyAwareFetch(
+      "https://gemini.google.com/app",
+      { method: "GET", directFetch: restricted },
+      { enabled: true, url: "http://127.0.0.1:1", strictProxy: true }
+    ).catch((caught) => caught);
+
+    expect(restricted).not.toHaveBeenCalled();
+    expect(error).toBeTruthy();
+    expect(String(error.message)).toMatch(/proxy/i);
+  });
+
+  it("refuses a self-signed certificate with no insecure retry", async () => {
+    const { startSelfSignedTlsServer } = await import(
+      "../fixtures/gemini-web/loopbackServers.js"
+    );
+    const { geminiWebDirectFetch, geminiWebHttp1Fetch } = await import(
+      "../../open-sse/executors/gemini-web/transport.js"
+    );
+    const { proxyAwareFetch } = await import("../../open-sse/utils/proxyFetch.js");
+    const server = await startSelfSignedTlsServer();
+    try {
+      for (const options of [{ strictTls: true }, {}, { strictTls: false }]) {
+        const error = await geminiWebHttp1Fetch(server.url, {
+          method: "GET",
+          maxHeaderSize: 2 * 1024 * 1024,
+          ...options,
+        }).catch((caught) => caught);
+        expect(error).toBeTruthy();
+        expect(server.requestCount()).toBe(0);
+      }
+
+      const sharedError = await proxyAwareFetch(server.url, {
+        method: "GET",
+        maxHeaderSize: 2 * 1024 * 1024,
+        strictTls: true,
+        directFetch: geminiWebDirectFetch,
+      }).catch((caught) => caught);
+      expect(sharedError).toBeTruthy();
+      expect(sharedError).not.toBeInstanceOf(Response);
+      expect(server.requestCount()).toBe(0);
+    } finally {
+      await server.close();
+    }
+  });
+});

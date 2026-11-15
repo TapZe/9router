@@ -1,6 +1,12 @@
 // Public API barrel — all DB functions
 import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
+import {
+  GEMINI_WEB_SESSION_KV_SCOPE,
+  listGeminiWebSessions,
+  migrateLegacyGeminiWebConnections,
+  validateGeminiWebSessionRecords,
+} from "./repos/geminiWebSessionsRepo.js";
 import { keyAccessFromColumns, keyAccessToColumns, validateKeyAccessInput } from "@/shared/utils/keyAccess.js";
 import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
 
@@ -17,6 +23,16 @@ export {
   deleteProviderConnection, deleteProviderConnectionsByProvider,
   reorderProviderConnections, cleanupProviderConnections,
 } from "./repos/connectionsRepo.js";
+
+// Gemini Web shared cookie sessions
+export {
+  listGeminiWebSessions, getGeminiWebSession, saveGeminiWebSession,
+  commitGeminiWebCookieUpdate, deleteGeminiWebSession, detachGeminiWebAccount,
+  migrateLegacyGeminiWebConnections, commitGeminiWebAccountSet,
+  recordGeminiWebModels, normalizeGeminiWebAuthUser,
+  GEMINI_WEB_SESSION_CONFLICT, GEMINI_WEB_SESSION_NOT_FOUND,
+  GEMINI_WEB_SESSION_IN_USE, GEMINI_WEB_COOKIE_INVALID,
+} from "./repos/geminiWebSessionsRepo.js";
 
 // Provider nodes
 export {
@@ -86,6 +102,7 @@ export async function exportDb() {
     customModels: [],
     mitmAlias: {},
     pricing: {},
+    geminiWebSessions: await listGeminiWebSessions(),
   };
 
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'modelAliases'`)) out.modelAliases[r.key] = parseJson(r.value);
@@ -100,6 +117,17 @@ export async function importDb(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("Invalid database payload");
   }
+  // Validate the session set and every Gemini reference before the transaction
+  // clears anything: a malformed backup must leave the current data untouched.
+  const geminiWebSessions = validateGeminiWebSessionRecords(payload.geminiWebSessions);
+  const connectionRows = Array.isArray(payload.providerConnections) ? payload.providerConnections : [];
+  const sessionIds = new Set(geminiWebSessions.map((session) => session.id));
+  for (const c of connectionRows) {
+    const reference = c?.providerSpecificData?.geminiWebSessionId;
+    if (c?.provider === "gemini-web" && typeof reference === "string" && reference && !sessionIds.has(reference)) {
+      throw new Error(`providerConnections ${c.id}: unknown Gemini Web session reference`);
+    }
+  }
   const db = await getAdapter();
 
   db.transaction(() => {
@@ -110,15 +138,19 @@ export async function importDb(payload) {
     db.run(`DELETE FROM proxyPools`);
     db.run(`DELETE FROM apiKeys`);
     db.run(`DELETE FROM combos`);
-    db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing')`);
+    db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing', ?)`, [
+      GEMINI_WEB_SESSION_KV_SCOPE,
+    ]);
 
     // Settings
     if (payload.settings) {
       db.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(payload.settings)]);
     }
 
-    for (const c of payload.providerConnections || []) {
-      const { id, provider, authType, name, email, priority, isActive, createdAt, updatedAt, ...rest } = c;
+    for (const c of connectionRows) {
+      // Derived catalogs are not portable: they belong to a live revision and
+      // must be repopulated by a real discovery call.
+      const { id, provider, authType, name, email, priority, isActive, createdAt, updatedAt, geminiWebModelCatalog, ...rest } = c;
       db.run(
         `INSERT OR REPLACE INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [id, provider, authType || "oauth", name || null, email || null, priority || null, isActive === false ? 0 : 1, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
@@ -172,7 +204,16 @@ export async function importDb(payload) {
     for (const [provider, models] of Object.entries(payload.pricing || {})) {
       db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('pricing', ?, ?)`, [provider, stringifyJson(models || {})]);
     }
+    for (const session of geminiWebSessions) {
+      db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES(?, ?, ?)`, [
+        GEMINI_WEB_SESSION_KV_SCOPE,
+        session.id,
+        stringifyJson(session),
+      ]);
+    }
   });
+
+  await migrateLegacyGeminiWebConnections();
 
   return await exportDb();
 }
