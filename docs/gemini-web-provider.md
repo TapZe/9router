@@ -1,174 +1,81 @@
-# Gemini Web App provider (`gemini-web`)
+# Gemini Web provider
 
-New 9router provider that talks to [gemini.google.com](https://gemini.google.com/app) the same way the BardChatUi web app does. It is **not** `gemini` (AI Studio API key), **not** `gemini-cli` (Cloud Code OAuth), and **not** `antigravity` / `ag`.
+`gemini-web`, also available as `gweb`, uses an authenticated Gemini website session for native chat and image requests. It is separate from the `gemini`, `gemini-cli`, and `antigravity` providers. It does not require a Google API key.
 
-Auth matches existing webCookie providers (`grok-web`, `perplexity-web`): paste the browser `Cookie` header from gemini.google.com. No Google API key.
+## Terms
 
-Evidence: REA Playwright capture `ev_e79cc02f…` (anonymous ping) and logged-in Brave CDP `ev_71823d10…` (2026-10-14). Logged-in `ping` on Argon → HTTP 200 StreamGenerate → `Pong! What's on your mind?`
-
-## Cookie sessions and account names
-
-The current implementation uses native Gemini Web requests for chat and images. The protocol captures below are historical observations, not a static model catalog.
-
-Manage Gemini Web accounts through the cookie-session panel on the chat or image provider page. A cookie session stores one full Cookie header. Each linked account selects a Google slot such as `/u/0/` or `/u/2/`. The root `/app` selection is distinct from an explicit slot zero.
-
-During verification, 9router reads the active account's email from the authenticated bootstrap page. New accounts use the Google account-menu display name only when the menu email matches that active email. Otherwise they use the active email. This does not make an extra profile request. If Google omits the identity, the existing session-and-slot label fallback remains.
-
-The cookie-session name is a separate label for the shared browser login. Adding slots or replacing cookies preserves existing account names, including names you edited. You can rename an individual account in its account settings.
-
-Deleting an account removes its routable slot, not the saved cookie session. An empty session offers **Reconnect accounts**. Enter its Google slot numbers and choose a proxy setting. 9router verifies the slots with the stored cookie header, so no cookie paste is needed. **Delete** removes an empty saved session when you no longer want its cookies retained.
-
-Dashboard model tests give Gemini Web chat 330 seconds for bootstrap and generation. Image tests allow another 120 seconds for download. These deadlines come from the native request limits. Other providers keep their existing 15-second test deadline.
-
-Identity fields follow Google's private web format and can change. The selected-account email field is also used by [pi-web-access](https://github.com/nicobailon/pi-web-access/blob/main/gemini-web.ts). A missing name does not make a working cookie session invalid.
-
-Cookie headers grant access to the Google session. Paste them only into the local session form. Session responses do not return cookie values. Function tools, video, music, Canvas, and Deep Research are not supported.
-
-### Saving cookies on a server
-
-Use HTTPS when opening the dashboard over a network. The cookie-paste dialog sends the header to your 9router server; copying it in the browser alone does not verify or save it.
-
-Gemini session changes require a same-origin dashboard request. The guard recognizes the request URL, the incoming Host with its request scheme, and configured `BASE_URL` or `NEXT_PUBLIC_BASE_URL` origins. Browser `Sec-Fetch-Site: same-origin` metadata also supports reverse proxies that rewrite the internal host or terminate TLS. Forwarded host headers alone do not grant access.
-
-An older build may report `Gemini Web mutation origin is not allowed` when its configured URL is still localhost. Set the server's `BASE_URL` to the exact dashboard origin, including its scheme and port, and restart as a workaround. The repaired guard accepts genuine same-origin dashboard requests without requiring that workaround. Cross-site requests and cookie-authenticated requests without Origin or Referer remain rejected.
-
-For older browsers without Fetch Metadata, a proxy that rewrites Host to an internal address still needs `BASE_URL` set to the public dashboard origin. Keep both configured base URLs aligned with this deployment.
-
-## Observed routing
-
-| Piece | Observation |
+| Term | Meaning |
 |---|---|
-| App | `GET https://gemini.google.com/app` |
-| Catalog RPC | `POST https://gemini.google.com/_/BardChatUi/data/batchexecute?rpcids=otAQ7b&source-path=%2Fapp&bl={cfb2h}&f.sid={FdrFJe}&hl=en-US&_reqid={n}&rt=c` |
-| Chat RPC | `POST https://gemini.google.com{eptZe}data/assistant.lamda.BardFrontendService/StreamGenerate?bl={cfb2h}&f.sid={FdrFJe}&hl=en&pageId=none&_reqid={n}&rt=c` |
-| Body | `application/x-www-form-urlencoded` fields `f.req` and, when logged in, `at={SNlM0e}` |
-| Catalog rpcid | `otAQ7b` with `f.req = [[["otAQ7b","[1]",null,"generic"]]]` |
-| Stream rpcid (JS) | `RxAFq` = `/BardFrontendService.StreamGenerate` = `/assistant.lamda.BardFrontendService/StreamGenerate` |
-| Alternate logged-in path (JS, **not used** in the working capture) | `POST https://geminiweb-pa.clients6.google.com/v1/conversations:streamGenerate?alt=sse` with `X-Goog-Api-Key` (`d2zJAe`), `Authorization: SAPISIDHASH …`, `credentials: include` |
-| WIZ bootstrap | HTML `AF_initDataCallback`: `cfb2h` = `bl`, `FdrFJe` = `f.sid`, `eptZe` = `/_/BardChatUi/` |
-| Response | `)]}'` then length-prefixed `wrb.fr` JSON chunks |
+| Cookie session | One stored Google cookie jar shared by its linked accounts. |
+| Account slot | A selected Google account within that jar, such as `/u/0/` or `/u/2/`. The default `/app` account is distinct from explicit slot zero. |
+| Account catalog | Models verified for one account slot. Names and availability come from Google, not a fixed global Gemini Web list. |
+| Generation dispatch | The request that can consume a model turn. Opening an Argon Bind channel is preparation, not generation dispatch. |
 
-## Model picker (`otAQ7b`)
+## Add and reconnect accounts
 
-Anonymous catalog `inner[24][1]` (and default `inner[0] = 6`, default hex `cf41b0e0dd7d53e5`):
+Open Gemini Web on the dashboard's chat or image provider page. Use its cookie-session panel rather than the generic API-key dialog.
 
-| Picker label | Subtitle | Mode int (`n1`) | 9router model id |
-|---|---|---|---|
-| Flash-Lite | Fastest answers / 3.5 Flash-Lite | 6 | `gemini-web-flash-lite` |
-| Flash | All-around help / 3.6 Flash | 1 | `gemini-web-flash` |
-| Thinking | Solves complex problems / 3.6 Thinking | 5 | `gemini-web-thinking` |
-| Pro | Advanced reasoning / 3.1 Pro | 3 | `gemini-web-pro` |
-| Argon | Complex tasks / 4 Argon | 8 | `gemini-web-argon` |
+For cookie paste:
 
-Mode int is written to StreamGenerate inner slot **79** (observed `6` on the Flash-Lite ping). Hex ids for Flash/Pro/Thinking/Argon were **not** present on the anonymous picker; do not invent them.
+1. Sign in at [gemini.google.com](https://gemini.google.com/app).
+2. Copy the complete Cookie header from an authenticated request in the browser's Network panel.
+3. Paste the header into a new session, choose the Google account slots to save, and select their proxy setting.
+4. Save. 9router verifies each requested slot before storing the session and its account rows.
 
-## StreamGenerate payload
+For browser capture:
 
-`f.req = JSON.stringify([null, JSON.stringify(inner)])` where `inner` is a 99-slot array.
+1. Open the browser flow from the session panel and sign in to every Google account you need in the shared profile.
+2. Capture the shared cookie jar once. A signed-in Gemini tab can be selected for reference.
+3. Check the account slots to save. This field chooses the saved accounts; the selected tab only identifies the capture source.
+4. Use the explicit save action to verify and commit those slots. Status polling does not save a Gemini capture. Cancel discards an uncommitted capture.
 
-Anonymous `ping` (`ev_e79cc02f`, Flash-Lite mode 6) vs logged-in follow-up (`ev_71823d`, Argon mode 8 on `/u/5/app/e90e0045d4244658`):
+Verification names new account rows from the active account's email, using the matching account-menu display name when available. If Google supplies no identity, 9router uses the session-and-slot label. Replacing cookies or adding slots preserves names you edited. The cookie-session name is a separate label and can be renamed without contacting Google.
 
-| Slot | Anonymous | Logged-in Argon follow-up |
-|---|---|---|
-| `[0]` | `["ping", 0, null…]` | same |
-| `[1]` | `["en-US"]` | `["en"]` |
-| `[3]` | `!sb…` ~1548 chars | `!WV…` 1559 chars (JS/WAA; **not** in HTML) |
-| `[4]` | 32-char hex | 32-char hex |
-| `[6]` | `[0]` | `[1]` |
-| `[17]` | `[[0]]` | `[[1]]` |
-| `[41]` | `[2]` | `[1]` |
-| `[59]` | UUID | UUID |
-| `[67]` | unset | `0` |
-| `[68]` | `1` | `2` |
-| `[71]` | unset | `["c_e90e0045d4244658", null, …, ""]` conversation id |
-| `[79]` | `6` | `8` (Argon) |
-| `[80]` | unset | `1` |
-| `[91]` | `0` | `1` |
+Deleting an account removes its routable slot, not its saved cookie session. Use **Reconnect accounts** on an empty session to verify and reattach slots with the stored cookies. Delete an empty session when its cookie jar is no longer needed.
 
-Executor v1 sends a **new chat** (no `[71]` replay). `[3]` is omitted (`null`) because the generator is not in HTML. Extra form field `at=` is `SNlM0e` from `/app` HTML when present.
+## Models and request controls
 
-Reply text path in `wrb.fr` inner JSON: `[4][0][1][0]`. Conversation ids: `[1] = ["c_…", "r_…"]`. Model label in later chunks: `inner[42] = "4 Argon"`, `inner[58] = 8`.
+Use the ids returned by `/v1/models` or the selected account's model list. The provider prefix is `gemini-web/` or `gweb/`; `gmw` is not an alias. Old fixed names such as `gemini-web-flash-lite` are not a current model catalog.
 
-## Auth / login
+The account catalog selects the exact model. A missing or ambiguous model returns an error instead of silently substituting another model. Policy-code models such as Code & analysis use Argon ProcessSession Bind; hex-id models use StreamGenerate. The image endpoint uses `gemini-image`. Bind responses use decoded completion flags rather than a text prefix or idle timer. Progress labels and answer text have separate protocol fields.
 
-Logged-in capture cookies are hashed only (26 fingerprints). Values were not copied into chat. `SNlM0e` (`at=`) **is** in `/app` HTML (`AF_initDataCallback`). `eptZe` = `/u/5/_/BardChatUi/` for account 5.
+Chat supports OpenAI-shaped JSON and SSE responses. Message history is flattened into the native prompt. PNG, JPEG, and WebP image input must use validated data URLs. Generated images are downloaded from allowed Google media hosts and validated before returning their bytes.
 
-9router login follows **grok-web cookie paste**:
+Google's thought summaries appear as `reasoning_content`. Supported effort levels are `low`, `medium`, and `high`. Disabling thinking or requesting a token budget is rejected. Explicit client controls take precedence over provider defaults and are checked before translation can normalize them.
 
-1. User opens gemini.google.com (signed in).
-2. DevTools → Network → any `BardChatUi` request → copy `Cookie`.
-3. Paste into 9router `gemini-web` connection (`authType: cookie`).
+Caller-defined function tools and forced tool calls are not supported. Neither are video, music, Canvas, or Deep Research. Use a provider with native function calling for a coding client that requires tools.
 
-Anonymous COMPASS/NID still worked for Flash-Lite without `at=`. Logged-in StreamGenerate **did** send `at=`. geminiweb-pa / SAPISIDHASH was **not** used on the working send.
+## Session updates and errors
 
-## 9router wiring (same as grok-web)
+Existing-session updates require the positive-integer `expectedRevision` returned by the latest session read. This includes renaming, adding slots, and replacing cookies. A stale revision returns 409 without overwriting a newer cookie jar. Creating a new session does not require a revision.
 
-1. `open-sse/providers/registry/gemini-web.js` — `category: "webCookie"`, `authType: "cookie"`.
-2. `open-sse/executors/gemini-web.js` — `GeminiWebExecutor` extends `BaseExecutor`.
-3. Register in `open-sse/executors/index.js` and `open-sse/providers/registry/index.js`.
-4. Cookie probe in `src/app/api/providers/validate/route.js` and `src/app/api/providers/[id]/test/testUtils.js` via `otAQ7b` (401/403 = bad cookie).
-5. Placeholder in `AddApiKeyModal.js`.
-6. Tests: `SPECIALIZED` + `web-cookie-validation` + alias/providers baselines.
+Adding slots to an existing session requires an explicit proxy setting. A selected pool must exist and be usable before verification starts; an unknown pool is not a request for direct access.
 
-Do **not** reuse `gemini` / `gemini-cli` / `antigravity` executors or translators. Format is `gemini-web` (custom executor, OpenAI in/out like grok-web).
+Invalid cookies, slots, revisions, and unsupported controls return 400. Disallowed mutation origins return 403. Unknown sessions return 404. Revision or membership conflicts return 409. An inconclusive probe is unverified, not proof of a bad cookie, and uses 503. Client cancellation uses 499.
 
-## Executor algorithm
+A generation that may already have been consumed is not replayed on another account or combo member after an ambiguous failure. Failures before generation dispatch remain eligible for normal fallback. This policy is distinct from account cooldowns and caller cancellation.
 
-1. Flatten OpenAI messages like grok-web (`parseOpenAIMessages`).
-2. `GET /app` with Cookie (no POST Content-Type) → extract `cfb2h`, `FdrFJe`, `SNlM0e`, `eptZe`. Fail if bl/sid missing.
-3. `POST {eptZe}…/StreamGenerate` with `f.req` + `at=` when `SNlM0e` exists. `inner[79] = mode`. Fresh `[4]` hex and `[59]` UUID. `[3]` left null.
-4. Parse `wrb.fr` by buffering across TCP chunks (declared length ≠ payload.length by 2 on this capture). Fail HTTP 200 with no reply text / rpcerror.
-5. Emit OpenAI SSE / JSON.
+## Transport and security
 
-Multi-turn: flatten history into one prompt. Do not replay `c_` / `r_` until a dedicated new-chat vs follow-up matrix is captured.
+Cookie headers grant access to the Google session. Save them only on a 9router server you trust. Use HTTPS when accessing that server over a network. Session responses omit cookie values and authentication tokens.
 
-## Harness proof (2026-10-14, stored `gemini-web` cookie)
+Gemini mutations require a same-origin dashboard request. The guard considers the request URL, incoming Host and scheme, and configured `BASE_URL` or `NEXT_PUBLIC_BASE_URL`. Browser-controlled `Sec-Fetch-Site: same-origin` supports TLS-terminating proxies. Forwarded host headers alone do not grant access. Keep configured base URLs aligned with the public dashboard origin for older browsers without Fetch Metadata.
 
-Needed for a coding harness: OpenAI `tools` → `tool_calls`, plus thinking/`reasoning_content`. Measured, not assumed.
+The native transport always verifies TLS certificates. Direct and SOCKS requests use the native HTTP/1 adapter; HTTP CONNECT and relay requests use the shared transport. Gemini's explicit response-header limit must be honored on each path. A relay runtime can impose its own upstream limits independently.
 
-| Claim | Result | Evidence |
-|---|---|---|
-| Text chat | **PASS** | Flash-Lite `ping` → `Pong! How can I help you today?` (2.7s). Structured 3-line prompt → `1. pong / 2. 2026 / 3. Earth` (9.8s). |
-| Cookie + `at=` | **PASS** | 19 cookie pairs including `__Secure-1PSID`. StreamGenerate body had `at=`. Path `/_/BardChatUi/…/StreamGenerate`. |
-| Model id → upstream model | **FAIL** | `gemini-web-thinking` (slot 79=5), `gemini-web-pro` (3), `gemini-web-argon` (8) all returned wrb.fr `inner[42]="3.5 Flash-Lite"` and `inner[58]=6`. Logged-in extras (`[6]=[1]`, `[17]=[[1]`, `[41]=[1]`, `[68]=2`, `[80]=1`, `[91]=1`) still Flash-Lite. |
-| Catalog hex as `[39]` | **FAIL** | Flash `56fdd199312815e2`, Pro `e6fa609c3fa255c0`, Argon `95a4c0abcba24364` in `[39]` → HTTP 400 (~140ms). Hex in `[4]` accepted but still Flash-Lite. |
-| Thinking / `reasoning_content` | **FAIL** | Catalog `otAQ7b` inner `[24]` is now per-model **Thinking level** Low=1 / Medium=4 / High=2 (not a 5th picker model). Executor `isThinking` is unused. No `reasoning_content` in OpenAI output. Thinking-prompt reply was assistant **text** (and a `python?code_reference` fence), still labeled Flash-Lite. |
-| OpenAI `tools` / `tool_calls` | **FAIL** | `get_time` was on the 9router body. `parseOpenAIMessages` dropped it. StreamGenerate `[0][0]` was only the user string. Reply was Tokyo wall-clock text, `finish_reason=stop`, no `tool_calls`. grok-web also has no tool_calls path. |
-| Google hosted “Sources” | catalog only | `otAQ7b` inner `[19]`: Search, Gmail, Drive, Chat, Files. Not client function-calling. Slot for enabling them on StreamGenerate **not captured**. |
-| UI StreamGenerate selector | **unproven** | REA connect `ev_75ed559c…` typed into the Gemini textbox + Enter; no `StreamGenerate` URL in that capture (Quill Enter did not send). Prior working send `ev_71823d10` was an Argon **follow-up** with `[71]=c_…` and `[79]=8`. |
+Input media is restricted to validated data URLs. Upload URLs, generated-image URLs, and redirects are checked before credentials or downloads are sent. Cookie rotation uses revision checks, and successful attempts that return no new cookie do not trigger a rotation on every generation.
 
-Logged-in catalog models (`otAQ7b` inner `[15]`, hex at `[0]`, mode int at `[17]`):
+## Implementation and verification
 
-| Label | Hex | Mode int | 9router id today |
-|---|---|---|---|
-| 3.5 Flash-Lite | `8c46e95b1a07cecc` | 6 | `gemini-web-flash-lite` (this is what every new-chat actually ran) |
-| 3.8 Flash | `56fdd199312815e2` | 1 | `gemini-web-flash` |
-| 3.1 Pro | `e6fa609c3fa255c0` | 3 | `gemini-web-pro` |
-| 4 Argon | `95a4c0abcba24364` | 8 | `gemini-web-argon` |
+- `src/lib/geminiWebAccounts.js` owns session/account operations and public projections.
+- `src/lib/db/repos/geminiWebSessionsRepo.js` owns transactional cookie jars, membership, and revisions.
+- `src/app/api/providers/gemini-web/sessions/` exposes session CRUD. Browser capture uses `src/app/api/providers/web-login/route.js`.
+- `src/lib/mutationOrigin.js` supplies the shared dashboard mutation-origin guard. Denials use `mutation_origin_denied` with status 403.
+- `open-sse/executors/gemini-web.js` owns native execution. Its sibling directory contains bootstrap, catalog, protocol, Bind, media, session, and transport code.
+- `probeGeminiWebConnection` performs authenticated bootstrap and GetUserStatus checks. The provider test routes call it through `testUtils.js`; the generic validate route is not the Gemini verification path.
 
-There is **no** catalog row named Thinking. Default catalog `[0]=1` (Flash).
+Dashboard model tests allow 330 seconds for Gemini chat bootstrap and generation, with another 120 seconds for image download. Other providers retain their existing test deadline.
 
-**Harness verdict:** do not point OMP / a tool-using agent at `gmw/*` yet. Text-only chat through Flash-Lite works. Tools, thinking tokens, and model routing do not.
+Run the unit suites from `tests/` with Vitest. Database suites must use their disposable fixtures, and transport suites use loopback servers and synthetic credentials. A live Google test is separate evidence and requires explicit authorization; an offline passing suite does not establish live upstream compatibility.
 
-To make those real, capture (do not invent):
-
-1. A **new-chat** UI send after picking Flash / Pro / Argon — occupied StreamGenerate slots vs Flash-Lite template (especially wherever the catalog hex lands; `[39]` is wrong).
-2. Same model with Thinking level High vs Low — which slot carries `1/4/2`, and which wrb.fr cells are thoughts vs answer.
-3. A send with a Google Source (Search or code) on — whether that is `[30]` / `[61]` or something else.
-4. Only after (1)–(3): whether BardChatUi can take **client** function declarations at all. If not, a harness needs `gemini` / `gemini-cli` / `antigravity`, not this cookie provider.
-
-## Unknowns (do not fake)
-
-- Generator for slot `[3]` (`!sb…` / `!WV…`). WAA `Create` returns a JS blob, not this string.
-- Which StreamGenerate slot selects catalog hex / thinking level on a **new** chat. `[79]` is ignored; `[39]` 400s.
-- `x-goog-ext-*-jspb` header **values** (names observed on the logged-in send).
-- Client `tools` → `tool_calls` mapping (not present on grok-web either; Gemini Web catalog only lists Google Sources).
-- Whether omitting `[3]` 400s on a **new** logged-in chat that also selects a non-default model.
-
-## Verification
-
-- Unit: cookie prefix strip + `otAQ7b` 401/403 vs 200.
-- Golden: `gemini-web` in `SPECIALIZED` (custom executor).
-- Alias baseline: `gmw` → `gemini-web`.
-- Live text: stored cookie, `gemini-web-flash-lite` `ping` and a 3-line prompt — HTTP 200 with reply text.
-- Live harness gaps: model ids collapse to Flash-Lite; `tools` dropped; no `reasoning_content`.
+Google's private web protocol can change. Historical October 2026 captures in this document's Git history describe the older implementation, not current aliases, model ids, supported controls, or a live compatibility guarantee.

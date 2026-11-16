@@ -18,6 +18,15 @@
 - **Factory**: add Muse Spark 1.3 and Nemotron 3.5 Super from Droid 1.2.0.
 
 ## Fixes
+- **Routing**: keep cross-provider fallback available when only an upstream member aborts. Report caller cancellation during a refreshed-token retry as 499 instead of cooling a healthy account over the old 401.
+- **Transport**: handle a Gemini Web SOCKS abort without an unhandled request error, accept a null fetch init, and honor an explicit header limit through relay pools.
+- **Database import**: reject malformed backup collections before replacing saved accounts or settings. Preserve missing and null collections in legacy backups.
+- **Gemini Web**: decode Argon Bind answer, progress, and completion fields from captured protocol bytes. Wait for a complete answer without truncating it or mistaking a thinking label for text, and only block replay after the inference request is dispatched.
+- **Gemini Web sessions**: require revisions for existing-session writes, reject unusable proxy pools before verification, rename labels without contacting Google, and return client-error statuses for invalid input or disallowed origins.
+- **Gemini Web capture**: keep status polling read-only and require an explicit save of the displayed account slots. Include cookie accounts in the dashboard's manual-auth batch tests and show inconclusive results as unverified instead of failed.
+- **Web login**: reject cross-site browser starts, cancellations, and legacy auto-saves through the same dashboard-origin guard used by Gemini sessions. Same-origin login flows keep their existing save behavior.
+- **Images**: label binary responses with their actual declared MIME type and avoid repeating successful cookie-rotation attempts that return no new cookie.
+- **Streaming**: terminate translated OpenAI Chat Completions streams with exactly one `[DONE]` sentinel, including Claude streams and unterminated final frames.
 - **Gemini Web**: send Code & analysis (Argon) turns through ProcessSession Bind instead of StreamGenerate, which finished with no answer.
 - **Gemini Web**: start Argon ProcessSession without waiting on Waa/Create.
 - **Gemini Web**: return an Argon ProcessSession answer when it arrives instead of waiting for the Bind GET to close.
