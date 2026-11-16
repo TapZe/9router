@@ -1,6 +1,8 @@
 # Unreleased
 
 ## Features
+- **Gemini Web**: list Code & analysis (Argon) from GetUserStatus's picker overlay when Google sends no hex model id, and route it with the live `argon` header Google's web client uses.
+
 - **Gemini Web**: name new account slots from their authenticated Google profile during cookie verification. Use the matching account-menu display name or the active account email, keep cookie-session labels separate, and preserve existing account names.
 - **Factory**: report Droid 1.10.0 as the client version. Reasoning efforts, default efforts, context and output limits, image support, and request fields now come from one table generated from the Droid 1.10.0 binary.
 - **Factory**: add Claude Fable 5.2, Gemini 4 Hydrogen, and Gemini 4 Carbon from Droid 1.10.0. Fable 5.2 has Fable 5.1's limits, efforts low to max with default high, and no EU provider. Hydrogen has a 1M context with 65K output, defaults to high effort, and works in every region. Carbon matches Argon: global only, default medium. All three take images.

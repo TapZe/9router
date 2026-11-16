@@ -42,6 +42,16 @@ export function modelEntry(modelId, category, display, number) {
   return entry;
 }
 
+/** One GetUserStatus status[24] picker group. Empty `code` is a labeled hex model. */
+export function policyGroup(code, category, display, number) {
+  const head = new Array(13);
+  head[1] = number;
+  head[3] = code;
+  head[4] = category;
+  head[12] = display;
+  return [head];
+}
+
 /**
  * GetUserStatus RPC fixture: status array at index 2 with account status,
  * entries, tiers and capabilities. `statusCode` may be null to omit the check.
@@ -51,12 +61,14 @@ export function modelStatusFixture({
   tiers = null,
   capabilities = null,
   entries = [],
+  policy = undefined,
 } = {}) {
-  const status = new Array(18);
+  const status = new Array(policy === undefined ? 18 : 25);
   status[14] = statusCode;
   status[15] = entries;
   status[16] = tiers;
   status[17] = capabilities;
+  if (policy !== undefined) status[24] = policy;
   return [[["wrb.fr", "otAQ7b", JSON.stringify(status), null, null, null, "generic"]]];
 }
 

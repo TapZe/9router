@@ -124,6 +124,47 @@ function firstEntryString(entry, indexes) {
   return "";
 }
 
+function policyCodeModels(status, capacity, capacityField, seenModelIds, publicNames, skip) {
+  const policy = entryField(status, 24);
+  if (!Array.isArray(policy)) return [];
+  const groups = entryField(policy, 1);
+  if (!Array.isArray(groups)) return [];
+
+  const added = [];
+  for (const group of groups) {
+    if (!Array.isArray(group) || !Array.isArray(group[0])) continue;
+    const head = group[0];
+    const code = firstEntryString(head, [3]);
+    if (!code) continue;
+    if (seenModelIds.has(code)) {
+      skip("duplicate model ID", head);
+      continue;
+    }
+    const modelNumber = integerValue(entryField(head, 1));
+    if (modelNumber === null || modelNumber <= 0) {
+      skip("invalid model number", head);
+      continue;
+    }
+    const category = firstEntryString(head, [4, 5]);
+    const display = firstEntryString(head, [12, 5, 4]);
+    let name = publicModelName(code, category, display);
+    if (publicNames.has(name)) name = `${name}-${code.slice(0, 8).toLowerCase()}`;
+    added.push({
+      id: name,
+      name: display,
+      modelId: code,
+      modelNumber,
+      capacity,
+      capacityField,
+      policy: true,
+    });
+    seenModelIds.add(code);
+    publicNames.add(name);
+  }
+  return added;
+}
+
+
 function decodeUserStatus(raw) {
   if (typeof raw === "string") {
     let decoded;
@@ -231,6 +272,9 @@ export function parseGeminiModels(raw) {
       seenModelIds.add(modelId);
       publicNames.add(name);
     }
+    models.push(
+      ...policyCodeModels(status, capacity, capacityField, seenModelIds, publicNames, skip)
+    );
   }
 
   if (models.length === 0) {

@@ -37,6 +37,7 @@ import {
   modelDiscoveryBody,
   modelEntry,
   modelStatusFixture,
+  policyGroup,
   payloadFrame,
   streamFromText,
   usageFrame,
@@ -711,6 +712,78 @@ describe("Gemini Web model discovery", () => {
     }
   });
 });
+
+describe("Gemini Web policy-code models", () => {
+  it("promotes GetUserStatus policy overlay entries that have no hex routing id", () => {
+    const { models, skipped } = parseGeminiModels(
+      modelDiscoveryBody({
+        tiers: [8],
+        entries: [modelEntry("account-flash-id", "Fast", "Gemini 3.8 Flash", 1)],
+        policy: [
+          "carbon_multi_ultra_pro_policy",
+          [
+            policyGroup("", "4 Hydrogen", "Everyday help", 1),
+            policyGroup("argon", "Argon", "Code & analysis", 8),
+          ],
+        ],
+      })
+    );
+
+    expect(skipped).toEqual([]);
+    expect(models).toEqual([
+      {
+        id: "gemini-3.8-flash",
+        name: "Gemini 3.8 Flash",
+        modelId: "account-flash-id",
+        modelNumber: 1,
+        capacity: 2,
+        capacityField: 12,
+      },
+      {
+        id: "gemini-code-analysis",
+        name: "Code & analysis",
+        modelId: "argon",
+        modelNumber: 8,
+        capacity: 2,
+        capacityField: 12,
+        policy: true,
+      },
+    ]);
+    expect(resolveGeminiModel("argon", models).id).toBe("gemini-code-analysis");
+    expect(resolveGeminiModel("code & analysis", models).modelId).toBe("argon");
+  });
+
+  it("sends the live Argon model header for a policy-code model", async () => {
+    const { transport, calls } = createTransport(() => new Response("ok", { status: 200 }));
+    await generateGeminiWeb({
+      session: BASE_SESSION,
+      authUser: "",
+      model: {
+        id: "gemini-code-analysis",
+        name: "Code & analysis",
+        modelId: "argon",
+        modelNumber: 8,
+        capacity: 2,
+        capacityField: 12,
+        policy: true,
+      },
+      prompt: "Hello",
+      thinkingLevel: "low",
+      transport,
+    });
+
+    const modelHeader = JSON.parse(header(calls[0], GEMINI_WEB_MODEL_HEADER));
+    expect(modelHeader[4]).toBe("argon");
+    expect(modelHeader[6]).toBe("en");
+    expect(modelHeader[8]).toEqual([4, 33, 22, 5, 6, 8, 16, 19, 20, 38]);
+    expect(modelHeader[15]).toBe(8);
+    expect(modelHeader[16]).toBe(1);
+    expect(modelHeader[17]).toBe(SYNTHETIC_GENERATION_ID);
+    expect(modelHeader[18]).toEqual([SYNTHETIC_BUILD]);
+    expect(modelHeader[25]).toBe("argon");
+  });
+});
+
 
 describe("Gemini Web generation wire contract", () => {
   function generateTransport() {

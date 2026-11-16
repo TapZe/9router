@@ -427,7 +427,27 @@ export function buildGenerateInner({ prompt, files = [], modelNumber, language, 
   return inner;
 }
 
-export function buildGeminiModelHeaders(model, requestId, generationId, thinkingLevel) {
+export function buildGeminiModelHeaders(model, requestId, generationId, thinkingLevel, extras = {}) {
+  if (model.policy === true) {
+    const language = extras.language || GEMINI_WEB_DEFAULT_LANGUAGE;
+    const header = new Array(26);
+    header[0] = 1;
+    header[4] = model.modelId;
+    header[6] = language;
+    header[8] = [4, 33, 22, 5, 6, 8, 16, 19, 20, 38];
+    header[15] = model.modelNumber;
+    header[16] = thinkingLevel;
+    header[17] = generationId;
+    if (extras.buildLabel) header[18] = [extras.buildLabel];
+    header[25] = model.modelId;
+    return {
+      [GEMINI_WEB_MODEL_HEADER]: JSON.stringify(header),
+      "x-goog-ext-525005358-jspb": JSON.stringify([requestId, 1]),
+      "x-goog-ext-73010989-jspb": "[0]",
+      "x-goog-ext-73010990-jspb": "[0,0,0]",
+    };
+  }
+
   const offset = model.capacityField - 12;
   const header = new Array(17 + offset);
   header[0] = 1;
@@ -531,7 +551,10 @@ export async function generateGeminiWeb({
   const headers = {
     ...GEMINI_WEB_DEFAULT_HEADERS,
     cookie: session.cookieHeader,
-    ...buildGeminiModelHeaders(model, requestId, generationId, level),
+    ...buildGeminiModelHeaders(model, requestId, generationId, level, {
+      language,
+      buildLabel: session.buildLabel,
+    }),
   };
   const form = new URLSearchParams({
     at: session.at,
