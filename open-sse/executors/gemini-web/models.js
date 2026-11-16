@@ -9,6 +9,7 @@ import {
   GEMINI_WEB_ENDPOINTS,
   GEMINI_WEB_LIMITS,
   GEMINI_WEB_MODEL_HEADER,
+  GEMINI_WEB_PROCESS_SESSION_TEXT_MODEL_IDS,
   GEMINI_WEB_USER_STATUS_RPC,
   geminiAccountUrl,
   geminiSourcePath,
@@ -23,6 +24,38 @@ import { fetchGeminiWeb as defaultTransport, readGeminiWebBodyText } from "./tra
 
 const GEMINI_AUTO_MODEL_ID = "gemini-auto";
 const SLUG_SEPARATOR = /[^a-z0-9.]+/g;
+
+/** Native generation lanes: one ProcessSession Bind turn, or one StreamGenerate POST. */
+export const GEMINI_WEB_TRANSPORT = Object.freeze({
+  PROCESS_SESSION: "processSession",
+  STREAM_GENERATE: "streamGenerate",
+});
+
+/** What the caller is generating. Image tasks use their own prompt and model choice. */
+export const GEMINI_WEB_TASK = Object.freeze({ CHAT: "chat", IMAGE: "image" });
+
+/**
+ * The one place that decides how a resolved model is generated.
+ *
+ * Policy-code models always use ProcessSession. The verified text-only Pro
+ * selector also does, because StreamGenerate leaves that turn pending without
+ * ever reporting completion. Every other lane keeps StreamGenerate: uploaded
+ * attachments and the image task rely on the file and generated-media payload
+ * slots that the ProcessSession encoders do not carry yet.
+ */
+export function selectGeminiTransport({
+  model,
+  files = [],
+  task = GEMINI_WEB_TASK.CHAT,
+} = {}) {
+  if (model?.policy === true) return GEMINI_WEB_TRANSPORT.PROCESS_SESSION;
+  const textOnly =
+    task === GEMINI_WEB_TASK.CHAT && Array.isArray(files) && files.length === 0;
+  if (textOnly && GEMINI_WEB_PROCESS_SESSION_TEXT_MODEL_IDS.includes(model?.modelId)) {
+    return GEMINI_WEB_TRANSPORT.PROCESS_SESSION;
+  }
+  return GEMINI_WEB_TRANSPORT.STREAM_GENERATE;
+}
 
 
 /**

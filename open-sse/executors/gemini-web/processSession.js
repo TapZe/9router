@@ -23,8 +23,6 @@ const XSSI_GUARD = ")]}'\n";
 // told so at handshake time or the service parses them as JSON.
 const BIND_CONTENT_TYPE = "application/x-protobuf";
 
-export const GEMINI_WEB_PROCESS_SESSION_PATH = "/v1/processSession";
-
 function concatBytes(parts) {
   const total = parts.reduce((n, part) => n + part.length, 0);
   const out = new Uint8Array(total);

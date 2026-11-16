@@ -34,7 +34,7 @@ import {
   downloadGeminiWebImage,
   uploadGeminiWebImage,
 } from "./gemini-web/media.js";
-import { resolveGeminiModel } from "./gemini-web/models.js";
+import { GEMINI_WEB_TASK, resolveGeminiModel } from "./gemini-web/models.js";
 import { generateGeminiWeb } from "./gemini-web/protocol.js";
 import {
   publicGeminiWebModels,
@@ -576,7 +576,7 @@ export class GeminiWebExecutor extends BaseExecutor {
           model: routing,
           prompt: buildImagePrompt(prompt, size),
           files: [],
-          imageTask: true,
+          task: GEMINI_WEB_TASK.IMAGE,
           thinkingLevel: "low",
           signal,
           proxyOptions,
