@@ -485,7 +485,11 @@ export async function handleComboChat({
 
     try {
       const result = await handleSingleModel(body, modelStr);
-      if (cancelled() || result?.status === 499) return cancelled() ? cancelResponse() : result;
+      // Only the caller's own signal may cancel the combo. A member's 499 (or a
+      // thrown AbortError below) can come from a member-internal abort or a
+      // nested combo while this caller is still connected; treating it as a
+      // caller cancellation skipped every remaining member.
+      if (cancelled()) return cancelResponse();
       if (isNonReplayableResponse(result)) return result;
       
       // Success (2xx). A 2xx is necessary but NOT sufficient: Gemini aborts (e.g.
@@ -626,9 +630,7 @@ export async function handleComboChat({
       if (!lastStatus) lastStatus = result.status;
       log.warn("COMBO", `Model ${modelStr} failed, trying next`, { status: result.status });
     } catch (error) {
-      if (cancelled() || error?.name === "AbortError" || error?.status === 499) {
-        return cancelResponse();
-      }
+      if (cancelled()) return cancelResponse();
       if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
         clearStickyComboSession(comboName, sessionId);
       }

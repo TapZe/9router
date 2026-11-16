@@ -1,6 +1,6 @@
 import { detectFormat, getTargetFormat, resolveTransport } from "../services/provider.js";
 import { translateRequest } from "../translator/index.js";
-import { applyThinking, extractThinking, stripThinkingSuffix } from "../translator/concerns/thinkingUnified.js";
+import { applyThinking, extractThinking, parseSuffix, stripThinkingSuffix } from "../translator/concerns/thinkingUnified.js";
 import { FORMATS } from "../translator/formats.js";
 import { normalizeClaudePassthrough, anchorClaudeCache } from "../translator/formats/claude.js";
 import { createStreamController } from "../utils/streamHandler.js";
@@ -47,6 +47,12 @@ function preserveNonReplayable(source, output) {
     output.nonReplayable = true;
   }
   return output;
+}
+
+// Client-side thinking intent, before any provider default is injected. The
+// suffix wins over the body everywhere downstream, so either counts as intent.
+function hasExplicitThinkingIntent(body, model) {
+  return Boolean(parseSuffix(model)?.override || extractThinking(body));
 }
 /**
  * Core chat handler - shared between SSE and Worker
@@ -127,25 +133,35 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (useTransport && credentials) credentials.runtimeTransport = useTransport;
   const stripList = getModelStrip(alias, model);
 
-  if (providerThinking?.mode && providerThinking.mode !== "auto") {
-    const mode = providerThinking.mode;
-    const isGeminiWeb = provider === "gemini-web" || provider === "gweb";
-    if (isGeminiWeb && mode === "on") {
-      if (!body.reasoning_effort) body = { ...body, reasoning_effort: "low" };
-    } else if (mode === "on" && !body.thinking) {
-      console.log("Injecting provider-level thinking config override: on");
-      body = { ...body, thinking: { type: "enabled", budget_tokens: 10000 } };
-    } else if (mode === "off" && !body.thinking) {
-      body = { ...body, thinking: { type: "disabled" } };
-    } else if (!body.reasoning_effort) {
-      body = { ...body, reasoning_effort: mode };
-    }
-  }
+  const isGeminiWeb = provider === "gemini-web" || provider === "gweb";
 
-  if (provider === "gemini-web" || provider === "gweb") {
+  // Gemini Web cannot encode disabled/budget thinking. Validate the client's own
+  // control before any provider default is injected: extractThinking() reads
+  // reasoning_effort first, so an injected default would outrank and hide the
+  // client intent the guard exists to reject.
+  if (isGeminiWeb) {
     const unsupported = checkGeminiWebUnsupportedControls(body, geminiWebOriginalModel);
     if (unsupported) {
       return createErrorResult(HTTP_STATUS.BAD_REQUEST, unsupported.message);
+    }
+  }
+
+  if (providerThinking?.mode && providerThinking.mode !== "auto") {
+    const mode = providerThinking.mode;
+    // A pinned/on default may only stand in for an absent client intent. With an
+    // explicit intent it would override the caller's choice instead of defaulting.
+    const applyProviderDefault = !isGeminiWeb || !hasExplicitThinkingIntent(body, geminiWebOriginalModel);
+    if (applyProviderDefault) {
+      if (isGeminiWeb && mode === "on") {
+        if (!body.reasoning_effort) body = { ...body, reasoning_effort: "low" };
+      } else if (mode === "on" && !body.thinking) {
+        console.log("Injecting provider-level thinking config override: on");
+        body = { ...body, thinking: { type: "enabled", budget_tokens: 10000 } };
+      } else if (mode === "off" && !body.thinking) {
+        body = { ...body, thinking: { type: "disabled" } };
+      } else if (!body.reasoning_effort) {
+        body = { ...body, reasoning_effort: mode };
+      }
     }
   }
 
@@ -373,6 +389,30 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     log, provider, model, reqTag
   });
 
+  // The caller is gone when either its request signal or this connection's
+  // controller fired. A member/executor-local AbortError alone is not proof.
+  const callerAborted = () => Boolean(clientSignal?.aborted || streamController.signal?.aborted);
+  const abortedError = () => Object.assign(new Error("Request aborted"), { name: "AbortError" });
+  const abortedResult = (error = abortedError(), response = null) => {
+    trackPendingRequest(model, provider, connectionId, false, true);
+    appendRequestLog({ model, provider, connectionId, status: "FAILED 499" }).catch(() => { });
+    saveRequestDetail(buildRequestDetail({
+      provider, model, connectionId,
+      latency: { ttft: 0, total: Date.now() - requestStartTime },
+      tokens: { prompt_tokens: 0, completion_tokens: 0 },
+      request: extractRequestConfig(body, stream),
+      providerRequest: translatedBody || null,
+      response: { error: error.message || String(error), status: 499, thinking: null },
+      pxpipe: pxpipeSummary,
+      status: "error"
+    })).catch(() => { });
+    if (response?.body) {
+      try { response.body.cancel().catch(() => { }); } catch { /* already locked */ }
+    }
+    streamController.handleError(error);
+    return createErrorResult(499, "Request aborted");
+  };
+
   const proxyOptions = {
     connectionProxyEnabled: credentials?.providerSpecificData?.connectionProxyEnabled === true,
     connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
@@ -441,23 +481,20 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
+    if (error.name === "AbortError") return abortedResult(error);
     trackPendingRequest(model, provider, connectionId, false, true);
-    appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
+    appendRequestLog({ model, provider, connectionId, status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: translatedBody || null,
-      response: { error: error.message || String(error), status: error.name === "AbortError" ? 499 : 502, thinking: null },
+      response: { error: error.message || String(error), status: 502, thinking: null },
       pxpipe: pxpipeSummary,
       status: "error"
     })).catch(() => { });
 
-    if (error.name === "AbortError") {
-      streamController.handleError(error);
-      return createErrorResult(499, "Request aborted");
-    }
     const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
     if (log?.errorLine) {
       log.errorLine(reqTag, "✗", `ERROR 502 · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    ${errMsg}${error.stack ? `\n    ${error.stack}` : ""}`);
@@ -487,6 +524,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
           try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
         }
         try {
+          // A caller that is already gone must not trigger a second inference
+          // send; the refreshed token is still persisted above.
+          if (callerAborted()) return abortedResult();
           const retryResult = await executor.execute({
             model,
             body: translatedBody,
@@ -501,12 +541,25 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
             proxyOptions,
             providerOverrides,
           });
+          if (callerAborted()) return abortedResult(abortedError(), retryResult.response);
           if (retryResult.response.ok) {
             providerResponse = retryResult.response;
             providerUrl = retryResult.url;
             providerResponseFormat = retryResult.responseFormat || targetFormat;
+          } else if (retryResult.response.status === 499) {
+            // The retry itself reported cancellation (e.g. an executor that
+            // refuses an aborted send). Never fall back to the pre-refresh 401.
+            providerResponse = retryResult.response;
+            providerUrl = retryResult.url;
+            providerResponseFormat = retryResult.responseFormat || targetFormat;
           }
-        } catch { log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`); }
+        } catch {
+          // Aborting the retry is the caller's cancellation, not a failed
+          // refresh: report 499 so the account loop does not cool/rotate a
+          // healthy credential over a stale 401.
+          if (callerAborted()) return abortedResult();
+          log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`);
+        }
       } else {
         log?.warn?.("TOKEN", `${provider.toUpperCase()} | refresh failed`);
       }

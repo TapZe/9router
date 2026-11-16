@@ -96,6 +96,10 @@ export function createSSEStream(options = {}) {
   let openAIResponsesTerminalSeen = false;
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
+  // Translate mode consumes upstream sentinels (they are framing, not events), so
+  // streamDoneSent cannot tell whether the client already received one. This flag
+  // tracks the sentinel written downstream by the translation sink.
+  let clientDoneSent = false;
   let finalized = false;
   let completionFlushTimer = null;
 
@@ -132,6 +136,17 @@ export function createSSEStream(options = {}) {
         thinking: accumulatedThinking
       }, finalUsage, ttftAt);
     }
+  };
+
+  // OpenAI Chat Completions clients close on the OpenAI SSE sentinel, not on
+  // EOF. A translated Claude/Responses upstream ends at message_stop or
+  // response.completed, so the sink that writes client bytes has to add the
+  // sentinel itself, after every native terminal frame and usage trailer.
+  const emitClientDone = (controller) => {
+    if (clientDoneSent) return;
+    clientDoneSent = true;
+    reqLogger?.appendConvertedChunk?.(SSE_DONE);
+    controller.enqueue(sharedEncoder.encode(SSE_DONE));
   };
 
   // Emit the deferred response.completed now — at [DONE], or when the watchdog
@@ -580,6 +595,10 @@ export function createSSEStream(options = {}) {
           openAIResponsesDoneSent = true;
           streamDoneSent = true;
         }
+
+        // Only OpenAI Chat Completions clients read the [DONE] sentinel. Claude,
+        // Responses, Gemini and Ollama clients terminate in their own formats.
+        if (sourceFormat === FORMATS.OPENAI) emitClientDone(controller);
 
         finalizeStream();
       } catch (error) {
