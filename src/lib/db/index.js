@@ -32,6 +32,7 @@ export {
   recordGeminiWebModels, normalizeGeminiWebAuthUser,
   GEMINI_WEB_SESSION_CONFLICT, GEMINI_WEB_SESSION_NOT_FOUND,
   GEMINI_WEB_SESSION_IN_USE, GEMINI_WEB_COOKIE_INVALID,
+  GEMINI_WEB_SESSION_INVALID,
 } from "./repos/geminiWebSessionsRepo.js";
 
 // Provider nodes
@@ -113,14 +114,51 @@ export async function exportDb() {
   return out;
 }
 
+// A backup collection must have the shape the exporter writes. Missing and
+// null properties are the older-backup shape the importer always normalized to
+// an empty collection with `payload.field || []`; any other non-collection is
+// refused before the replacement transaction opens, because the
+// wipe-then-insert body would otherwise commit an empty or broken restore.
+function readBackupArray(payload, key) {
+  const value = payload[key];
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error(`${key} must be an array`);
+  // Every exporter row is an object; a null/primitive entry would otherwise
+  // fail deep inside the wipe transaction with a destructuring TypeError.
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`${key} entries must be objects`);
+    }
+  }
+  return value;
+}
+
+function readBackupObject(payload, key) {
+  const value = payload[key];
+  if (value === undefined || value === null) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${key} must be an object`);
+  }
+  return value;
+}
+
 export async function importDb(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("Invalid database payload");
   }
-  // Validate the session set and every Gemini reference before the transaction
-  // clears anything: a malformed backup must leave the current data untouched.
+  // Validate the session set, every collection shape and every Gemini
+  // reference before the transaction clears anything: a malformed backup must
+  // leave the current data untouched.
   const geminiWebSessions = validateGeminiWebSessionRecords(payload.geminiWebSessions);
-  const connectionRows = Array.isArray(payload.providerConnections) ? payload.providerConnections : [];
+  const connectionRows = readBackupArray(payload, "providerConnections");
+  const providerNodes = readBackupArray(payload, "providerNodes");
+  const proxyPools = readBackupArray(payload, "proxyPools");
+  const apiKeys = readBackupArray(payload, "apiKeys");
+  const combos = readBackupArray(payload, "combos");
+  const customModels = readBackupArray(payload, "customModels");
+  const modelAliases = readBackupObject(payload, "modelAliases");
+  const mitmAlias = readBackupObject(payload, "mitmAlias");
+  const pricing = readBackupObject(payload, "pricing");
   const sessionIds = new Set(geminiWebSessions.map((session) => session.id));
   for (const c of connectionRows) {
     const reference = c?.providerSpecificData?.geminiWebSessionId;
@@ -156,21 +194,21 @@ export async function importDb(payload) {
         [id, provider, authType || "oauth", name || null, email || null, priority || null, isActive === false ? 0 : 1, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
       );
     }
-    for (const n of payload.providerNodes || []) {
+    for (const n of providerNodes) {
       const { id, type, name, createdAt, updatedAt, ...rest } = n;
       db.run(
         `INSERT OR REPLACE INTO providerNodes(id, type, name, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
         [id, type || null, name || null, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
       );
     }
-    for (const p of payload.proxyPools || []) {
+    for (const p of proxyPools) {
       const { id, isActive, testStatus, createdAt, updatedAt, ...rest } = p;
       db.run(
         `INSERT OR REPLACE INTO proxyPools(id, isActive, testStatus, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
         [id, isActive === false ? 0 : 1, testStatus || "unknown", stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
       );
     }
-    for (const k of payload.apiKeys || []) {
+    for (const k of apiKeys) {
       // Per-key access: a backup without `access` (older version) restores
       // unrestricted, exactly as before; a malformed `access` is refused.
       let access = KEY_ACCESS_UNRESTRICTED;
@@ -185,23 +223,23 @@ export async function importDb(payload) {
         [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString(), cols.accessRestricted, cols.accessAllow]
       );
     }
-    for (const c of payload.combos || []) {
+    for (const c of combos) {
       db.run(
         `INSERT OR REPLACE INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
         [c.id, c.name, c.kind || null, stringifyJson(c.models || []), c.createdAt || new Date().toISOString(), c.updatedAt || new Date().toISOString()]
       );
     }
-    for (const [a, m] of Object.entries(payload.modelAliases || {})) {
+    for (const [a, m] of Object.entries(modelAliases)) {
       db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('modelAliases', ?, ?)`, [a, stringifyJson(m)]);
     }
-    for (const m of payload.customModels || []) {
+    for (const m of customModels) {
       const k = `${m.providerAlias}|${m.id}|${m.type || "llm"}`;
       db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, stringifyJson(m)]);
     }
-    for (const [tool, mappings] of Object.entries(payload.mitmAlias || {})) {
+    for (const [tool, mappings] of Object.entries(mitmAlias)) {
       db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('mitmAlias', ?, ?)`, [tool, stringifyJson(mappings || {})]);
     }
-    for (const [provider, models] of Object.entries(payload.pricing || {})) {
+    for (const [provider, models] of Object.entries(pricing)) {
       db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('pricing', ?, ?)`, [provider, stringifyJson(models || {})]);
     }
     for (const session of geminiWebSessions) {

@@ -139,6 +139,27 @@ describe("Gemini web login capture", () => {
     await expect(startWebLogin(PROVIDER, "third")).rejects.toMatchObject({ status: 409 });
   });
 
+  it("requires a positive integer expectedRevision only when updating a cookie session", async () => {
+    for (const expectedRevision of [undefined, null, 0, -1, 1.5, "3", Number.MAX_SAFE_INTEGER + 1]) {
+      await expect(
+        startWebLogin(PROVIDER, "revision", {
+          geminiWebSessionId: "session-alpha",
+          expectedRevision,
+          authUsers: ["2"],
+        })
+      ).rejects.toMatchObject({ status: 400, code: "WEB_LOGIN_REVISION_INVALID" });
+    }
+    expect(getWebLoginStatus(PROVIDER)).toBeNull();
+
+    const context = makeContext({ pages: [] });
+    installRuntime(context);
+    await startWebLogin(PROVIDER, "revision-create", { name: "New session", authUsers: ["0"] });
+    await waitFor(() => getWebLoginStatus(PROVIDER)?.context);
+    expect(getWebLoginStatus(PROVIDER).expectedRevision).toBeNull();
+    cancelWebLogin(PROVIDER);
+    await waitFor(() => TERMINAL.has(getWebLoginStatus(PROVIDER)?.status));
+  });
+
   it("serializes the full .google.com jar, not only the required tokens", async () => {
     const context = makeContext({ pages: [makePage("https://gemini.google.com/app")] });
     await startAndWait(context);
@@ -181,7 +202,57 @@ describe("Gemini web login capture", () => {
     expect(getWebLoginStatus(PROVIDER).credential).toBeUndefined();
   });
 
-  it("requires pageId when several signed-in Gemini tabs are open", async () => {
+  it("captures the shared jar once without requiring a tab when several are open", async () => {
+    const pages = [
+      makePage("https://gemini.google.com/u/0/app"),
+      makePage("https://gemini.google.com/u/2/app"),
+    ];
+    const context = makeContext({ pages });
+    await startAndWait(context, { authUsers: ["0", "2"] });
+
+    const running = publicStatus();
+    expect(running.pages.map((entry) => entry.slot)).toEqual(["0", "2"]);
+    expect(running.pages.every((entry) => Object.keys(entry).sort().join(",") === "id,slot")).toBe(true);
+
+    const status = await captureWebLogin(PROVIDER);
+    expect(status.status).toBe("captured");
+    expect(status.capturedAuthUser).toBeNull();
+    expect(status.authUsers).toEqual(["0", "2"]);
+    expect(getWebLoginStatus(PROVIDER).credential).toBe(FULL_HEADER);
+
+    // Page ids stay stable across polls and never carry the page URL.
+    const after = publicStatus();
+    expect(after.pages).toEqual(running.pages);
+    expect(JSON.stringify(after)).not.toContain("gemini.google.com");
+  });
+
+  it("records the selected tab without making it authoritative over explicit slots", async () => {
+    const pages = [
+      makePage("https://gemini.google.com/u/0/app"),
+      makePage("https://gemini.google.com/u/2/app"),
+    ];
+    const context = makeContext({ pages });
+    await startAndWait(context, { authUsers: ["0", "2"] });
+
+    const target = publicStatus().pages.find((entry) => entry.slot === "0");
+    const captured = await captureWebLogin(PROVIDER, { pageId: target.id });
+    expect(captured.capturedAuthUser).toBe("0");
+    expect(captured.authUsers).toEqual(["0", "2"]);
+
+    let received = null;
+    const saved = await beginWebLoginSave(PROVIDER, {
+      commit: async (payload) => {
+        received = payload;
+        return { connectionIds: ["conn-0", "conn-2"], sessionId: "session-alpha" };
+      },
+    });
+
+    expect(saved.status).toBe("success");
+    expect(received.authUser).toBe("0");
+    expect(received.authUsers).toEqual(["0", "2"]);
+  });
+
+  it("requires and accepts the authoritative slot set at explicit save time", async () => {
     const pages = [
       makePage("https://gemini.google.com/u/0/app"),
       makePage("https://gemini.google.com/u/2/app"),
@@ -189,22 +260,25 @@ describe("Gemini web login capture", () => {
     const context = makeContext({ pages });
     await startAndWait(context);
 
-    const running = publicStatus();
-    expect(running.pages.map((entry) => entry.slot)).toEqual(["0", "2"]);
-    expect(running.pages.every((entry) => Object.keys(entry).sort().join(",") === "id,slot")).toBe(true);
+    await captureWebLogin(PROVIDER);
+    expect(publicStatus().authUsers).toEqual([]);
 
-    await expect(captureWebLogin(PROVIDER)).rejects.toMatchObject({
-      code: "WEB_LOGIN_PAGE_REQUIRED",
+    await expect(
+      beginWebLoginSave(PROVIDER, { commit: async () => ({}) })
+    ).rejects.toMatchObject({ status: 400, code: "WEB_LOGIN_SLOT_REQUIRED" });
+    expect(getWebLoginStatus(PROVIDER).status).toBe("captured");
+
+    let received = null;
+    const saved = await beginWebLoginSave(PROVIDER, {
+      authUsers: ["2"],
+      commit: async (payload) => {
+        received = payload;
+        return { connectionIds: ["conn-2"], sessionId: "session-alpha" };
+      },
     });
 
-    const target = running.pages.find((entry) => entry.slot === "2");
-    const status = await captureWebLogin(PROVIDER, { pageId: target.id });
-    expect(status.capturedAuthUser).toBe("2");
-
-    // Page ids stay stable across polls and never carry the page URL.
-    const after = publicStatus();
-    expect(after.pages).toEqual(running.pages);
-    expect(JSON.stringify(after)).not.toContain("gemini.google.com");
+    expect(saved.status).toBe("success");
+    expect(received.authUsers).toEqual(["2"]);
   });
 
   it("ignores non-Gemini tabs and rejects capture when none are eligible", async () => {
@@ -242,6 +316,7 @@ describe("Gemini web login capture", () => {
 
     const status = publicStatus();
     expect(Object.keys(status).sort()).toEqual([
+      "authUsers",
       "capturedAuthUser",
       "connectionIds",
       "error",
@@ -252,6 +327,7 @@ describe("Gemini web login capture", () => {
       "status",
     ]);
     expect(status.capturedAuthUser).toBe("2");
+    expect(status.authUsers).toEqual(["2"]);
 
     const serialized = JSON.stringify(status);
     expect(serialized).not.toContain("psid");

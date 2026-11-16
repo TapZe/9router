@@ -251,9 +251,17 @@ export default function ProvidersPage() {
       const data = await res.json();
       setTestResults(data);
       if (data.summary) {
-        const { passed, failed, total } = data.summary;
-        if (failed === 0) notify.success(`All ${total} tests passed`);
-        else notify.warning(`${passed}/${total} passed, ${failed} failed`);
+        const { passed = 0, failed = 0, unverified = 0, total = 0 } = data.summary;
+        if (unverified > 0) {
+          const failedSuffix = failed > 0 ? `, ${failed} failed` : "";
+          notify.warning(
+            `${passed}/${total} passed, ${unverified} unverified${failedSuffix}`,
+          );
+        } else if (failed === 0) {
+          notify.success(`All ${total} tests passed`);
+        } else {
+          notify.warning(`${passed}/${total} passed, ${failed} failed`);
+        }
       }
     } catch (error) {
       setTestResults({ error: "Test request failed" });
@@ -985,45 +993,59 @@ function ProviderTestResultsView({ results }) {
               {summary.failed} failed
             </span>
           )}
+          {summary.unverified > 0 && (
+            <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-600 font-medium dark:text-amber-400">
+              {summary.unverified} unverified
+            </span>
+          )}
           <span className="text-text-muted sm:ml-auto">
             {summary.total} tested
           </span>
         </div>
       )}
-      {items.map((r, i) => (
-        <div
-          key={r.connectionId || i}
-          className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg bg-black/[0.03] px-3 py-2 text-xs dark:bg-white/[0.03] sm:flex-nowrap"
-        >
-          <span
-            className={`material-symbols-outlined text-[16px] ${r.valid ? "text-emerald-500" : "text-red-500"}`}
+      {items.map((r, i) => {
+        const unverified = r.verification === "unknown";
+        const valid = r.valid && !unverified;
+        const statusIcon = valid ? "check_circle" : unverified ? "warning" : "error";
+        const iconClass = valid
+          ? "text-emerald-500"
+          : unverified
+            ? "text-amber-500"
+            : "text-red-500";
+        const badgeClass = valid
+          ? "bg-emerald-500/15 text-emerald-400"
+          : unverified
+            ? "bg-amber-500/15 text-amber-400"
+            : "bg-red-500/15 text-red-400";
+        return (
+          <div
+            key={r.connectionId || i}
+            className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg bg-black/[0.03] px-3 py-2 text-xs dark:bg-white/[0.03] sm:flex-nowrap"
           >
-            {r.valid ? "check_circle" : "error"}
-          </span>
-          <div className="min-w-0 flex-[1_1_160px]">
-            <span className="block truncate font-medium sm:inline">
-              {r.connectionName}
+            <span className={`material-symbols-outlined text-[16px] ${iconClass}`}>
+              {statusIcon}
             </span>
-            <span className="block truncate text-text-muted sm:ml-1.5 sm:inline">
-              ({r.provider})
+            <div className="min-w-0 flex-[1_1_160px]">
+              <span className="block truncate font-medium sm:inline">
+                {r.connectionName}
+              </span>
+              <span className="block truncate text-text-muted sm:ml-1.5 sm:inline">
+                ({r.provider})
+              </span>
+            </div>
+            {r.latencyMs !== undefined && (
+              <span className="shrink-0 text-text-muted font-mono tabular-nums">
+                {r.latencyMs}ms
+              </span>
+            )}
+            <span
+              className={`shrink-0 text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${badgeClass}`}
+            >
+              {valid ? "OK" : unverified ? "UNVERIFIED" : r.diagnosis?.type || "ERROR"}
             </span>
           </div>
-          {r.latencyMs !== undefined && (
-            <span className="shrink-0 text-text-muted font-mono tabular-nums">
-              {r.latencyMs}ms
-            </span>
-          )}
-          <span
-            className={`shrink-0 text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${
-              r.valid
-                ? "bg-emerald-500/15 text-emerald-400"
-                : "bg-red-500/15 text-red-400"
-            }`}
-          >
-            {r.valid ? "OK" : r.diagnosis?.type || "ERROR"}
-          </span>
-        </div>
-      ))}
+        );
+      })}
       {items.length === 0 && (
         <div className="text-center py-4 text-text-muted text-sm">
           No active connections found for this group.
@@ -1041,6 +1063,7 @@ ProviderTestResultsView.propTypes = {
       total: PropTypes.number,
       passed: PropTypes.number,
       failed: PropTypes.number,
+      unverified: PropTypes.number,
     }),
     error: PropTypes.string,
   }).isRequired,

@@ -191,13 +191,44 @@ function normalizeAuthUsers(authUsers) {
   return out;
 }
 
+/**
+ * An existing cookie session is updated against the revision the caller saw.
+ * Missing, malformed or unsafe input is a rejected request, never a silent
+ * create-like write with no concurrency guard.
+ */
+function normalizeExpectedRevision(value) {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw webLoginError(
+      "Saving into an existing cookie session requires its positive expectedRevision",
+      "WEB_LOGIN_REVISION_INVALID",
+      400
+    );
+  }
+  return value;
+}
+
+/**
+ * The slots Save will verify and link. Explicit slots chosen by the caller win;
+ * otherwise a captured tab supplies the lone slot. A tab is never allowed to
+ * override a slot set the caller confirmed.
+ */
+function slotsToSave(session) {
+  if (Array.isArray(session.authUsers) && session.authUsers.length > 0) return [...session.authUsers];
+  return session.capturedAuthUser === null || session.capturedAuthUser === undefined
+    ? []
+    : [session.capturedAuthUser];
+}
+
 function sanitizeError(value) {
   const text = String(value || "").replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
   return text.length > 300 ? `${text.slice(0, 300)}…` : text;
 }
 
-function saveErrorMessage(slot, error) {
-  return `${slotLabel(slot)}: ${sanitizeError(error?.message) || "verification failed"}`;
+function saveErrorMessage(slots, error) {
+  const label = Array.isArray(slots) && slots.length > 0
+    ? slots.map(slotLabel).join(", ")
+    : slotLabel(null);
+  return `${label}: ${sanitizeError(error?.message) || "verification failed"}`;
 }
 
 function pageId(page) {
@@ -281,6 +312,7 @@ function publicView(session) {
     sessionId: session.savedSessionId || session.geminiWebSessionId || null,
     connectionIds: Array.isArray(session.savedConnectionIds) ? [...session.savedConnectionIds] : [],
     capturedAuthUser: session.capturedAuthUser ?? null,
+    authUsers: slotsToSave(session),
     pages: publicPages(session),
   };
 }
@@ -375,7 +407,11 @@ export async function startWebLogin(providerId, profileName = "default", options
     session.deadlineAt = session.startedAt + LOGIN_TIMEOUT_MS;
     session.name = options?.name ? String(options.name) : null;
     session.geminiWebSessionId = options?.geminiWebSessionId ? String(options.geminiWebSessionId) : null;
-    session.expectedRevision = Number.isInteger(options?.expectedRevision) ? options.expectedRevision : null;
+    // Creation has no prior revision; updating an existing jar must carry the
+    // exact revision the caller saw or the save would race another writer.
+    session.expectedRevision = session.geminiWebSessionId
+      ? normalizeExpectedRevision(options?.expectedRevision)
+      : null;
     const requestedSlots = options?.authUsers === undefined ? [] : normalizeAuthUsers(options.authUsers);
     session.authUsers = requestedSlots.length > 0 ? requestedSlots : null;
   }
@@ -429,7 +465,7 @@ export async function captureWebLogin(providerId, { authUsers, pageId: requested
     );
   }
 
-  let target;
+  let target = null;
   const wantsPage = requestedPageId !== undefined && requestedPageId !== null && String(requestedPageId).trim() !== "";
   if (wantsPage) {
     target = pages.find((entry) => entry.id === String(requestedPageId));
@@ -438,18 +474,14 @@ export async function captureWebLogin(providerId, { authUsers, pageId: requested
     }
   } else if (pages.length === 1) {
     target = pages[0];
-  } else {
-    throw webLoginError(
-      "Several Gemini tabs are open — choose which account slot to capture",
-      "WEB_LOGIN_PAGE_REQUIRED",
-      409
-    );
   }
+  // One shared Google jar serves every tab, so a tab selection is only
+  // informative. Multiple tabs without a selection still capture the jar once.
 
-  if (target.conflict) {
+  if (target?.conflict) {
     throw webLoginError("That tab names two different Google account slots", "WEB_LOGIN_SLOT_CONFLICT", 409);
   }
-  if (target.invalid) {
+  if (target?.invalid) {
     throw webLoginError("That tab names an invalid Google account slot", "WEB_LOGIN_SLOT_INVALID", 400);
   }
 
@@ -477,7 +509,7 @@ export async function captureWebLogin(providerId, { authUsers, pageId: requested
 
   if (normalizedAuthUsers && normalizedAuthUsers.length > 0) session.authUsers = normalizedAuthUsers;
   session.credential = credential;
-  session.capturedAuthUser = target.slot;
+  session.capturedAuthUser = target ? target.slot : null;
   session.capturedAt = nowMs();
   session.captureDeadlineAt = session.capturedAt + CAPTURE_HOLD_TIMEOUT_MS;
   session.error = null;
@@ -492,8 +524,16 @@ export async function captureWebLogin(providerId, { authUsers, pageId: requested
  * The interactive five-minute window is paused while `captured` or `saving`;
  * a failed verification clears the captured credential and re-arms a fresh
  * window so the operator can recapture without reopening the browser.
+ *
+ * `authUsers` is the slot set confirmed at Save time. It replaces the slots
+ * recorded before capture so the commit can never save a different set than
+ * the one the operator acknowledged.
+ *
+ * `signal` is the Save request's lifetime. A disconnected caller stops its own
+ * verification; a caller that merely joins an in-flight save (promise dedupe)
+ * must not be able to abort work it did not start.
  */
-export function beginWebLoginSave(providerId, { commit } = {}) {
+export function beginWebLoginSave(providerId, { commit, authUsers, signal } = {}) {
   const session = sessions.get(providerId);
   if (!session) return Promise.reject(webLoginError("No login session for this provider", "WEB_LOGIN_NOT_FOUND", 404));
   if (session.savePromise) return session.savePromise;
@@ -501,16 +541,46 @@ export function beginWebLoginSave(providerId, { commit } = {}) {
     return Promise.reject(webLoginError("A save handler is required", "WEB_LOGIN_SAVE_INVALID", 500));
   }
   if (session.status !== "captured") return Promise.resolve(publicView(session));
+  if (signal?.aborted) {
+    return Promise.reject(webLoginError("The save was abandoned before it started", "WEB_LOGIN_CANCELLED", 499));
+  }
+
+  let slots;
+  try {
+    if (authUsers !== undefined) {
+      const normalized = normalizeAuthUsers(authUsers);
+      if (normalized.length === 0) {
+        throw webLoginError("Choose at least one account slot before saving", "WEB_LOGIN_SLOT_REQUIRED", 400);
+      }
+      session.authUsers = normalized;
+    }
+    slots = slotsToSave(session);
+    if (slots.length === 0) {
+      throw webLoginError("Choose at least one account slot before saving", "WEB_LOGIN_SLOT_REQUIRED", 400);
+    }
+  } catch (error) {
+    return Promise.reject(error);
+  }
 
   session.status = "saving";
+  session.callerCancelled = false;
   session.saveAbort = new AbortController();
-  session.savePromise = runSave(session, commit);
+  session.savePromise = runSave(session, commit, slots, signal);
   return session.savePromise;
 }
 
-async function runSave(session, commit) {
+async function runSave(session, commit, slots, callerSignal) {
   const slot = session.capturedAuthUser;
   const credential = session.credential;
+  const controller = session.saveAbort;
+  // A client that goes away owns only its own request. This flag is consulted
+  // after commit failure, never after commit success, so a write that already
+  // landed stays committed.
+  const abandon = () => {
+    session.callerCancelled = true;
+    try { controller?.abort(); } catch { /* already aborted */ }
+  };
+  if (callerSignal) callerSignal.addEventListener("abort", abandon, { once: true });
   try {
     // Yield before committing so a cancel arriving in the same tick wins.
     await Promise.resolve();
@@ -523,7 +593,7 @@ async function runSave(session, commit) {
         authUser: slot,
         cookieSessionId: session.geminiWebSessionId,
         expectedRevision: session.expectedRevision,
-        authUsers: session.authUsers,
+        authUsers: slots,
         signal: session.saveAbort?.signal,
       })),
       VERIFY_TIMEOUT_MS
@@ -549,7 +619,7 @@ async function runSave(session, commit) {
     session.captureDeadlineAt = null;
     session.savePromise = null;
 
-    if (session.cancelled || error?.code === "WEB_LOGIN_CANCELLED") {
+    if (session.cancelled || session.callerCancelled || error?.code === "WEB_LOGIN_CANCELLED") {
       session.status = "cancelled";
       return publicView(session);
     }
@@ -557,9 +627,13 @@ async function runSave(session, commit) {
     // Keep the browser open and the same tab/original target so the operator
     // can fix the account (wrong slot, signed-out tab) and capture again.
     session.status = "running";
-    session.error = saveErrorMessage(slot, error);
+    session.error = saveErrorMessage(slots, error);
     session.deadlineAt = nowMs() + LOGIN_TIMEOUT_MS;
     return publicView(session);
+  } finally {
+    // The request outlives the save; drop the listener so a later disconnect
+    // cannot reach a controller owned by a different save.
+    if (callerSignal) callerSignal.removeEventListener("abort", abandon);
   }
 }
 

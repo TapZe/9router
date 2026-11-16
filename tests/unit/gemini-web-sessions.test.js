@@ -239,6 +239,59 @@ describe("Gemini Web session jars", () => {
     expect(await repo.getGeminiWebSession(saved.id)).toEqual(updated);
   });
 
+  it("requires a positive-integer revision to update an existing jar", async () => {
+    const saved = await saveSession({ name: "Alpha", cookieHeader: HEADER_A });
+
+    for (const expectedRevision of [undefined, null, 0, -1, 1.5, "1", Number.NaN]) {
+      const error = await rejection(
+        repo.saveGeminiWebSession(
+          { id: saved.id, name: "Should not persist", cookieHeader: HEADER_B, source: "paste" },
+          expectedRevision === undefined ? {} : { expectedRevision }
+        )
+      );
+      expect(error.code).toBe("GEMINI_WEB_SESSION_INVALID");
+      expect(await repo.getGeminiWebSession(saved.id)).toEqual(saved);
+    }
+
+    const created = await saveSession({ name: "Created", cookieHeader: HEADER_C });
+    expect(created.revision).toBe(1);
+  });
+
+  it("rejects an omitted-revision restore after a real rotation without changing the jar", async () => {
+    const original = await saveSession({ name: "Alpha", cookieHeader: HEADER_A, lastRotatedAt: T0 });
+    const rotated = await repo.commitGeminiWebCookieUpdate(original.id, {
+      cookieHeader: HEADER_A_ROTATED,
+      expectedRevision: original.revision,
+      source: "rotation",
+      lastRotatedAt: T1,
+    });
+    expect(rotated.revision).toBe(2);
+
+    const omitted = await rejection(
+      repo.saveGeminiWebSession({
+        id: original.id,
+        name: "Stale name",
+        cookieHeader: HEADER_A,
+        source: "paste",
+      })
+    );
+    expect(omitted.code).toBe("GEMINI_WEB_SESSION_INVALID");
+    expect(await repo.getGeminiWebSession(original.id)).toEqual(rotated);
+
+    const stale = await rejection(
+      repo.saveGeminiWebSession(
+        { id: original.id, name: "Stale name", cookieHeader: HEADER_A, source: "paste" },
+        { expectedRevision: original.revision }
+      )
+    );
+    expect(stale.code).toBe("GEMINI_WEB_SESSION_CONFLICT");
+    expect(await repo.getGeminiWebSession(original.id)).toEqual(rotated);
+
+    const jar = await repo.getGeminiWebSession(original.id);
+    expect(jar.name).toBe("Alpha");
+    expect(jar.cookieHeader).toBe(HEADER_A_ROTATED);
+  });
+
   it("throws NOT_FOUND when an update names an absent record", async () => {
     const missingId = "00000000-0000-4000-8000-000000000000";
     const error = await rejection(
@@ -507,9 +560,45 @@ describe("Gemini Web account sets", () => {
     expect(newSlot.providerSpecificData.proxyPoolId).toBe("pool-bravo");
   });
 
+  it("requires a positive-integer revision to update an existing jar, while create stays revision-free", async () => {
+    const created = await createNewJar(HEADER_A, [{ authUser: "0" }], "Work");
+    const slot = created.connections[0];
+    expect(created.session.revision).toBe(1);
+
+    const update = (expectedRevision) =>
+      repo.commitGeminiWebAccountSet({
+        session: { id: created.session.id, name: "Updated", cookieHeader: HEADER_B },
+        accounts: [{ authUser: "0" }],
+        verifiedMembers: [{ connectionId: slot.id, authUser: "0" }],
+        ...(expectedRevision === undefined ? {} : { expectedRevision }),
+      });
+
+    for (const expectedRevision of [undefined, null, 0, -1, 1.5, "1", Number.NaN]) {
+      const error = await rejection(update(expectedRevision));
+      expect(error.code).toBe("GEMINI_WEB_SESSION_INVALID");
+      expect(await repo.getGeminiWebSession(created.session.id)).toEqual(created.session);
+      const unchanged = await connections.getProviderConnectionById(slot.id);
+      expect(unchanged.providerSpecificData.geminiWebSessionId).toBe(created.session.id);
+    }
+
+    const updated = await update(created.session.revision);
+    expect(updated.session.revision).toBe(created.session.revision + 1);
+    expect(updated.session.name).toBe("Updated");
+    expect(updated.session.cookieHeader).toBe(HEADER_B);
+  });
+
   it("rejects stale revisions and membership that changed after verification", async () => {
     const created = await createNewJar(HEADER_A, [{ authUser: "0" }], "Work");
     const slotZero = created.connections[0];
+
+    // Move the jar to revision 2 so a positive-but-stale revision exists.
+    const renamed = await accountSet({
+      session: { id: created.session.id, name: "Renamed" },
+      accounts: [{ authUser: "0" }],
+      verifiedMembers: [{ connectionId: slotZero.id, authUser: "0" }],
+      expectedRevision: created.session.revision,
+    });
+    expect(renamed.session.revision).toBe(2);
 
     const stale = await rejection(
       accountSet({
@@ -519,7 +608,7 @@ describe("Gemini Web account sets", () => {
           { connectionId: slotZero.id, authUser: "0" },
           { connectionId: null, authUser: "2" },
         ],
-        expectedRevision: created.session.revision - 1,
+        expectedRevision: created.session.revision,
       })
     );
     expect(stale.code).toBe("GEMINI_WEB_SESSION_CONFLICT");
@@ -530,7 +619,7 @@ describe("Gemini Web account sets", () => {
         session: { id: created.session.id },
         accounts: [{ authUser: "0" }],
         verifiedMembers: [{ connectionId: slotZero.id, authUser: "0" }],
-        expectedRevision: created.session.revision,
+        expectedRevision: renamed.session.revision,
       })
     );
     expect(membershipChanged.code).toBe("GEMINI_WEB_SESSION_CONFLICT");

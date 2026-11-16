@@ -124,4 +124,30 @@ describe("Gemini Web automatic account labels", () => {
     const saved = await service.createGeminiWebSession({ name: "Work", cookieHeader: COOKIE, authUsers: ["2"], proxyPoolId: null });
     expect(saved.connections[0].name).toBe("Work / 2");
   });
+
+  it("renames a session locally without probing Google or relabeling its accounts", async () => {
+    const initial = await service.createGeminiWebSession({ name: "Old label", cookieHeader: COOKIE, authUsers: ["0"], proxyPoolId: null });
+    await connections.updateProviderConnection(initial.connections[0].id, { name: "My coding account" });
+    const executor = await import("../../open-sse/executors/gemini-web.js");
+    executor.probeGeminiWebConnection.mockClear();
+    executor.resolveGeminiWebModels.mockClear();
+
+    const renamed = await service.updateGeminiWebSession(initial.session.id, {
+      expectedRevision: initial.session.revision,
+      name: "Renamed jar",
+    });
+
+    expect(renamed.session).toMatchObject({
+      id: initial.session.id,
+      name: "Renamed jar",
+      revision: initial.session.revision + 1,
+    });
+    expect(renamed.connections).toMatchObject([{ authUser: "0", name: "My coding account" }]);
+    expect(executor.probeGeminiWebConnection).not.toHaveBeenCalled();
+    expect(executor.resolveGeminiWebModels).not.toHaveBeenCalled();
+
+    const persistedSession = await service.getGeminiWebSessionView(initial.session.id);
+    expect(persistedSession).toMatchObject({ name: "Renamed jar", revision: initial.session.revision + 1 });
+    expect(persistedSession.connections).toMatchObject([{ authUser: "0", name: "My coding account" }]);
+  });
 });

@@ -1,18 +1,28 @@
 import { NextResponse } from "next/server";
+import { assertDashboardMutationOrigin } from "@/lib/mutationOrigin.js";
 import {
-  assertGeminiWebMutationOrigin,
   createGeminiWebSession,
   listGeminiWebSessionViews,
 } from "@/lib/geminiWebAccounts.js";
 
 export const dynamic = "force-dynamic";
 
-function errorResponse(error) {
-  const status = Number(error?.status) || 500;
+function errorResponse(error, request) {
+  const status = request?.signal?.aborted ? 499 : Number(error?.status) || 500;
   const body = { error: error?.message || "Gemini Web session request failed" };
   if (error?.code) body.code = error.code;
   if (error?.existingSessionId) body.existingSessionId = error.existingSessionId;
   return NextResponse.json(body, { status });
+}
+
+async function readJsonBody(request) {
+  try {
+    return await request.json();
+  } catch {
+    const error = new Error("Invalid JSON body");
+    error.status = 400;
+    throw error;
+  }
 }
 
 export async function GET() {
@@ -26,8 +36,8 @@ export async function GET() {
 
 export async function POST(request) {
   try {
-    assertGeminiWebMutationOrigin(request);
-    const body = await request.json();
+    assertDashboardMutationOrigin(request);
+    const body = await readJsonBody(request);
     const result = await createGeminiWebSession({
       name: body?.name,
       cookieHeader: body?.cookieHeader,
@@ -37,6 +47,6 @@ export async function POST(request) {
     });
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

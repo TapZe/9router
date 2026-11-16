@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assertDashboardMutationOrigin } from "@/lib/mutationOrigin.js";
 import { createProviderConnection, deleteProviderConnection, getProviderConnections, updateProviderConnection } from "@/models";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import {
@@ -13,7 +14,6 @@ import {
 import { getWebLoginConfig, listWebLoginProviders } from "open-sse/services/webLoginConfig.js";
 import { fetchWebIdentity } from "open-sse/services/webIdentity.js";
 import {
-  assertGeminiWebMutationOrigin,
   createGeminiWebSession,
   updateGeminiWebSession,
 } from "@/lib/geminiWebAccounts.js";
@@ -26,7 +26,8 @@ import {
  */
 
 // GET /api/providers/web-login            → supported provider list
-// GET /api/providers/web-login?provider=x → session status (saves once on success)
+// GET /api/providers/web-login?provider=x → session status
+// Gemini capture is committed only by POST action=save; polling must stay read-only.
 export async function GET(request) {
   const provider = request.nextUrl.searchParams.get("provider");
   if (!provider) {
@@ -37,42 +38,6 @@ export async function GET(request) {
     if (!publicStatus) {
       return NextResponse.json({ error: "No login session for this provider" }, { status: 404 });
     }
-    if (publicStatus.status === "captured") {
-      try {
-        assertGeminiWebMutationOrigin(request);
-      } catch (error) {
-        return NextResponse.json({ error: error.message, code: error.code }, { status: 403 });
-      }
-      const view = await beginWebLoginSave(provider, {
-        commit: async (payload) => {
-          if (payload.signal?.aborted) {
-            const err = new Error("Cancelled");
-            err.status = 499;
-            throw err;
-          }
-          const slots = payload.authUsers == null ? [payload.authUser] : payload.authUsers;
-          const saved = payload.cookieSessionId
-            ? await updateGeminiWebSession(payload.cookieSessionId, {
-                expectedRevision: payload.expectedRevision,
-                cookieHeader: payload.cookieHeader,
-                authUsers: slots,
-                proxyPoolId: null,
-              }, { signal: payload.signal })
-            : await createGeminiWebSession({
-                name: getWebLoginStatus(provider)?.name,
-                cookieHeader: payload.cookieHeader,
-                authUsers: slots,
-                proxyPoolId: null,
-                signal: payload.signal,
-              });
-          return {
-            sessionId: saved.session?.id,
-            connectionIds: (saved.connections || []).map((row) => row.id),
-          };
-        },
-      });
-      return NextResponse.json(view);
-    }
     return NextResponse.json(publicStatus);
   }
   const session = getWebLoginStatus(provider);
@@ -81,6 +46,11 @@ export async function GET(request) {
   }
 
   if (session.status === "success" && !session.savedConnectionId) {
+    try {
+      assertDashboardMutationOrigin(request);
+    } catch (error) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 403 });
+    }
     try {
       const config = getWebLoginConfig(provider);
       const identity = await fetchWebIdentity(provider, session.credential);
@@ -178,14 +148,47 @@ export async function POST(request) {
     if (!getWebLoginConfig(provider)) {
       return NextResponse.json({ error: `Web login not supported for "${provider}"` }, { status: 400 });
     }
+    assertDashboardMutationOrigin(request);
     if (provider === "gemini-web") {
-      assertGeminiWebMutationOrigin(request);
       if (body?.action === "capture") {
         const status = await captureWebLogin(provider, {
           authUsers: body.authUsers,
           pageId: body.pageId,
         });
         return NextResponse.json(status);
+      }
+      if (body?.action === "save") {
+        const view = await beginWebLoginSave(provider, {
+          authUsers: body.authUsers,
+          signal: request.signal,
+          commit: async (payload) => {
+            if (payload.signal?.aborted) {
+              const err = new Error("Cancelled");
+              err.status = 499;
+              throw err;
+            }
+            const slots = payload.authUsers == null ? [payload.authUser] : payload.authUsers;
+            const saved = payload.cookieSessionId
+              ? await updateGeminiWebSession(payload.cookieSessionId, {
+                  expectedRevision: payload.expectedRevision,
+                  cookieHeader: payload.cookieHeader,
+                  authUsers: slots,
+                  proxyPoolId: null,
+                }, { signal: payload.signal })
+              : await createGeminiWebSession({
+                  name: getWebLoginStatus(provider)?.name,
+                  cookieHeader: payload.cookieHeader,
+                  authUsers: slots,
+                  proxyPoolId: null,
+                  signal: payload.signal,
+                });
+            return {
+              sessionId: saved.session?.id,
+              connectionIds: (saved.connections || []).map((row) => row.id),
+            };
+          },
+        });
+        return NextResponse.json(view);
       }
       const session = await startWebLogin(provider, profile, {
         name: body.name,
@@ -202,7 +205,12 @@ export async function POST(request) {
     const session = await startWebLogin(provider, profile);
     return NextResponse.json({ provider, profile: session.profile, status: session.status }, { status: 202 });
   } catch (error) {
-    const status = Number(error?.status) || 500;
+    // Repository errors can reach here without an HTTP status; a revision or
+    // slot mismatch is a caller error, and a stale revision is a conflict.
+    const status = Number(error?.status)
+      || (error?.code === "GEMINI_WEB_SESSION_CONFLICT" ? 409 : 0)
+      || (error?.code === "GEMINI_WEB_SESSION_INVALID" || error?.code === "GEMINI_WEB_COOKIE_INVALID" ? 400 : 0)
+      || 500;
     return NextResponse.json({ error: error?.message || "Failed to start login", code: error?.code }, { status });
   }
 }
@@ -213,12 +221,10 @@ export async function DELETE(request) {
   if (!provider) {
     return NextResponse.json({ error: "provider is required" }, { status: 400 });
   }
-  if (provider === "gemini-web") {
-    try {
-      assertGeminiWebMutationOrigin(request);
-    } catch (error) {
-      return NextResponse.json({ error: error.message, code: error.code }, { status: 403 });
-    }
+  try {
+    assertDashboardMutationOrigin(request);
+  } catch (error) {
+    return NextResponse.json({ error: error.message, code: error.code }, { status: 403 });
   }
   return NextResponse.json({ cancelled: cancelWebLogin(provider) });
 }

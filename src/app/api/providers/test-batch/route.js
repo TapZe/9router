@@ -17,7 +17,8 @@ function getAuthGroup(providerId, connection = null) {
       if (FREE_PROVIDERS[providerId]) return "free";
       return "oauth";
     }
-    return connection.authType;
+    // Cookie providers share the dashboard's manual-auth section with API keys.
+    return connection.authType === "cookie" ? "apikey" : connection.authType;
   }
   
   // Fallback to constants
@@ -76,7 +77,7 @@ export async function POST(request) {
         mode,
         providerId: providerId || null,
         results: [],
-        summary: { total: 0, passed: 0, failed: 0 },
+        summary: { total: 0, passed: 0, failed: 0, unverified: 0 },
         testedAt: new Date().toISOString(),
       });
     }
@@ -114,15 +115,26 @@ export async function POST(request) {
       }
     }
 
+    // Verification state is authoritative: a probe that reports unknown could
+    // not confirm the credential, so it is never a pass even when it also
+    // claimed valid. One classification feeds both the rows and the summary.
+    const normalized = results.map((result) =>
+      result.verification === "unknown" ? { ...result, valid: false } : result
+    );
+    const unverified = normalized.filter((r) => r.verification === "unknown").length;
+    const passed = normalized.filter((r) => r.valid).length;
+    const failed = normalized.length - passed - unverified;
+
     return NextResponse.json({
       mode,
       providerId: providerId || null,
-      results,
+      results: normalized,
       testedAt: new Date().toISOString(),
       summary: {
-        total: results.length,
-        passed: results.filter((r) => r.valid).length,
-        failed: results.filter((r) => !r.valid).length,
+        total: normalized.length,
+        passed,
+        failed,
+        unverified,
       },
     });
   } catch (error) {

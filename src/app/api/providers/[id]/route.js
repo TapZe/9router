@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assertDashboardMutationOrigin } from "@/lib/mutationOrigin.js";
 import {
   getProviderConnectionById,
   getProxyPoolById,
@@ -7,7 +8,6 @@ import {
 } from "@/models";
 import { toProviderConnectionResponse, usesAwsCredentialForm } from "@/lib/providerConnectionResponse";
 import {
-  assertGeminiWebMutationOrigin,
   detachGeminiWebConnection,
   isGeminiWebProvider,
 } from "@/lib/geminiWebAccounts.js";
@@ -106,7 +106,7 @@ export async function PUT(request, { params }) {
     }
 
     if (isGeminiWebProvider(existing.provider)) {
-      assertGeminiWebMutationOrigin(request);
+      assertDashboardMutationOrigin(request);
       const blocked = [];
       if (apiKey) blocked.push("apiKey");
       if (body.cookie) blocked.push("cookie");
@@ -202,7 +202,7 @@ export async function DELETE(request, { params }) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
     if (isGeminiWebProvider(existing.provider)) {
-      assertGeminiWebMutationOrigin(request);
+      assertDashboardMutationOrigin(request);
       const detached = await detachGeminiWebConnection(id);
       if (!detached) {
         return NextResponse.json({ error: "Connection not found" }, { status: 404 });

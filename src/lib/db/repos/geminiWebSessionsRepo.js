@@ -178,6 +178,19 @@ function samePersistedFields(current, next) {
   );
 }
 
+// An update must name the revision it read. Omitting it used to mean "write the
+// old value anyway", which silently restored a pre-rotation jar after another
+// writer (or the executor rotation CAS) had already moved on.
+function requireExpectedRevision(value) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw typedError(
+      GEMINI_WEB_SESSION_INVALID,
+      "Gemini Web session expectedRevision must be a positive integer"
+    );
+  }
+  return value;
+}
+
 function membershipSignature(connections) {
   return connections
     .map((connection) => `${connection.id}\u0000${authUserOf(connection)}`)
@@ -317,7 +330,10 @@ export async function getGeminiWebSession(id) {
 /**
  * Insert a jar or commit a revision-checked update.
  *
- * `expectedRevision` is required for updates: the record is re-read inside the
+ * A record without an id creates a jar and needs no revision. Updating an
+ * existing jar requires a positive-integer `expectedRevision`
+ * (`GEMINI_WEB_SESSION_INVALID` otherwise) and refuses a stale one
+ * (`GEMINI_WEB_SESSION_CONFLICT`); the record is re-read inside the
  * transaction, so a stale writer cannot overwrite a newer cookie.
  */
 export async function saveGeminiWebSession(record, options = {}) {
@@ -337,8 +353,8 @@ export async function saveGeminiWebSession(record, options = {}) {
           `Gemini Web session ${record.id} not found`
         );
       }
-      const expected = options.expectedRevision;
-      if (expected !== undefined && expected !== null && Number(current.revision) !== Number(expected)) {
+      const expected = requireExpectedRevision(options.expectedRevision);
+      if (Number(current.revision) !== expected) {
         throw typedError(GEMINI_WEB_SESSION_CONFLICT, "Gemini Web session revision is stale");
       }
 
@@ -625,7 +641,10 @@ export async function migrateLegacyGeminiWebConnections() {
  * Atomically bind a jar and its routable account rows after probes succeeded.
  *
  * Existing pairs keep their name, priority and proxy; new children get a UUID,
- * the next priority and the explicitly resolved proxy for their slot.
+ * the next priority and the explicitly resolved proxy for their slot. A
+ * `session.id` targets an existing jar and therefore requires a
+ * positive-integer `expectedRevision`; a jar addressed by cookie is an
+ * idempotent create and needs none.
  */
 export async function commitGeminiWebAccountSet(params = {}) {
   const sessionInput =
@@ -654,11 +673,8 @@ export async function commitGeminiWebAccountSet(params = {}) {
           `Gemini Web session ${sessionInput.id} not found`
         );
       }
-      if (
-        expectedRevision !== undefined &&
-        expectedRevision !== null &&
-        Number(current.revision) !== Number(expectedRevision)
-      ) {
+      const expected = requireExpectedRevision(expectedRevision);
+      if (Number(current.revision) !== expected) {
         throw typedError(GEMINI_WEB_SESSION_CONFLICT, "Gemini Web session revision is stale");
       }
       assertVerifiedMembership(db, current.id, verifiedMembers);

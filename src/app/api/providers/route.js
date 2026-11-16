@@ -10,7 +10,8 @@ import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
 import { toProviderConnectionResponse } from "@/lib/providerConnectionResponse";
-import { assertGeminiWebMutationOrigin, isGeminiWebProvider } from "@/lib/geminiWebAccounts.js";
+import { isGeminiWebProvider } from "@/lib/geminiWebAccounts.js";
+import { assertDashboardMutationOrigin } from "@/lib/mutationOrigin.js";
 
 export const dynamic = "force-dynamic";
 
@@ -87,7 +88,7 @@ export async function POST(request) {
     const body = await request.json();
     const provider = normalizeProviderId(body.provider);
     if (isGeminiWebProvider(provider)) {
-      assertGeminiWebMutationOrigin(request);
+      assertDashboardMutationOrigin(request);
       return NextResponse.json(
         { error: "Use POST /api/providers/gemini-web/sessions to add Gemini Web cookie sessions" },
         { status: 400 }
@@ -203,6 +204,9 @@ export async function POST(request) {
       { status: 201 },
     );
   } catch (error) {
+    if (error?.code === "mutation_origin_denied") {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 403 });
+    }
     if (error?.code === "PROVIDER_NAME_CONFLICT") {
       return NextResponse.json(
         { error: error.message, code: error.code, existingId: error.existingId, existingName: error.existingName },

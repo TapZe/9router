@@ -180,6 +180,11 @@ export default function GeminiWebSessionPanel({
   const [browserStatus, setBrowserStatus] = useState(null);
   const [browserPageId, setBrowserPageId] = useState("");
   const pollRef = useRef(null);
+  // Save lifecycle: the pending Save request and whether the operator has
+  // abandoned it. Cancel/Done must win over any late response.
+  const saveAbortRef = useRef(null);
+  const saveCancelledRef = useRef(false);
+  const browserClosedRef = useRef(false);
 
   const stopPolling = useCallback(() => {
     clearInterval(pollRef.current);
@@ -290,14 +295,19 @@ export default function GeminiWebSessionPanel({
     setBrowserStatus(null);
     setBrowserPageId("");
     setBrowserTargetSessionId(sessionId);
-    setBrowserSlotsText("0");
+    const linkedSlots = sessionId ? sessionSlots(sessionById.get(sessionId)) : [];
+    setBrowserSlotsText(linkedSlots.length > 0 ? linkedSlots.join(", ") : "0");
     if (!sessionId) setSessionName("");
-  }, []);
+  }, [sessionById]);
 
   const closePanel = useCallback(() => {
     // A running Chrome window outlives this dialog; cancel it so the operator
     // never has to find the window by hand. The server ignores this when the
     // save already committed.
+    browserClosedRef.current = true;
+    saveCancelledRef.current = true;
+    saveAbortRef.current?.abort();
+    saveAbortRef.current = null;
     const status = browserStatus?.status;
     const provider = browserStatus?.provider;
     if (provider && BROWSER_ACTIVE.has(status)) {
@@ -490,6 +500,8 @@ export default function GeminiWebSessionPanel({
       try {
         const res = await fetch("/api/providers/web-login?provider=gemini-web", { cache: "no-store" });
         const data = await res.json().catch(() => ({}));
+        // A response that lands after Cancel/Done must not resurrect the flow.
+        if (browserClosedRef.current) return;
         if (!res.ok) {
           stopPolling();
           setBrowserStatus({ provider: "gemini-web", status: "error", error: data.error || "Login window unavailable" });
@@ -516,6 +528,8 @@ export default function GeminiWebSessionPanel({
       setFormError(parsed.error);
       return;
     }
+    browserClosedRef.current = false;
+    saveCancelledRef.current = false;
     setBusy(true);
     try {
       const body = { provider: "gemini-web", profile, authUsers: parsed.slots };
@@ -559,10 +573,16 @@ export default function GeminiWebSessionPanel({
     }
     setBusy(true);
     try {
+      // One capture reads the whole shared jar; the tab id is informational.
       const res = await fetch("/api/providers/web-login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: "gemini-web", action: "capture", authUsers: parsed.slots, pageId: browserPageId || undefined }),
+        body: JSON.stringify({
+          provider: "gemini-web",
+          action: "capture",
+          authUsers: parsed.slots,
+          ...(browserPageId ? { pageId: browserPageId } : {}),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -577,10 +597,63 @@ export default function GeminiWebSessionPanel({
     }
   };
 
+  const saveBrowser = async () => {
+    setFormError("");
+    // Save commits exactly the slot set the panel displayed after capture.
+    const slots = Array.isArray(browserStatus?.authUsers) ? browserStatus.authUsers : [];
+    if (slots.length === 0) {
+      setFormError("Capture the browser cookies first");
+      return;
+    }
+    const controller = new AbortController();
+    saveAbortRef.current = controller;
+    saveCancelledRef.current = false;
+    // Verification starts now; polling only confirms it later.
+    setBrowserStatus((prev) => (prev ? { ...prev, status: "saving" } : prev));
+    setBusy(true);
+    try {
+      const res = await fetch("/api/providers/web-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "gemini-web", action: "save", authUsers: slots }),
+        signal: controller.signal,
+      });
+      const data = await res.json().catch(() => ({}));
+      // Cancel owns the final UI state; a late response must not reopen it.
+      if (saveCancelledRef.current) return;
+      if (!res.ok) {
+        setBrowserStatus((prev) => (prev?.status === "saving" ? { ...prev, status: "running" } : prev));
+        setFormError(data.error || "Failed to save the captured cookies");
+        return;
+      }
+      setBrowserStatus((prev) => ({ ...prev, ...data }));
+      if (data.status === "success") {
+        stopPolling();
+        await finish("Captured cookies saved");
+      } else if (["error", "timeout", "cancelled"].includes(data.status)) {
+        stopPolling();
+      }
+    } catch (error) {
+      if (saveCancelledRef.current || error?.name === "AbortError") return;
+      setBrowserStatus((prev) => (prev?.status === "saving" ? { ...prev, status: "running" } : prev));
+      setFormError(error?.message || "Failed to save the captured cookies");
+    } finally {
+      if (saveAbortRef.current === controller) saveAbortRef.current = null;
+      setBusy(false);
+    }
+  };
+
   const cancelBrowser = () => {
+    // Cancel wins over the pending Save: abort the request, tell the server to
+    // drop the capture, and clear the panel state.
+    saveCancelledRef.current = true;
+    saveAbortRef.current?.abort();
+    saveAbortRef.current = null;
+    browserClosedRef.current = true;
     fetch("/api/providers/web-login?provider=gemini-web", { method: "DELETE" }).catch(() => {});
     stopPolling();
     setBrowserStatus(null);
+    setBusy(false);
   };
 
   const slotsPreview = parseAuthUsersInput(slotsText);
@@ -891,11 +964,15 @@ export default function GeminiWebSessionPanel({
 
   const browserView = (
     <div className="flex flex-col gap-4">
-      <p className="text-xs leading-relaxed text-text-muted">
-        {translate(
-          "Chrome opens on a shared browser profile. Sign in to every Google account you need, then leave one Gemini tab open per account and capture each of them. A tab at /u/2/ is slot 2."
-        )}
-      </p>
+      <div className="text-xs leading-relaxed text-text-muted">
+        <p>{translate("Chrome opens on a shared browser profile:")}</p>
+        <ol className="mt-1 flex flex-col gap-1">
+          <Step>{translate("Sign in to every Google account you need in that window.")}</Step>
+          <Step>{translate("Leave Gemini tabs open for the accounts you want. A tab at /u/2/ is slot 2; tabs are optional, because one capture reads the shared jar.")}</Step>
+          <Step>{translate("Capture once. The whole cookie jar is read and kept by the server, not committed yet.")}</Step>
+          <Step>{translate("Confirm the account slots below, then press Save once. No account slots are saved before that.")}</Step>
+        </ol>
+      </div>
 
       <div>
         <label className="mb-1 block text-xs text-text-muted">{translate("Browser profile")}</label>
@@ -912,8 +989,9 @@ export default function GeminiWebSessionPanel({
           value={browserTargetSessionId}
           onChange={(event) => {
             setBrowserTargetSessionId(event.target.value);
-            const session = sessionById.get(event.target.value);
-            if (session) setBrowserSlotsText("");
+            const selected = sessionById.get(event.target.value);
+            const linkedSlots = selected ? sessionSlots(selected) : [];
+            setBrowserSlotsText(linkedSlots.length > 0 ? linkedSlots.join(", ") : "0");
           }}
           options={[
             { value: "", label: translate("New cookie session") },
@@ -937,13 +1015,16 @@ export default function GeminiWebSessionPanel({
       <div>
         <label className="mb-1 block text-xs text-text-muted">{translate("Account slots to save")}</label>
         <input
-          className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
+          className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none disabled:opacity-60"
           value={browserSlotsText}
           onChange={(event) => setBrowserSlotsText(event.target.value)}
           placeholder="0, 2"
+          disabled={browserStatus?.status === "captured" || browserStatus?.status === "saving"}
         />
         <p className="mt-1 text-[11px] text-text-muted">
-          {translate("Default is 0 for a new session. Added slots inherit the same browser cookie jar.")}
+          {browserStatus?.status === "captured" || browserStatus?.status === "saving"
+            ? translate("These are the selected slots to verify and save. Cancel to change them.")
+            : translate("Default is 0 for a new session. Added slots inherit the same browser cookie jar.")}
         </p>
       </div>
 
@@ -956,13 +1037,33 @@ export default function GeminiWebSessionPanel({
             >
               {browserStatus.status}
             </Badge>
-            {browserStatus.capturedAuthUser !== null && browserStatus.capturedAuthUser !== undefined && (
-              <span>{translate("Captured")} {slotBadgeLabel(browserStatus.capturedAuthUser)}</span>
-            )}
             {browserStatus.profile && <span className="text-text-muted">{browserStatus.profile}</span>}
           </div>
 
           {browserStatus.error && <p className="mt-1 text-xs text-red-500">{browserStatus.error}</p>}
+
+          {["captured", "saving", "success"].includes(browserStatus.status) && (
+            <p className="mt-1 text-xs text-text-muted">
+              {translate("Selected tab:")}{" "}
+              {browserStatus.capturedAuthUser === null || browserStatus.capturedAuthUser === undefined
+                ? translate("none (the shared jar covers every tab)")
+                : slotBadgeLabel(browserStatus.capturedAuthUser)}.{" "}
+              {translate("A tab only names one account and does not decide the saved set.")}
+            </p>
+          )}
+
+          {Array.isArray(browserStatus.authUsers) && browserStatus.authUsers.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-text-muted">
+                {browserStatus.status === "success"
+                  ? translate("Saved slots:")
+                  : translate("Slots that will be saved:")}
+              </span>
+              {browserStatus.authUsers.map((slot) => (
+                <Badge key={slot || "root"} variant="info" size="sm">{slotBadgeLabel(slot)}</Badge>
+              ))}
+            </div>
+          )}
 
           {browserStatus.status === "running" && (
             <div className="mt-2">
@@ -970,7 +1071,7 @@ export default function GeminiWebSessionPanel({
                 <p className="text-xs text-text-muted">{translate("Waiting for a signed-in Gemini tab…")}</p>
               ) : (
                 <>
-                  <p className="mb-1 text-xs text-text-muted">{translate("Choose the tab to capture:")}</p>
+                  <p className="mb-1 text-xs text-text-muted">{translate("Open tabs (optional, one shared cookie jar):")}</p>
                   <div className="flex flex-wrap gap-1.5">
                     {browserPages.map((entry) => (
                       <Button
@@ -986,6 +1087,12 @@ export default function GeminiWebSessionPanel({
                 </>
               )}
             </div>
+          )}
+
+          {browserStatus.status === "captured" && (
+            <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+              {translate("Cookies are held by the server and not committed yet. Review the slots above, then press Save. Closing the panel cancels them.")}
+            </p>
           )}
 
           {browserStatus.status === "saving" && (
@@ -1008,12 +1115,18 @@ export default function GeminiWebSessionPanel({
           <Button onClick={startBrowser} disabled={busy} icon="language">{translate("Open browser")}</Button>
         )}
         {browserStatus?.status === "running" && (
-          <Button onClick={captureBrowser} disabled={busy || (browserPages.length > 1 && !browserPageId)}>
-            {translate("Capture selected tab")}
+          <Button onClick={captureBrowser} disabled={busy}>
+            {translate("Capture shared cookies")}
           </Button>
         )}
+        {browserStatus?.status === "captured" && (
+          <Button onClick={saveBrowser} disabled={busy}>{translate("Save")}</Button>
+        )}
+        {browserStatus?.status === "saving" && (
+          <Button disabled>{translate("Saving…")}</Button>
+        )}
         {activeBrowserSession && (
-          <Button variant="ghost" onClick={cancelBrowser} disabled={busy}>{translate("Cancel")}</Button>
+          <Button variant="ghost" onClick={cancelBrowser}>{translate("Cancel")}</Button>
         )}
         {browserStatus?.status === "success" && (
           <Button onClick={closePanel}>{translate("Done")}</Button>
