@@ -576,6 +576,7 @@ export class GeminiWebExecutor extends BaseExecutor {
           model: routing,
           prompt: buildImagePrompt(prompt, size),
           files: [],
+          imageTask: true,
           thinkingLevel: "low",
           signal,
           proxyOptions,

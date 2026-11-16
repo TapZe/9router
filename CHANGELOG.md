@@ -18,6 +18,7 @@
 - **Factory**: add Muse Spark 1.3 and Nemotron 3.5 Super from Droid 1.2.0.
 
 ## Fixes
+- **Gemini Web**: send Detailed research / Pro text chat through the ProcessSession transport observed in Google's browser client. Keep its exact model id and number, preserve the StreamGenerate paths for attachments, image generation and other hex models, and retain the existing deadline without retrying a consumed turn.
 - **Gemini Web**: fix live Code & analysis requests by supplying the bootstrap's public API consumer key and protobuf declaration when opening ProcessSession. Start receiving before sending, resume heartbeat polls without replaying the turn, and surface Google's channel rejection instead of a generic empty-answer error.
 - **Routing**: keep cross-provider fallback available when only an upstream member aborts. Report caller cancellation during a refreshed-token retry as 499 instead of cooling a healthy account over the old 401.
 - **Transport**: handle a Gemini Web SOCKS abort without an unhandled request error, accept a null fetch init, and honor an explicit header limit through relay pools.

@@ -16,6 +16,7 @@ import {
   GEMINI_WEB_GEMINI_PREFIX,
   GEMINI_WEB_LIMITS,
   GEMINI_WEB_MODEL_HEADER,
+  GEMINI_WEB_PROCESS_SESSION_TEXT_MODEL_IDS,
   GEMINI_WEB_THINKING_LEVELS,
   GEMINI_WEB_USER_AGENT,
   abortError,
@@ -591,14 +592,14 @@ async function generateGeminiWebProcessSession({
 
 
   // The API consumer key identifies this client to the ProcessSession service.
-  // Without it the channel has no caller identity, so a policy-code turn fails
+  // Without it the channel has no caller identity, so a ProcessSession turn fails
   // as preparation before dispatch instead of spending a generation on a call
   // the service is guaranteed to reject.
   const apiConsumerKey =
     typeof session.apiConsumerKey === "string" ? session.apiConsumerKey.trim() : "";
   if (!apiConsumerKey) {
     throw geminiWebError(
-      "Gemini Web session is missing the API consumer key that policy-code models require; re-bootstrap the account",
+      "Gemini Web session is missing the API consumer key that ProcessSession models require; re-bootstrap the account",
       { status: 502 }
     );
   }
@@ -803,6 +804,7 @@ export async function generateGeminiWeb({
   model,
   prompt,
   files = [],
+  imageTask = false,
   thinkingLevel,
   signal,
   proxyOptions,
@@ -819,7 +821,9 @@ export async function generateGeminiWeb({
     throw geminiWebError("Gemini Web session is not initialized", { status: 502 });
   }
 
-  if (model.policy === true) {
+  const verifiedTextTransport = !imageTask && files.length === 0
+    && GEMINI_WEB_PROCESS_SESSION_TEXT_MODEL_IDS.includes(model.modelId);
+  if (model.policy === true || verifiedTextTransport) {
     return generateGeminiWebProcessSession({
       session,
       authUser: slot,

@@ -25,6 +25,10 @@ export const GEMINI_WEB_DEFAULT_LANGUAGE = "en";
 export const GEMINI_WEB_MODEL_HEADER = "x-goog-ext-525001261-jspb";
 export const GEMINI_WEB_USER_STATUS_RPC = "otAQ7b";
 
+// Verified Pro text turns use ProcessSession. Attachments and image generation
+// retain StreamGenerate until their ProcessSession wire fields are captured.
+export const GEMINI_WEB_PROCESS_SESSION_TEXT_MODEL_IDS = Object.freeze(["e6fa609c3fa255c0"]);
+
 // Upload-protocol authorization constant published by the reference client.
 // It is not a user credential and carries no account access.
 export const GEMINI_WEB_UPLOAD_AUTHORIZATION =
