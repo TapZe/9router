@@ -952,6 +952,9 @@ describe("Gemini Web policy-code models", () => {
     const text = events.filter((event) => event.type === "text").map((event) => event.text).join("");
     expect(text).toContain("pong");
     expect(text).not.toBe("Thinking...");
+    expect(events.some((event) => event.type === "reasoning" && event.text.includes("Thinking"))).toBe(
+      true
+    );
   }, 2000);
 
 

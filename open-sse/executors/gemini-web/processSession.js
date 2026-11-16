@@ -350,7 +350,7 @@ function collectBindStrings(node, candidates) {
   }
 }
 
-function extractBindAnswer(buffer) {
+function extractBindProgress(buffer) {
   const candidates = [];
   const text = String(buffer || "");
   let index = 0;
@@ -371,9 +371,20 @@ function extractBindAnswer(buffer) {
     }
     index = end;
   }
-  const unique = [...new Set(candidates)];
-  unique.sort((a, b) => b.length - a.length);
-  return unique.find((item) => !isTransientThinking(item)) || "";
+  const thinking = [];
+  let answer = "";
+  for (const item of candidates) {
+    if (isTransientThinking(item)) {
+      if (!thinking.includes(item)) thinking.push(item);
+    } else if (item.length >= answer.length) {
+      answer = item;
+    }
+  }
+  return { thinking, answer };
+}
+
+function extractBindAnswer(buffer) {
+  return extractBindProgress(buffer).answer;
 }
 
 const SKIP_STRINGS = new Set(["argon", "en", "ping", "c", "ok"]);
@@ -430,10 +441,26 @@ export function extractProcessSessionAnswer(bodyText) {
   return longest || "";
 }
 
-export function streamBodyFromAnswerText(text) {
-  const payload = [null, "c_conversation", null, null, [["c_choice", [text]]]];
+function streamFrame(payload) {
   const frame = JSON.stringify([["wrb.fr", null, JSON.stringify(payload)]]);
-  return `${XSSI_GUARD}${Buffer.byteLength(frame)}\n${frame}\n`;
+  return `${Buffer.byteLength(frame)}\n${frame}\n`;
+}
+
+export function streamBodyFromAnswerText(text) {
+  return `${XSSI_GUARD}${streamFrame([null, "c_conversation", null, null, [["c_choice", [text]]]])}`;
+}
+
+function streamBodyFromBind(thinking, text) {
+  let body = XSSI_GUARD;
+  for (const label of thinking) {
+    body += streamFrame([
+      null,
+      ["c_conversation", "r_response"],
+      { 7: [null, null, null, null, null, [label]], 44: true },
+    ]);
+  }
+  if (text) body += streamFrame([null, "c_conversation", null, null, [["c_choice", [text]]]]);
+  return body;
 }
 
 export async function readBindUntilAnswer(response, { signal, limit } = {}) {
@@ -454,12 +481,12 @@ export async function readBindUntilAnswer(response, { signal, limit } = {}) {
   };
 
   const readyBody = () => {
-    if (buffer.includes("wrb.fr") && !isTransientThinking(extractBindAnswer(buffer))) {
-      return buffer;
+    const { thinking, answer } = extractBindProgress(buffer);
+    if (buffer.includes("wrb.fr") && !isTransientThinking(answer || "")) {
+      return answer ? streamBodyFromBind(thinking, answer) : buffer;
     }
-    const extracted = extractBindAnswer(buffer);
-    if (!extracted) return "";
-    return streamBodyFromAnswerText(extracted);
+    if (!answer) return "";
+    return streamBodyFromBind(thinking, answer);
   };
 
   const nextRead = () => {
