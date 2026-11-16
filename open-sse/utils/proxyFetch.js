@@ -505,6 +505,9 @@ async function createBypassRequest(parsedUrl, realIP, options) {
 }
 
 export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
+  // `fetch(url, null)` is legal: an explicit null init means "no options".
+  options = options ?? {};
+
   // Keep the spoofed Claude Code version current (new models require a minimum CLI version).
   // Refresh in the background: the request uses the version already known, so an
   // unreachable npm registry can never add latency to the chat path.
@@ -526,7 +529,12 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       "x-relay-target": `${parsed.protocol}//${parsed.host}`,
       "x-relay-path": `${parsed.pathname}${parsed.search}`,
     };
-    return await rawFetch(vercelRelayUrl, { ...options, headers: relayHeaders });
+    const relayInit = { ...options, headers: relayHeaders };
+    // The relay hop is direct, so an explicit destination header cap needs the
+    // direct dispatcher; callers that omit one keep undici's default limit.
+    const headerSize = normalizeMaxHeaderSize(options.maxHeaderSize);
+    if (headerSize) relayInit.dispatcher = await getDirectDispatcher(false, headerSize);
+    return await rawFetch(vercelRelayUrl, relayInit);
   }
 
   const connectionProxyUrl = resolveConnectionProxyUrl(targetUrl, proxyOptions);

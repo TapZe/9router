@@ -104,8 +104,8 @@ function requestOptionsFor(url, options, headers, bodyBuffer) {
       : GEMINI_WEB_LIMITS.maxHeaderSize,
   };
   if (isHttps) {
-    // Native Gemini traffic is fail-closed: there is no insecure mode here, and
-    // the caller's strictTls flag is already the default behavior.
+    // Gemini Web native traffic always verifies the upstream certificate. This
+    // transport has no insecure mode, so strictTls changes nothing here.
     requestOptions.rejectUnauthorized = true;
     requestOptions.ecdhCurve = process.env.NINEROUTER_TLS_ECDH_CURVE || "X25519";
   }
@@ -119,7 +119,7 @@ function requestOptionsFor(url, options, headers, bodyBuffer) {
 /**
  * Fetch one URL through Node's HTTP/1 client.
  *
- * Verification stays on unless the caller explicitly opts into insecure TLS.
+ * Verification is always on: this transport has no insecure TLS mode.
  * Direct calls use a one-shot socket (`agent: false`); SOCKS calls reuse a
  * cached SocksProxyAgent that holds no cookie or header state.
  */
@@ -219,14 +219,9 @@ export async function geminiWebHttp1Fetch(url, options = {}, proxyUrl = null) {
       finish(error);
     };
 
-    if (options.signal) {
-      if (options.signal.aborted) {
-        onAbort();
-        return;
-      }
-      options.signal.addEventListener("abort", onAbort, { once: true });
-    }
-
+    // Attach these before the abort wiring below: an abort can destroy this
+    // request in the same tick, and a ClientRequest that emits 'error' with no
+    // listener takes the whole process down.
     request.on("error", (error) => {
       if (options.signal?.aborted) return finish(abortError(options.signal.reason));
       if (error?.name === "AbortError") return finish(error);
@@ -237,6 +232,14 @@ export async function geminiWebHttp1Fetch(url, options = {}, proxyUrl = null) {
     });
     if (Number.isInteger(options.timeoutMs) && options.timeoutMs > 0) {
       request.setTimeout(options.timeoutMs);
+    }
+
+    if (options.signal) {
+      if (options.signal.aborted) {
+        onAbort();
+        return;
+      }
+      options.signal.addEventListener("abort", onAbort, { once: true });
     }
 
     if (bodyBuffer && bodyBuffer.length > 0) request.write(bodyBuffer);
