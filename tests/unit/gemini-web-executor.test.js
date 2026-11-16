@@ -31,6 +31,7 @@ import {
   modelDiscoveryBody,
   modelEntry,
   payloadFrame,
+  policyGroup,
   streamFromText,
 } from "../fixtures/gemini-web/wireFixtures.js";
 import {
@@ -91,6 +92,7 @@ function googleTransport(options = {}) {
     upload: 0,
     download: 0,
     rotate: 0,
+    session: 0,
   };
   let uploadId = 0;
 
@@ -148,6 +150,12 @@ function googleTransport(options = {}) {
       return options.discover
         ? options.discover(call, state)
         : new Response(modelDiscovery(), { status: 200 });
+    }
+
+    if (url.pathname === "/v1/processSession") {
+      state.session += 1;
+      if (!options.session) throw new Error(`unexpected ProcessSession request: ${call.url}`);
+      return options.session(call, state);
     }
 
     if (url.pathname.includes("StreamGenerate")) {
@@ -633,6 +641,189 @@ describe("Gemini Web responses", () => {
     expect(serialized).not.toContain("synthetic-psid");
     expect(serialized).not.toContain("synthetic-at-token");
     expect(result.transformedBody).not.toHaveProperty("f.req");
+  });
+});
+
+describe("Gemini Web generation ownership", () => {
+  function policyDiscovery() {
+    return modelDiscoveryBody({
+      tiers: [8],
+      entries: [],
+      policy: [
+        "carbon_multi_ultra_pro_policy",
+        [
+          policyGroup("", "4 Hydrogen", "Everyday help", 1),
+          policyGroup("argon", "Argon", "Code & analysis", 8),
+        ],
+      ],
+    });
+  }
+
+  function policyHarness(session) {
+    return googleTransport({
+      discover: () =>
+        new Response(policyDiscovery(), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      session,
+    });
+  }
+
+  const openOk = () =>
+    new Response('[[0,["c","synthetic-sid","0",8]]]', {
+      status: 200,
+      headers: { "x-http-session-id": "synthetic-gsession" },
+    });
+
+  const sentTurn = (calls) =>
+    calls.some((call) => String(call.options.body || "").includes("req1___data__"));
+
+  it("does not mark a failed Bind open as consumed and never sends the turn", async () => {
+    const harness = policyHarness(() => new Response("upstream broke", { status: 500 }));
+    const result = await executeWith(harness, { model: "gemini-code-analysis" });
+
+    expect(result.response.status).toBe(500);
+    expect(isNonReplayableResponse(result.response)).toBe(false);
+    expect(harness.state.session).toBe(1);
+    expect(harness.state.generation).toBe(0);
+    expect(sentTurn(harness.calls)).toBe(false);
+  });
+
+  it("marks the turn consumed once the Bind send was issued and the answer was lost", async () => {
+    const harness = policyHarness((call) => {
+      if (String(call.options.body || "").startsWith("count=0")) return openOk();
+      if (call.options.method === "GET") return new Response(")]}'\n", { status: 200 });
+      return new Response(")]}'\n[[1,[]]]\n", { status: 200 });
+    });
+    const result = await executeWith(harness, { model: "gemini-code-analysis" });
+
+    expect(result.response.status).toBe(502);
+    expect(isNonReplayableResponse(result.response)).toBe(true);
+    expect(sentTurn(harness.calls)).toBe(true);
+  });
+
+  it("keeps a rejected Bind open retryable with its Retry-After", async () => {
+    const harness = policyHarness(
+      () => new Response("slow down", { status: 429, headers: { "retry-after": "7" } })
+    );
+    const result = await executeWith(harness, { model: "gemini-code-analysis" });
+
+    expect(result.response.status).toBe(429);
+    expect(result.response.headers.get("retry-after")).toBe("7");
+    expect(isNonReplayableResponse(result.response)).toBe(false);
+    expect(sentTurn(harness.calls)).toBe(false);
+  });
+
+  it.each([401, 403, 429])(
+    "marks a channel read rejected after an accepted send with %s",
+    async (status) => {
+      const harness = policyHarness((call) => {
+        const body = String(call.options.body || "");
+        if (body.startsWith("count=0")) return openOk();
+        if (call.options.method === "GET") {
+          return new Response("rejected", { status, headers: { "retry-after": "3" } });
+        }
+        return new Response(")]}'\n[[1,[]]]\n", { status: 200 });
+      });
+      const result = await executeWith(harness, { model: "gemini-code-analysis" });
+
+      expect(result.response.status).toBe(status);
+      expect(isNonReplayableResponse(result.response)).toBe(true);
+      expect(sentTurn(harness.calls)).toBe(true);
+      expect(harness.state.generation).toBe(0);
+    }
+  );
+
+  it.each([401, 403, 429])(
+    "keeps a rejected inference send with %s retryable",
+    async (status) => {
+      const harness = policyHarness((call) => {
+        const body = String(call.options.body || "");
+        if (body.startsWith("count=0")) return openOk();
+        return new Response("rejected", { status });
+      });
+      const result = await executeWith(harness, { model: "gemini-code-analysis" });
+
+      expect(result.response.status).toBe(status);
+      expect(isNonReplayableResponse(result.response)).toBe(false);
+      expect(sentTurn(harness.calls)).toBe(true);
+    }
+  );
+
+  it("keeps a rejected StreamGenerate send retryable", async () => {
+    const harness = googleTransport({
+      generate: () => new Response("rejected", { status: 401 }),
+    });
+    const result = await executeWith(harness, {});
+
+    expect(result.response.status).toBe(401);
+    expect(isNonReplayableResponse(result.response)).toBe(false);
+    expect(harness.state.generation).toBe(1);
+  });
+
+  it("does not fall back to another account when the channel read is rejected after the send", async () => {
+    const harness = policyHarness((call) => {
+      const body = String(call.options.body || "");
+      if (body.startsWith("count=0")) return openOk();
+      if (call.options.method === "GET") return new Response("rejected", { status: 401 });
+      return new Response(")]}'\n[[1,[]]]\n", { status: 200 });
+    });
+    const attempts = [];
+    const response = await handleComboChat({
+      body: chatBody([userText("Hi")]),
+      models: ["gemini-web/gemini-code-analysis", "other/fallback"],
+      handleSingleModel: async (_body, model) => {
+        attempts.push(model);
+        if (model === "gemini-web/gemini-code-analysis") {
+          return (
+            await executeWith(harness, {
+              model: "gemini-code-analysis",
+              body: chatBody([userText("Hi")]),
+            })
+          ).response;
+        }
+        return new Response(JSON.stringify({ choices: [{ message: { content: "Fallback answer" } }] }));
+      },
+      log: { info() {}, warn() {}, debug() {} },
+      comboName: "post-send-rejection",
+      comboStrategy: "fallback",
+    });
+
+    expect(response.status).toBe(401);
+    expect(attempts).toEqual(["gemini-web/gemini-code-analysis"]);
+  });
+
+  it("keeps a rejected image send retryable on another account", async () => {
+    const harness = policyHarness((call) => {
+      const body = String(call.options.body || "");
+      if (body.startsWith("count=0")) return openOk();
+      return new Response("rejected", { status: 401 });
+    });
+    const executor = new geminiWeb.GeminiWebExecutor();
+    const { credentials } = makeCredentials();
+
+    const error = await executor
+      .generateMedia({ prompt: "a teal square", n: 1, credentials, transport: harness.transport })
+      .catch((caught) => caught);
+
+    expect(error.status).toBe(401);
+    expect(error.nonReplayable).toBeUndefined();
+  });
+
+  it("keeps a failed image Bind open retryable on another account", async () => {
+    const harness = policyHarness(() => new Response("upstream broke", { status: 500 }));
+    const executor = new geminiWeb.GeminiWebExecutor();
+    const { credentials } = makeCredentials();
+
+    const error = await executor
+      .generateMedia({ prompt: "a teal square", n: 1, credentials, transport: harness.transport })
+      .catch((caught) => caught);
+
+    expect(error.status).toBe(500);
+    expect(error.nonReplayable).toBeUndefined();
+    expect(harness.state.session).toBe(1);
+    expect(harness.state.generation).toBe(0);
   });
 });
 

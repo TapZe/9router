@@ -12,6 +12,49 @@ function serializeRequestBody(requestBody) {
   return JSON.stringify(requestBody);
 }
 
+const BINARY_IMAGE_FORMATS = Object.freeze({
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+});
+
+function requestedBinaryImageMime(body) {
+  const requested =
+    typeof body?.output_format === "string" ? body.output_format.trim().toLowerCase() : "";
+  if (requested === "jpeg" || requested === "jpg" || requested === "image/jpeg") return "image/jpeg";
+  if (requested === "webp" || requested === "image/webp") return "image/webp";
+  return "image/png";
+}
+
+/**
+ * Label bytes with the provider-declared image type when it is one we accept.
+ * A requested output_format only labels providers that return bytes without
+ * their own type; it never relabels bytes the provider did not convert.
+ */
+function binaryImageType(first, body) {
+  const declared =
+    typeof first?.mime_type === "string"
+      ? first.mime_type.split(";")[0].trim().toLowerCase()
+      : "";
+  const normalized = declared === "image/jpg" ? "image/jpeg" : declared;
+  // A plain-object lookup answers inherited names like "__proto__" or
+  // "constructor"; only an own entry is a real image type.
+  const mime = Object.hasOwn(BINARY_IMAGE_FORMATS, normalized)
+    ? normalized
+    : requestedBinaryImageMime(body);
+  return { mime, extension: BINARY_IMAGE_FORMATS[mime] };
+}
+
+async function firstImageBase64(first) {
+  let b64 = first?.b64_json;
+  if (!b64 && first?.url) {
+    try {
+      b64 = await urlToBase64(first.url);
+    } catch {}
+  }
+  return b64;
+}
+
 /**
  * Core image generation handler — orchestrator only.
  * Provider-specific URL/headers/body/parse/normalize live in `./imageProviders/{id}.js`.
@@ -65,16 +108,12 @@ export async function handleImageGenerationCore({
 
       if (binaryOutput) {
         const first = finalBody.data?.[0];
-        let b64 = first?.b64_json;
-        if (!b64 && first?.url) {
-          try { b64 = await urlToBase64(first.url); } catch {}
-        }
+        const b64 = await firstImageBase64(first);
         if (b64) {
+          const { mime, extension } = binaryImageType(first, body);
           const buf = Buffer.from(b64, "base64");
-          const fmt = (body.output_format || "png").toLowerCase();
-          const mime = fmt === "jpeg" || fmt === "jpg" ? "image/jpeg" : fmt === "webp" ? "image/webp" : "image/png";
           const response = new Response(buf, {
-            headers: { "Content-Type": mime, "Content-Disposition": `inline; filename="image.${fmt === "jpeg" ? "jpg" : fmt}"`, "Access-Control-Allow-Origin": "*" },
+            headers: { "Content-Type": mime, "Content-Disposition": `inline; filename="image.${extension}"`, "Access-Control-Allow-Origin": "*" },
           });
           if (provider === "gemini-web" || provider === "gweb") markNonReplayableResponse(response);
           return { success: true, response };
@@ -227,20 +266,16 @@ export async function handleImageGenerationCore({
   // Binary output: decode first b64_json (or fetch url) into raw bytes
   if (binaryOutput) {
     const first = finalBody.data?.[0];
-    let b64 = first?.b64_json;
-    if (!b64 && first?.url) {
-      try { b64 = await urlToBase64(first.url); } catch {}
-    }
+    const b64 = await firstImageBase64(first);
     if (b64) {
+      const { mime, extension } = binaryImageType(first, body);
       const buf = Buffer.from(b64, "base64");
-      const fmt = (body.output_format || "png").toLowerCase();
-      const mime = fmt === "jpeg" || fmt === "jpg" ? "image/jpeg" : fmt === "webp" ? "image/webp" : "image/png";
       return {
         success: true,
         response: new Response(buf, {
           headers: {
             "Content-Type": mime,
-            "Content-Disposition": `inline; filename="image.${fmt === "jpeg" ? "jpg" : fmt}"`,
+            "Content-Disposition": `inline; filename="image.${extension}"`,
             "Access-Control-Allow-Origin": "*",
           },
         }),

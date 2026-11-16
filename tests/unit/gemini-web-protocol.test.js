@@ -19,6 +19,7 @@ import {
   extractProcessSessionAnswer,
   parseBrowserChannelOpen,
   protoToBase64,
+  readBindUntilAnswer,
   streamBodyFromAnswerText,
 } from "../../open-sse/executors/gemini-web/processSession.js";
 import {
@@ -50,6 +51,12 @@ import {
   streamFromText,
   usageFrame,
 } from "../fixtures/gemini-web/wireFixtures.js";
+import {
+  ARGON_BIND_FINAL_TEXT,
+  ARGON_BIND_PARTIAL_TEXT,
+  ARGON_BIND_RECORDS,
+  argonBindBody,
+} from "../fixtures/gemini-web/argonBindFixtures.js";
 
 const BASE_SESSION = Object.freeze({
   cookieHeader: SYNTHETIC_COOKIE,
@@ -907,10 +914,65 @@ describe("Gemini Web policy-code models", () => {
     expect(events.some((event) => event.type === "text" && event.text.includes("pong"))).toBe(true);
   }, 2000);
 
-  it("keeps reading Bind after a thinking label until the final answer", async () => {
-    const encoder = new TextEncoder();
-    const bindText = (text) => `)]}'\n${JSON.stringify([[1, [text]]])}\n`;
-    const { transport } = createTransport((call) => {
+  // Bind responses are length-prefixed JSON records whose payload is base64
+  // protobuf. Shapes below follow a captured Argon turn: turn.1 and
+  // candidate.15 carry completion, candidate.11 is a progress label, and
+  // candidate.27 -> 1 -> 2 -> 3 is the answer text.
+  function bindVarint(value) {
+    const bytes = [];
+    let rest = value >>> 0;
+    while (rest > 0x7f) {
+      bytes.push((rest & 0x7f) | 0x80);
+      rest >>>= 7;
+    }
+    bytes.push(rest);
+    return bytes;
+  }
+
+  function bindBytesField(field, payload) {
+    return [...bindVarint((field << 3) | 2), ...bindVarint(payload.length), ...payload];
+  }
+
+  function bindNumberField(field, value) {
+    return [...bindVarint((field << 3) | 0), ...bindVarint(value)];
+  }
+
+  function bindStringField(field, text) {
+    return bindBytesField(field, [...new TextEncoder().encode(text)]);
+  }
+
+  function bindCandidate({ text = "", label = "", final = false }) {
+    const candidate = [];
+    if (label) candidate.push(...bindStringField(11, label));
+    candidate.push(...bindNumberField(15, final && text ? 1 : 0));
+    if (text) {
+      const slots = [...bindNumberField(2, 0), ...bindStringField(3, text)];
+      candidate.push(...bindBytesField(27, bindBytesField(1, bindBytesField(2, slots))));
+    }
+    return candidate;
+  }
+
+  function bindTurn({ text, label, final }) {
+    const turn = [
+      ...bindNumberField(1, final ? 1 : 0),
+      ...bindBytesField(4, bindBytesField(4, bindCandidate({ text, label, final }))),
+    ];
+    const envelope = [...bindNumberField(1, 3), ...bindBytesField(7, bindBytesField(1, turn))];
+    return bindBytesField(2, envelope);
+  }
+
+  function bindBody(frames) {
+    return frames
+      .map((frame, index) => {
+        const payload = Buffer.from(bindTurn(frame)).toString("base64");
+        const record = JSON.stringify([[index + 1, [payload]]]);
+        return `${Buffer.byteLength(record)}\n${record}\n`;
+      })
+      .join("");
+  }
+
+  function bindTransport({ rpc }) {
+    return createTransport((call) => {
       const url = new URL(call.url);
       if (!url.pathname.includes("processSession")) {
         return new Response("unexpected", { status: 500 });
@@ -923,21 +985,14 @@ describe("Gemini Web policy-code models", () => {
         });
       }
       if (call.options.method === "GET" || url.searchParams.get("RID") === "rpc") {
-        return new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.enqueue(encoder.encode(bindText("Thinking...")));
-              setTimeout(() => {
-                controller.enqueue(encoder.encode(bindText("the final answer is pong")));
-              }, 40);
-            },
-          }),
-          { status: 200 }
-        );
+        return rpc(call);
       }
       return new Response(")]}'\n[[1,[]]]\n", { status: 200 });
     });
+  }
 
+  async function bindEvents(rpc) {
+    const { transport } = bindTransport({ rpc });
     const result = await generateGeminiWeb({
       session: BASE_SESSION,
       authUser: "9",
@@ -946,16 +1001,326 @@ describe("Gemini Web policy-code models", () => {
       thinkingLevel: "low",
       transport,
     });
-
     expect(result.ok).toBe(true);
-    const events = await collect(decodeGeminiWebStream(result.body));
+    return collect(decodeGeminiWebStream(result.body));
+  }
+
+  it("completes at the turn's own completion flag without waiting for the channel to close", async () => {
+    let cancelled = false;
+    const body = bindBody([
+      { text: "Working directory: /" },
+      { text: "Working directory: /app", final: true },
+      { label: "Setting Working Directory To App" },
+    ]);
+    const events = await bindEvents(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(body));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { status: 200 }
+        )
+    );
+
     const text = events.filter((event) => event.type === "text").map((event) => event.text).join("");
-    expect(text).toContain("pong");
-    expect(text).not.toBe("Thinking...");
+    expect(text).toBe("Working directory: /app");
+    expect(cancelled).toBe(true);
+  }, 3000);
+
+  it("does not settle on a partial turn while the channel is open, and rejects it at EOF", async () => {
+    const encoder = new TextEncoder();
+    let source;
+    const stream = new ReadableStream({
+      start(controller) {
+        source = controller;
+      },
+    });
+    const pending = readBindUntilAnswer(new Response(stream));
+    let settled = false;
+    void pending.catch(() => {
+      settled = true;
+    });
+
+    source.enqueue(encoder.encode(bindBody([{ text: "Working" }])));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(settled).toBe(false);
+
+    source.close();
+    const error = await pending.catch((caught) => caught);
+    expect(error).toMatchObject({ status: 502 });
+    expect(String(error.message)).toContain("ended before the turn reported completion");
+  }, 3000);
+
+  it("maps a pre-answer Bind label to reasoning and never to answer text", async () => {
+    const events = await bindEvents(
+      () =>
+        new Response(
+          bindBody([
+            { label: "Setting Working Directory To App" },
+            { text: "Working directory: /app", final: true },
+          ]),
+          { status: 200 }
+        )
+    );
+
+    expect(
+      events.some(
+        (event) => event.type === "reasoning" && event.text.includes("Setting Working Directory To App")
+      )
+    ).toBe(true);
+    const text = events.filter((event) => event.type === "text").map((event) => event.text).join("");
+    expect(text).toBe("Working directory: /app");
+  }, 3000);
+
+  it("never fabricates an answer from a Bind stream that only carries labels", async () => {
+    const { transport } = bindTransport({
+      rpc: () => new Response(bindBody([{ label: "Thinking" }]), { status: 200 }),
+    });
+
+    const error = await generateGeminiWeb({
+      session: BASE_SESSION,
+      authUser: "9",
+      model: ARGON_MODEL,
+      prompt: "ping",
+      thinkingLevel: "low",
+      transport,
+    }).catch((caught) => caught);
+
+    expect(error).toMatchObject({ status: 502 });
+    expect(String(error?.message)).toContain("ended before the turn reported completion");
+  }, 3000);
+
+  it("keeps the later cumulative Bind answer instead of the first partial frame", async () => {
+    const encoder = new TextEncoder();
+    const events = await bindEvents(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode(bindBody([{ text: "partial" }])));
+              setTimeout(() => {
+                controller.enqueue(
+                  encoder.encode(bindBody([{ text: "partial" }, { text: "partial answer plus more", final: true }]))
+                );
+              }, 30);
+            },
+          }),
+          { status: 200 }
+        )
+    );
+
+    const text = events.filter((event) => event.type === "text").map((event) => event.text).join("");
+    expect(text).toBe("partial answer plus more");
+  }, 3000);
+
+  it("never completes on a Bind frame that is still split across reads", async () => {
+    const bytes = new TextEncoder().encode(
+      bindBody([{ text: "Working directory: /app", final: true }])
+    );
+    const middle = Math.floor(bytes.length / 2);
+    const events = await bindEvents(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(bytes.slice(0, middle));
+              setTimeout(() => {
+                controller.enqueue(bytes.slice(middle));
+                controller.close();
+              }, 20);
+            },
+          }),
+          { status: 200 }
+        )
+    );
+
+    const text = events.filter((event) => event.type === "text").map((event) => event.text).join("");
+    expect(text).toBe("Working directory: /app");
+  }, 3000);
+
+  it("never completes on a raw wrb frame that is still split across reads", async () => {
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode(streamBodyFromAnswerText("pong"));
+    const middle = Math.floor(bytes.length / 2);
+    const events = await bindEvents(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(bytes.slice(0, middle));
+              setTimeout(() => {
+                controller.enqueue(bytes.slice(middle));
+                controller.close();
+              }, 30);
+            },
+          }),
+          { status: 200 }
+        )
+    );
+
+    const text = events.filter((event) => event.type === "text").map((event) => event.text).join("");
+    expect(text).toBe("pong");
+  }, 3000);
+
+  it("never invents answer text from a labels-only stream", async () => {
+    const { transport } = bindTransport({
+      rpc: () => new Response(bindBody([{ label: "Thinking" }]), { status: 200 }),
+    });
+
+    const error = await generateGeminiWeb({
+      session: BASE_SESSION,
+      authUser: "9",
+      model: ARGON_MODEL,
+      prompt: "ping",
+      thinkingLevel: "low",
+      transport,
+    }).catch((caught) => caught);
+
+    expect(error).toMatchObject({ status: 502 });
+    expect(String(error?.message)).toContain("ended before the turn reported completion");
+  }, 3000);
+
+  it("keeps the literal completed answer when later records carry other text", async () => {
+    const completed = ARGON_BIND_RECORDS.filter((record) => record.sequence === 8);
+    const body = argonBindBody(completed) + bindBody([{ text: "Working directory: /app but later" }]);
+
+    expect(extractProcessSessionAnswer(body)).toBe(ARGON_BIND_FINAL_TEXT);
+
+    const streamBody = await readBindUntilAnswer(new Response(body)).catch((caught) => caught);
+    expect(typeof streamBody).toBe("string");
+    const events = await collect(decodeGeminiWebStream(new Response(streamBody).body));
+    const text = events.filter((event) => event.type === "text").map((event) => event.text).join("");
+    expect(text).toBe(ARGON_BIND_FINAL_TEXT);
+  }, 3000);
+
+  it("keeps the first completed answer when a second turn also completes", () => {
+    const completed = ARGON_BIND_RECORDS.filter((record) => record.sequence === 8);
+    const body =
+      argonBindBody(completed) + bindBody([{ text: "A different later answer", final: true }]);
+
+    expect(extractProcessSessionAnswer(body)).toBe(ARGON_BIND_FINAL_TEXT);
+  });
+
+  it("decodes the literal captured Bind records to the captured answer", async () => {
+    const body = argonBindBody();
+
+    expect(extractProcessSessionAnswer(body)).toBe(ARGON_BIND_FINAL_TEXT);
+
+    const streamBody = await readBindUntilAnswer(new Response(body));
+    const events = await collect(decodeGeminiWebStream(new Response(streamBody).body));
+    const text = events.filter((event) => event.type === "text").map((event) => event.text).join("");
+    expect(text).toBe(ARGON_BIND_FINAL_TEXT);
+  }, 3000);
+
+  it("reads the literal captured partial record without treating it as the answer", () => {
+    const partialOnly = argonBindBody(ARGON_BIND_RECORDS.filter((record) => record.sequence === 5));
+
+    expect(extractProcessSessionAnswer(partialOnly)).toBe("");
+    expect(ARGON_BIND_PARTIAL_TEXT).toBe("Working directory: /");
+  });
+
+  it("rejects a typed Bind stream that ends after a partial answer", async () => {
+    const partialOnly = argonBindBody(ARGON_BIND_RECORDS.filter((record) => record.sequence === 5));
+
+    const body = await readBindUntilAnswer(new Response(partialOnly)).catch((caught) => caught);
+    expect(body).toMatchObject({ status: 502 });
+    expect(String(body.message)).toContain("ended before the turn reported completion");
+  }, 3000);
+
+  it("rejects EOF on a partial typed turn instead of streaming its prefix", async () => {
+    const encoder = new TextEncoder();
+    const partialOnly = argonBindBody(ARGON_BIND_RECORDS.filter((record) => record.sequence === 5));
+    const harness = bindTransport({
+      rpc: () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode(partialOnly));
+              controller.close();
+            },
+          }),
+          { status: 200 }
+        ),
+    });
+
+    const error = await generateGeminiWeb({
+      session: BASE_SESSION,
+      authUser: "9",
+      model: ARGON_MODEL,
+      prompt: "ping",
+      thinkingLevel: "low",
+      transport: harness.transport,
+    }).catch((caught) => caught);
+
+    expect(error).toMatchObject({ status: 502 });
+    expect(String(error.message)).toContain("ended before the turn reported completion");
+  }, 3000);
+
+  it("returns no answer for a heartbeat-only Bind body", async () => {
+    const body = await readBindUntilAnswer(new Response('14\n[[1,["noop"]]]14\n[[2,["CgA="]]]\n'));
+    expect(body).toBe("");
+  }, 3000);
+
+  it("stops a Bind read when the caller aborts before the turn completes", async () => {
+    let cancelled = false;
+    const { transport } = bindTransport({
+      rpc: () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(bindBody([{ text: "Working on it" }])));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { status: 200 }
+        ),
+    });
+    const controller = new AbortController();
+    const pending = generateGeminiWeb({
+      session: BASE_SESSION,
+      authUser: "9",
+      model: ARGON_MODEL,
+      prompt: "ping",
+      thinkingLevel: "low",
+      signal: controller.signal,
+      transport,
+    }).catch((caught) => caught);
+
+    // An unfinished turn has no completion flag, so the read must still be
+    // waiting rather than settling on the partial text.
+    const settled = await Promise.race([
+      pending.then(() => "settled"),
+      new Promise((resolve) => setTimeout(() => resolve("waiting"), 400)),
+    ]);
+    expect(settled).toBe("waiting");
+
+    controller.abort(new Error("client cancelled"));
+    const error = await pending;
+    expect(error?.name).toBe("AbortError");
+    expect(cancelled).toBe(true);
+  }, 3000);
+
+  it("passes structural Bind labels through as reasoning beside the answer", async () => {
+    const events = await bindEvents(
+      () =>
+        new Response(lengthPrefixedBody([labelFrame("Thinking"), answerFrame("pong")]), {
+          status: 200,
+        })
+    );
+
     expect(events.some((event) => event.type === "reasoning" && event.text.includes("Thinking"))).toBe(
       true
     );
-  }, 2000);
+    const text = events.filter((event) => event.type === "text").map((event) => event.text).join("");
+    expect(text).toBe("pong");
+  }, 3000);
 
 
 

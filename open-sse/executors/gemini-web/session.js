@@ -35,6 +35,12 @@ const ROTATION_BACKOFF_MS = 10 * 60 * 1000;
 const bootstrapCache = new Map();
 /** Per-account rotation backoff after a failed attempt. */
 const rotationBackoff = new Map();
+/**
+ * Per-account successful rotation attempt. A 200 without a new PSIDTS stores
+ * nothing, so the jar keeps its old lastRotatedAt; without this marker every
+ * later request would rotate again.
+ */
+const rotationSucceededAt = new Map();
 
 
 function psidOf(header) {
@@ -171,6 +177,7 @@ function writeCache(key, value) {
 export function resetGeminiWebSessionCache() {
   bootstrapCache.clear();
   rotationBackoff.clear();
+  rotationSucceededAt.clear();
 }
 
 export function publicGeminiWebModels(models) {
@@ -298,17 +305,24 @@ async function rotateIfDue({ credentials, record, authUser, signal, proxyOptions
   if (!psid) return { record, rotated: false };
 
   const key = rotationKey(credentials, authUser, psid);
+  const now = Date.now();
   const backoffUntil = rotationBackoff.get(key);
-  if (backoffUntil && backoffUntil > Date.now()) return { record, rotated: false };
+  if (backoffUntil && backoffUntil > now) return { record, rotated: false };
+  if (backoffUntil) rotationBackoff.delete(key);
+  const succeededAt = rotationSucceededAt.get(key);
+  if (succeededAt !== undefined) {
+    if (now - succeededAt < ROTATION_INTERVAL_MS) return { record, rotated: false };
+    rotationSucceededAt.delete(key);
+  }
 
   try {
-    const updated = await withCredentialRefreshLock(
+    const outcome = await withCredentialRefreshLock(
       "gemini-web-rotation",
       { connectionId: key },
       async () => {
         // Re-read inside the lock: a manual replacement may have landed.
         const fresh = (await readJar(credentials)) || record;
-        if (!rotationDue(fresh)) return fresh;
+        if (!rotationDue(fresh)) return { record: fresh, rotated: false };
 
         const currentPsid = psidOf(fresh.cookieHeader);
         const currentPsidts = psidtsOf(fresh.cookieHeader);
@@ -328,22 +342,26 @@ async function rotateIfDue({ credentials, record, authUser, signal, proxyOptions
         }
 
         const rotated = readRotatedPsidts(response);
-        // A 200 without a new PSIDTS is a successful rotation with nothing to store.
-        if (!rotated) return fresh;
+        // A 200 without a new PSIDTS is a successful attempt with nothing to store.
+        if (!rotated) return { record: fresh, rotated: false };
 
         const merged = rewriteCookie(fresh.cookieHeader, PSIDTS_COOKIE, rotated);
-        if (merged === fresh.cookieHeader) return fresh;
+        if (merged === fresh.cookieHeader) return { record: fresh, rotated: false };
 
-        return commitOrReload(credentials, {
+        const updated = await commitOrReload(credentials, {
           cookieHeader: merged,
           expectedRevision: fresh.revision,
           source: "rotation",
           lastRotatedAt: new Date().toISOString(),
         });
+        // A conflicting manual replacement reloads a jar that never received
+        // this rotation, so it must not be reported as rotated.
+        return { record: updated, rotated: psidtsOf(updated?.cookieHeader) === rotated };
       }
     );
     rotationBackoff.delete(key);
-    return { record: updated, rotated: true };
+    rotationSucceededAt.set(key, Date.now());
+    return outcome;
   } catch (error) {
     throwIfAborted(signal);
     rotationBackoff.set(key, Date.now() + ROTATION_BACKOFF_MS);

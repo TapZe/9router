@@ -16,7 +16,7 @@ import { SSE_DONE, SSE_HEADERS_NO_BUFFER } from "../utils/sseConstants.js";
 import { FORMATS } from "../translator/formats.js";
 import { extractThinking, parseSuffix } from "../translator/concerns/thinkingUnified.js";
 import { estimateUsage } from "../utils/usageTracking.js";
-import { markNonReplayableResponse } from "../utils/replayPolicy.js";
+import { markNonReplayableResponse, isNonReplayableResponse } from "../utils/replayPolicy.js";
 import {
   GEMINI_WEB_ORIGIN,
   GEMINI_WEB_UNSUPPORTED_CONTROL_CODE,
@@ -301,10 +301,15 @@ async function upstreamFailure(response) {
     status === 401 || status === 403 || status === 429
       ? `Gemini Web generation was rejected with HTTP ${status}`
       : `Gemini Web generation failed with HTTP ${status}`;
-  return geminiWebError(message, {
+  const error = geminiWebError(message, {
     status: Number.isFinite(status) ? status : 502,
     retryAfter,
   });
+  // The protocol layer marks a response that arrived after the turn was
+  // accepted. That evidence outranks the status-based rejection rule: a 401
+  // while reading an accepted turn's channel is not a retryable rejection.
+  if (isNonReplayableResponse(response)) error.nonReplayable = true;
+  return error;
 }
 
 async function collectEvents(body, { signal, knownModelIds }) {
@@ -421,7 +426,12 @@ export class GeminiWebExecutor extends BaseExecutor {
 
     // 5. Upload every input image, in prompt order, then generate one turn.
     let upstream;
+    // Only the request that can consume a generation counts as dispatched; a
+    // failed upload or a Bind channel that never opened stays retryable.
     let dispatched = false;
+    const markDispatched = () => {
+      dispatched = true;
+    };
     try {
       const files = [];
       for (const [index, image] of inputImages.entries()) {
@@ -437,7 +447,6 @@ export class GeminiWebExecutor extends BaseExecutor {
         files.push(uploaded);
       }
 
-      dispatched = true;
       upstream = await generateGeminiWeb({
         session: resolved.session,
         authUser: resolved.authUser,
@@ -448,6 +457,7 @@ export class GeminiWebExecutor extends BaseExecutor {
         signal,
         proxyOptions,
         transport,
+        onDispatch: markDispatched,
       });
 
       if (!upstream.ok) {
@@ -458,7 +468,10 @@ export class GeminiWebExecutor extends BaseExecutor {
         return result(errorResponse(abortError()), reportedModel);
       }
       return result(
-        errorResponse(error, { nonReplayable: dispatched && isAmbiguousGenerationError(error) }),
+        errorResponse(error, {
+          nonReplayable:
+            dispatched && (error?.nonReplayable === true || isAmbiguousGenerationError(error)),
+        }),
         reportedModel
       );
     }
@@ -553,8 +566,10 @@ export class GeminiWebExecutor extends BaseExecutor {
 
     const images = [];
     let accepted = false;
+    let dispatched = false;
     try {
       while (images.length < wanted) {
+        dispatched = false;
         const upstream = await generateGeminiWeb({
           session: resolved.session,
           authUser: resolved.authUser,
@@ -565,6 +580,9 @@ export class GeminiWebExecutor extends BaseExecutor {
           signal,
           proxyOptions,
           transport,
+          onDispatch: () => {
+            dispatched = true;
+          },
         });
         if (!upstream.ok) throw await upstreamFailure(upstream);
         accepted = true;
@@ -591,11 +609,14 @@ export class GeminiWebExecutor extends BaseExecutor {
           code: ABORT_CODE,
         });
       }
-      // A rejected generation (401/403/429) was never accepted, so account
-      // fallback is still safe; anything after acceptance must not replay.
+      // A rejected generation (401/403/429) or a channel that never carried
+      // req0/req1 was not consumed, so account fallback is still safe;
+      // anything after the send must not replay.
       const status = Number(error?.status);
       const rejected = status === 400 || status === 401 || status === 403 || status === 429;
-      if (accepted || !rejected) error.nonReplayable = true;
+      if (accepted || error?.nonReplayable === true || (dispatched && !rejected)) {
+        error.nonReplayable = true;
+      }
       throw error;
     }
 

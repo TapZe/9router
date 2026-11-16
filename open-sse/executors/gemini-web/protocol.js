@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 
 import { normalizeGeminiCookieInput } from "../../utils/geminiCookies.js";
+import { markNonReplayableResponse } from "../../utils/replayPolicy.js";
 import {
   GEMINI_WEB_AUTOMATIC_THINKING,
   GEMINI_WEB_DEFAULT_HEADERS,
@@ -523,6 +524,7 @@ async function generateGeminiWebProcessSession({
   proxyOptions,
   transport,
   botguard,
+  onDispatch,
 }) {
   const slot = normalizeAuthUser(authUser);
   const language = session.language || GEMINI_WEB_DEFAULT_LANGUAGE;
@@ -607,6 +609,9 @@ async function generateGeminiWebProcessSession({
     req1___data__: protoToBase64(req1),
   }).toString();
 
+  // Opening the Bind channel does not consume a turn; posting req0/req1 does.
+  // Everything after this point must never be replayed on another account.
+  onDispatch?.();
   const sendResponse = await post(
     processSessionUrl({
       authUser: slot,
@@ -659,7 +664,13 @@ async function generateGeminiWebProcessSession({
     GEMINI_WEB_LIMITS.generationTimeoutMs,
     "generation"
   );
-  if (!rpcResponse.ok) return rpcResponse;
+  if (!rpcResponse.ok) {
+    // The turn POST was already accepted, so a rejection while reading its
+    // channel is evidence the generation may have been consumed. Mark the
+    // response so the executor never offers it to another account, even when
+    // the status alone would look like a plain rejection.
+    return markNonReplayableResponse(rpcResponse);
+  }
   const rpcText = await readBindUntilAnswer(rpcResponse, {
     signal,
     limit: GEMINI_WEB_LIMITS.maxFrameBytes,
@@ -680,6 +691,7 @@ export async function generateGeminiWeb({
   proxyOptions,
   transport,
   botguard,
+  onDispatch,
 } = {}) {
   const slot = normalizeAuthUser(authUser);
   const level = resolveThinkingLevel(thinkingLevel);
@@ -701,6 +713,7 @@ export async function generateGeminiWeb({
       proxyOptions,
       transport,
       botguard,
+      onDispatch,
     });
   }
   const language = session.language || GEMINI_WEB_DEFAULT_LANGUAGE;
@@ -745,8 +758,10 @@ export async function generateGeminiWeb({
   const proxy = { ...(proxyOptions || {}), strictProxy: true };
 
   const response = await withTimeout(
-    (combinedSignal) =>
-      fetchImpl(
+    (combinedSignal) => {
+      // This POST is the boundary that can consume a generation.
+      onDispatch?.();
+      return fetchImpl(
         url,
         {
           method: "POST",
@@ -760,7 +775,8 @@ export async function generateGeminiWeb({
           signal: combinedSignal,
         },
         proxy
-      ),
+      );
+    },
     signal,
     GEMINI_WEB_LIMITS.generationTimeoutMs,
     "generation"

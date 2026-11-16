@@ -17,8 +17,6 @@ import { isJsonWhitespace, scanJsonValue } from "./stream.js";
 
 const TEXT_ENC = new TextEncoder();
 const XSSI_GUARD = ")]}'\n";
-const BIND_IDLE_MS = 400;
-const THINKING_LABEL = /^(thinking|researching|working|considering|analyzing|planning|searching|reading)\b/i;
 
 export const GEMINI_WEB_PROCESS_SESSION_PATH = "/v1/processSession";
 
@@ -275,7 +273,13 @@ function readVarint(buf, offset) {
   return { value, next: buf.length, error: true };
 }
 
-function collectProtoStrings(buf, found) {
+/**
+ * Decode one protobuf message into `[field, wire, value]` tuples. Length
+ * fields keep their bytes; a malformed tail stops decoding instead of
+ * guessing. Bind frames carry protobuf wrapped in base64 inside a JSON array.
+ */
+function readProtoFields(buf) {
+  const found = [];
   let offset = 0;
   while (offset < buf.length) {
     const tag = readVarint(buf, offset);
@@ -284,74 +288,103 @@ function collectProtoStrings(buf, found) {
     const field = tag.value >>> 3;
     const wire = tag.value & 7;
     if (wire === 0) {
-      const num = readVarint(buf, offset);
-      offset = num.next;
-    } else if (wire === 1) {
-      offset += 8;
-    } else if (wire === 5) {
-      offset += 4;
+      const value = readVarint(buf, offset);
+      if (value.error) break;
+      offset = value.next;
+      found.push([field, wire, value.value]);
     } else if (wire === 2) {
       const len = readVarint(buf, offset);
       if (len.error) break;
       offset = len.next;
       const end = offset + len.value;
       if (end > buf.length) break;
-      const slice = buf.subarray(offset, end);
+      found.push([field, wire, buf.subarray(offset, end)]);
       offset = end;
-      const asStr = Buffer.from(slice).toString("utf8");
-      if (slice.length > 0 && /^[\x09\x0a\x0d\x20-\x7e]+$/.test(asStr)) {
-        if (asStr.length >= 1 && field > 0) found.push({ field, text: asStr });
-      } else {
-        collectProtoStrings(slice, found);
-      }
+    } else if (wire === 5) {
+      if (offset + 4 > buf.length) break;
+      offset += 4;
+    } else if (wire === 1) {
+      if (offset + 8 > buf.length) break;
+      offset += 8;
     } else {
       break;
     }
   }
+  return found;
 }
 
-
-function isTransientThinking(text) {
-  const value = String(text || "").trim();
-  if (!value || value.length > 96) return false;
-  return THINKING_LABEL.test(value);
+function protoAll(fields, no) {
+  return fields.filter(([field]) => field === no).map(([, , value]) => value);
 }
 
-function considerBindString(value, candidates) {
-  if (typeof value !== "string" || value.length < 1) return;
-  if (SKIP_STRINGS.has(value)) return;
-  if (/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(value)) return;
-  if (/^c_[0-9a-f]+$/i.test(value)) return;
-  if (value.startsWith("!")) return;
-  if (/^[0-9a-f]{32}$/i.test(value)) return;
-  candidates.push(value);
+function protoBytes(fields, no) {
+  const value = protoAll(fields, no)[0];
+  return value instanceof Uint8Array ? value : null;
 }
 
-function collectBindStrings(node, candidates) {
-  if (typeof node === "string") {
-    considerBindString(node, candidates);
-    if (/^[A-Za-z0-9+/]+=*$/.test(node) && node.length > 8) {
-      try {
-        const found = [];
-        collectProtoStrings(Buffer.from(node, "base64"), found);
-        for (const item of found) considerBindString(item.text, candidates);
-      } catch {
-        // Not base64 protobuf.
+function protoNumber(fields, no) {
+  const value = protoAll(fields, no)[0];
+  return typeof value === "number" ? value : null;
+}
+
+function protoText(fields, no) {
+  const bytes = protoBytes(fields, no);
+  return bytes ? Buffer.from(bytes).toString("utf8") : "";
+}
+
+/**
+ * Read the turn and candidate slots verified from a captured Argon Bind
+ * response:
+ *   payload.2 -> envelope.7 -> turn { 1: turn complete,
+ *     4 -> { 4: candidate { 11: progress label, 15: candidate complete,
+ *          27 -> 1 -> 2 -> 3: answer text } } }
+ * Captured partial turns carry turn.1 = 0 and candidate.15 = 0; the completed
+ * turn carries 1 in both. Records after completion carry field 11 labels and
+ * no turn.
+ */
+function readBindMessage(bytes) {
+  const result = { present: false, final: false, labels: [], text: "" };
+  for (const envelopeBytes of protoAll(readProtoFields(bytes), 2)) {
+    for (const listBytes of protoAll(readProtoFields(envelopeBytes), 7)) {
+      for (const turnBytes of protoAll(readProtoFields(listBytes), 1)) {
+        const turn = readProtoFields(turnBytes);
+        // Only a parsed turn marks the record as a turn payload; a heartbeat
+        // or session-metadata record is not evidence of a generation.
+        result.present = true;
+        const turnFinal = protoNumber(turn, 1) === 1;
+        for (const holderBytes of protoAll(turn, 4)) {
+          for (const candidateBytes of protoAll(readProtoFields(holderBytes), 4)) {
+            const candidate = readProtoFields(candidateBytes);
+            const candidateFinal = protoNumber(candidate, 15) === 1;
+            const label = protoText(candidate, 11).trim();
+            if (label && !result.labels.includes(label)) result.labels.push(label);
+            const block = protoBytes(candidate, 27);
+            if (!block) continue;
+            const level1 = protoBytes(readProtoFields(block), 1);
+            const level2 = level1 ? protoBytes(readProtoFields(level1), 2) : null;
+            if (!level2) continue;
+            const answer = protoText(readProtoFields(level2), 3);
+            if (!answer) continue;
+            result.text = answer;
+            // Completion needs the turn flag, the candidate flag and answer
+            // text. Any one of them alone keeps the read open.
+            if (turnFinal && candidateFinal) result.final = true;
+          }
+        }
       }
     }
-    return;
   }
-  if (Array.isArray(node)) {
-    for (const child of node) collectBindStrings(child, candidates);
-    return;
-  }
-  if (node && typeof node === "object") {
-    for (const child of Object.values(node)) collectBindStrings(child, candidates);
-  }
+  return result;
 }
 
-function extractBindProgress(buffer) {
-  const candidates = [];
+
+/**
+ * Split accumulated Bind text into complete JSON values. Numeric length
+ * records and the XSSI guard are wire framing, not values; an unbalanced tail
+ * is reported so a caller never treats a partial frame as complete.
+ */
+function scanBindFrames(buffer) {
+  const frames = [];
   const text = String(buffer || "");
   let index = 0;
   while (index < text.length) {
@@ -363,82 +396,89 @@ function extractBindProgress(buffer) {
       continue;
     }
     const end = scanJsonValue(text, index);
-    if (end < 0) break;
-    try {
-      collectBindStrings(JSON.parse(text.slice(index, end)), candidates);
-    } catch {
-      // Skip a malformed frame.
-    }
+    if (end < 0) return { frames, pending: text.slice(index) };
+    const raw = text.slice(index, end);
     index = end;
+    if (/^-?\d+$/.test(raw)) continue;
+    let value;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    frames.push(value);
   }
-  const thinking = [];
+  return { frames, pending: "" };
+}
+
+function frameCarriesWrb(value) {
+  return Array.isArray(value) && value.some((item) => Array.isArray(item) && item[0] === "wrb.fr");
+}
+
+/**
+ * Separate the parsed Bind source from the output this provider synthesizes.
+ * A hex-shaped record is the response form the decoder owns, so it passes
+ * through verbatim. A Bind record is base64 protobuf and contributes only its
+ * verified turn/candidate slots: answer text and progress labels are never
+ * inferred from other strings in the payload.
+ *
+ * `final` is the single completion decision for typed records: it requires the
+ * turn flag and the candidate flag captured together on the completed turn.
+ * `typed` records that any protobuf record was seen at all, so a reader can
+ * tell an incomplete turn from an empty heartbeat.
+ */
+function extractBindProgress(buffer) {
+  const { frames, pending } = scanBindFrames(buffer);
+  const labels = [];
   let answer = "";
-  for (const item of candidates) {
-    if (isTransientThinking(item)) {
-      if (!thinking.includes(item)) thinking.push(item);
-    } else if (item.length >= answer.length) {
-      answer = item;
+  let final = false;
+  let typed = false;
+  let rawFrames = 0;
+
+  for (const value of frames) {
+    if (frameCarriesWrb(value)) {
+      rawFrames += 1;
+      continue;
+    }
+    for (const entry of Array.isArray(value) ? value : []) {
+      if (!Array.isArray(entry) || !Array.isArray(entry[1])) continue;
+      const encoded = entry[1][0];
+      if (typeof encoded !== "string" || !encoded) continue;
+      const message = readBindMessage(Buffer.from(encoded, "base64"));
+      if (message.present) typed = true;
+      // The first completed turn owns the answer and completion. Labels and
+      // text after it are post-answer chrome (labels) or a different turn's
+      // text, and neither may replace what was already delivered.
+      if (!final) {
+        for (const label of message.labels) {
+          if (!labels.includes(label)) labels.push(label);
+        }
+        if (message.text) answer = message.text;
+      }
+      if (message.final) final = true;
     }
   }
-  return { thinking, answer };
+
+  return {
+    labels,
+    answer,
+    final,
+    typed,
+    rawComplete: frames.length > 0 && rawFrames === frames.length && pending === "",
+  };
 }
 
-function extractBindAnswer(buffer) {
-  return extractBindProgress(buffer).answer;
-}
-
-const SKIP_STRINGS = new Set(["argon", "en", "ping", "c", "ok"]);
-
+/**
+ * Answer text from a complete body, without synthesizing a stream. A typed
+ * candidate is returned only when its turn completed: an ACK body that carries
+ * a partial turn must never be taken as the final answer.
+ */
 export function extractProcessSessionAnswer(bodyText) {
   const text = stripXssi(bodyText);
   if (!text.trim()) return "";
   if (looksLikeStreamGenerate(text)) return text;
-
-  const candidates = [];
-  const consider = (value) => {
-    if (typeof value !== "string" || value.length < 1) return;
-    if (SKIP_STRINGS.has(value)) return;
-    if (/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(value)) return;
-    if (/^c_[0-9a-f]+$/i.test(value)) return;
-    if (value.startsWith("!")) return;
-    if (/^[0-9a-f]{32}$/i.test(value)) return;
-    candidates.push(value);
-  };
-
-  try {
-    const parsed = JSON.parse(text);
-    const walk = (node) => {
-      if (typeof node === "string") {
-        consider(node);
-        if (/^[A-Za-z0-9+/]+=*$/.test(node) && node.length > 8) {
-          try {
-            const buf = Buffer.from(node, "base64");
-            const found = [];
-            collectProtoStrings(buf, found);
-            for (const item of found) consider(item.text);
-          } catch {
-            // Not base64 protobuf.
-          }
-        }
-        return;
-      }
-      if (Array.isArray(node)) {
-        for (const child of node) walk(child);
-        return;
-      }
-      if (node && typeof node === "object") {
-        for (const child of Object.values(node)) walk(child);
-      }
-    };
-    walk(parsed);
-  } catch {
-    const found = [];
-    collectProtoStrings(Buffer.from(text), found);
-    for (const item of found) consider(item.text);
-  }
-
-  const longest = candidates.sort((a, b) => b.length - a.length)[0];
-  return longest || "";
+  const progress = extractBindProgress(text);
+  return progress.final ? progress.answer : "";
 }
 
 function streamFrame(payload) {
@@ -450,9 +490,13 @@ export function streamBodyFromAnswerText(text) {
   return `${XSSI_GUARD}${streamFrame([null, "c_conversation", null, null, [["c_choice", [text]]]])}`;
 }
 
-function streamBodyFromBind(thinking, text) {
+/**
+ * Synthesize the decoder's input from parsed Bind source: labels become the
+ * same reasoning payloads hex StreamGenerate uses, then the answer frame.
+ */
+function streamBodyFromBind(labels, text) {
   let body = XSSI_GUARD;
-  for (const label of thinking) {
+  for (const label of labels) {
     body += streamFrame([
       null,
       ["c_conversation", "r_response"],
@@ -463,6 +507,19 @@ function streamBodyFromBind(thinking, text) {
   return body;
 }
 
+/**
+ * Read a Bind GET until the turn's own completion flags, then return the
+ * decoder's input. Completion is the captured pair: turn.1 = 1 together with
+ * candidate.15 = 1 and answer text. That returns immediately, so a long-lived
+ * channel never delays the answer.
+ *
+ * EOF is not completion. A long-poll can close after a partial answer, so a
+ * typed stream that ends without the completed turn is an upstream error -- the
+ * caller must never receive a finished stream carrying a prefix. A heartbeat
+ * that carried no protobuf record at all returns "" so the existing
+ * "completed without an answer" path applies, and a label-only stream has no
+ * answer text either.
+ */
 export async function readBindUntilAnswer(response, { signal, limit } = {}) {
   if (!response?.body) return "";
   const reader = response.body.getReader();
@@ -480,14 +537,16 @@ export async function readBindUntilAnswer(response, { signal, limit } = {}) {
     return text;
   };
 
-  const readyBody = () => {
-    const { thinking, answer } = extractBindProgress(buffer);
-    if (buffer.includes("wrb.fr") && !isTransientThinking(answer || "")) {
-      return answer ? streamBodyFromBind(thinking, answer) : buffer;
+  // A pending read only settles when the body itself stops, so an abort must
+  // cancel the reader before the loop can observe the signal.
+  const cancelRead = () => {
+    try {
+      reader.cancel().catch?.(() => {});
+    } catch {
+      // Cancellation is best-effort; the abort error is authoritative.
     }
-    if (!answer) return "";
-    return streamBodyFromBind(thinking, answer);
   };
+  signal?.addEventListener?.("abort", cancelRead, { once: true });
 
   const nextRead = () => {
     if (!pull) {
@@ -498,31 +557,13 @@ export async function readBindUntilAnswer(response, { signal, limit } = {}) {
     return pull;
   };
 
-  const waitIdle = () =>
-    new Promise((resolve, reject) => {
-      const timer = setTimeout(() => resolve({ idle: true }), BIND_IDLE_MS);
-      const onAbort = () => {
-        clearTimeout(timer);
-        reject(abortError(signal?.reason));
-      };
-      if (signal?.aborted) {
-        clearTimeout(timer);
-        reject(abortError(signal.reason));
-        return;
-      }
-      signal?.addEventListener?.("abort", onAbort, { once: true });
-    });
-
   try {
     for (;;) {
       if (signal?.aborted) throw abortError(signal.reason);
-      const body = readyBody();
-      if (body.includes("wrb.fr")) return await stop(body);
-      const raced = body
-        ? await Promise.race([nextRead(), waitIdle()])
-        : await nextRead();
-      if (raced?.idle) return await stop(body);
-      const { done, value } = raced;
+      const progress = extractBindProgress(buffer);
+      if (progress.rawComplete) return await stop(buffer);
+      if (progress.final) return await stop(streamBodyFromBind(progress.labels, progress.answer));
+      const { done, value } = await nextRead();
       if (value) {
         total += value.byteLength;
         if (limit && total > limit) {
@@ -531,11 +572,21 @@ export async function readBindUntilAnswer(response, { signal, limit } = {}) {
         buffer += decoder.decode(value, { stream: !done });
       }
       if (done) {
+        if (signal?.aborted) throw abortError(signal.reason);
         buffer += decoder.decode();
-        return readyBody();
+        const complete = extractBindProgress(buffer);
+        if (complete.rawComplete) return buffer;
+        if (complete.final) return streamBodyFromBind(complete.labels, complete.answer);
+        if (complete.typed) {
+          throw upstreamError(
+            "Gemini Web Bind stream ended before the turn reported completion"
+          );
+        }
+        return "";
       }
     }
   } finally {
+    signal?.removeEventListener?.("abort", cancelRead);
     try {
       reader.releaseLock?.();
     } catch {
