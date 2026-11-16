@@ -3,12 +3,11 @@
 // (req0 envelope + req1 prompt) plus BardChatUi's jspb mapping (proto field N
 // is JSON array index N-1).
 
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 
 import {
   GEMINI_WEB_DEFAULT_LANGUAGE,
   GEMINI_WEB_ENDPOINTS,
-  GEMINI_WEB_LIMITS,
   GEMINI_WEB_ORIGIN,
   normalizeAuthUser,
 } from "./config.js";
@@ -366,73 +365,3 @@ export function streamBodyFromAnswerText(text) {
   return `${XSSI_GUARD}${Buffer.byteLength(frame)}\n${frame}\n`;
 }
 
-export function newBotguardSalt() {
-  return randomBytes(16).toString("hex");
-}
-
-export function botguardContentHash(prompt, salt) {
-  return createHash("sha256")
-    .update(`${prompt || ""}${salt || ""}`)
-    .digest("hex")
-    .slice(0, 32);
-}
-
-const WAA_CREATE = "https://waa-pa.clients6.google.com/$rpc/google.internal.waa.v1.Waa/Create";
-// Public browser key from BardChatUi's Waa client, not a user credential.
-const WAA_API_KEY = "AIzaSyBGb5fGAyC-pRcRU6MUHb__b_vKha71HRE";
-
-function tokenFromWaaBody(text) {
-  const raw = String(text || "").trim();
-  if (!raw) return null;
-  if (raw.startsWith("!") && raw.length > 20) return raw;
-  try {
-    const parsed = JSON.parse(raw);
-    const walk = (node) => {
-      if (typeof node === "string" && node.startsWith("!") && node.length > 20) return node;
-      if (Array.isArray(node)) {
-        for (const child of node) {
-          const found = walk(child);
-          if (found) return found;
-        }
-      } else if (node && typeof node === "object") {
-        for (const child of Object.values(node)) {
-          const found = walk(child);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-    return walk(parsed);
-  } catch {
-    return null;
-  }
-}
-
-export async function mintBotguard({ fetchImpl, proxyOptions, cookieHeader, prompt, signal } = {}) {
-  if (typeof fetchImpl !== "function") return null;
-  const salt = newBotguardSalt();
-  const response = await fetchImpl(
-    WAA_CREATE,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json+protobuf",
-        "x-goog-api-key": WAA_API_KEY,
-        origin: GEMINI_WEB_ORIGIN,
-        referer: `${GEMINI_WEB_ORIGIN}/`,
-        cookie: cookieHeader || "",
-      },
-      body: JSON.stringify([salt]),
-      redirect: "manual",
-      strictTls: true,
-      timeoutMs: GEMINI_WEB_LIMITS.bootstrapTimeoutMs,
-      signal,
-    },
-    proxyOptions
-  );
-  if (!response?.ok) return null;
-  const text = await response.text();
-  const token = tokenFromWaaBody(text);
-  if (!token) return null;
-  return { token, hash: botguardContentHash(prompt, salt) };
-}

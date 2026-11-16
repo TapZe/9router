@@ -32,7 +32,6 @@ import {
   encodeProcessSessionReq0,
   encodeProcessSessionReq1,
   extractProcessSessionAnswer,
-  mintBotguard,
   parseBrowserChannelOpen,
   processSessionUrl,
   protoToBase64,
@@ -562,20 +561,8 @@ async function generateGeminiWebProcessSession({
     );
 
   const openRid = randomBindRid();
-  let attestation = botguard;
-  if (!attestation) {
-    try {
-      attestation = await mintBotguard({
-        fetchImpl,
-        proxyOptions: proxy,
-        cookieHeader: session.cookieHeader,
-        prompt: typeof prompt === "string" ? prompt : "",
-        signal,
-      });
-    } catch {
-      attestation = null;
-    }
-  }
+  const attestation = botguard;
+
 
   const openResponse = await post(
     processSessionUrl({

@@ -829,6 +829,7 @@ describe("Gemini Web policy-code models", () => {
     expect(new URL(send.url).searchParams.get("authuser")).toBe("9");
     expect(new URL(send.url).searchParams.get("gsessionid")).toBe("synthetic-gsession");
     expect(new URL(send.url).searchParams.get("SID")).toBe("synthetic-sid");
+    expect(calls.some((call) => call.url.includes("waa-pa"))).toBe(false);
     const events = await collect(decodeGeminiWebStream(result.body));
     expect(events.some((event) => event.type === "text" && event.text.includes("pong"))).toBe(true);
   });
