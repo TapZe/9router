@@ -907,6 +907,54 @@ describe("Gemini Web policy-code models", () => {
     expect(events.some((event) => event.type === "text" && event.text.includes("pong"))).toBe(true);
   }, 2000);
 
+  it("keeps reading Bind after a thinking label until the final answer", async () => {
+    const encoder = new TextEncoder();
+    const bindText = (text) => `)]}'\n${JSON.stringify([[1, [text]]])}\n`;
+    const { transport } = createTransport((call) => {
+      const url = new URL(call.url);
+      if (!url.pathname.includes("processSession")) {
+        return new Response("unexpected", { status: 500 });
+      }
+      const body = String(call.options.body || "");
+      if (body === "count=0" || body.startsWith("count=0")) {
+        return new Response('[[0,["c","synthetic-sid","0",8]]]', {
+          status: 200,
+          headers: { "x-http-session-id": "synthetic-gsession" },
+        });
+      }
+      if (call.options.method === "GET" || url.searchParams.get("RID") === "rpc") {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode(bindText("Thinking...")));
+              setTimeout(() => {
+                controller.enqueue(encoder.encode(bindText("the final answer is pong")));
+              }, 40);
+            },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(")]}'\n[[1,[]]]\n", { status: 200 });
+    });
+
+    const result = await generateGeminiWeb({
+      session: BASE_SESSION,
+      authUser: "9",
+      model: ARGON_MODEL,
+      prompt: "ping",
+      thinkingLevel: "low",
+      transport,
+    });
+
+    expect(result.ok).toBe(true);
+    const events = await collect(decodeGeminiWebStream(result.body));
+    const text = events.filter((event) => event.type === "text").map((event) => event.text).join("");
+    expect(text).toContain("pong");
+    expect(text).not.toBe("Thinking...");
+  }, 2000);
+
+
 
   it("parses a BrowserChannel open reply and Bind answer text", () => {
     expect(parseBrowserChannelOpen('[[0,["c","sid-a","0",8]]]')).toEqual({

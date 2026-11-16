@@ -13,9 +13,12 @@ import {
   normalizeAuthUser,
   upstreamError,
 } from "./config.js";
+import { isJsonWhitespace, scanJsonValue } from "./stream.js";
 
 const TEXT_ENC = new TextEncoder();
 const XSSI_GUARD = ")]}'\n";
+const BIND_IDLE_MS = 400;
+const THINKING_LABEL = /^(thinking|researching|working|considering|analyzing|planning|searching|reading)\b/i;
 
 export const GEMINI_WEB_PROCESS_SESSION_PATH = "/v1/processSession";
 
@@ -307,6 +310,72 @@ function collectProtoStrings(buf, found) {
   }
 }
 
+
+function isTransientThinking(text) {
+  const value = String(text || "").trim();
+  if (!value || value.length > 96) return false;
+  return THINKING_LABEL.test(value);
+}
+
+function considerBindString(value, candidates) {
+  if (typeof value !== "string" || value.length < 1) return;
+  if (SKIP_STRINGS.has(value)) return;
+  if (/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(value)) return;
+  if (/^c_[0-9a-f]+$/i.test(value)) return;
+  if (value.startsWith("!")) return;
+  if (/^[0-9a-f]{32}$/i.test(value)) return;
+  candidates.push(value);
+}
+
+function collectBindStrings(node, candidates) {
+  if (typeof node === "string") {
+    considerBindString(node, candidates);
+    if (/^[A-Za-z0-9+/]+=*$/.test(node) && node.length > 8) {
+      try {
+        const found = [];
+        collectProtoStrings(Buffer.from(node, "base64"), found);
+        for (const item of found) considerBindString(item.text, candidates);
+      } catch {
+        // Not base64 protobuf.
+      }
+    }
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (const child of node) collectBindStrings(child, candidates);
+    return;
+  }
+  if (node && typeof node === "object") {
+    for (const child of Object.values(node)) collectBindStrings(child, candidates);
+  }
+}
+
+function extractBindAnswer(buffer) {
+  const candidates = [];
+  const text = String(buffer || "");
+  let index = 0;
+  while (index < text.length) {
+    while (index < text.length && isJsonWhitespace(text[index])) index += 1;
+    if (index >= text.length) break;
+    if (text.startsWith(")]}'", index)) {
+      index += 4;
+      if (text[index] === "\n") index += 1;
+      continue;
+    }
+    const end = scanJsonValue(text, index);
+    if (end < 0) break;
+    try {
+      collectBindStrings(JSON.parse(text.slice(index, end)), candidates);
+    } catch {
+      // Skip a malformed frame.
+    }
+    index = end;
+  }
+  const unique = [...new Set(candidates)];
+  unique.sort((a, b) => b.length - a.length);
+  return unique.find((item) => !isTransientThinking(item)) || "";
+}
+
 const SKIP_STRINGS = new Set(["argon", "en", "ping", "c", "ok"]);
 
 export function extractProcessSessionAnswer(bodyText) {
@@ -373,6 +442,7 @@ export async function readBindUntilAnswer(response, { signal, limit } = {}) {
   const decoder = new TextDecoder();
   let buffer = "";
   let total = 0;
+  let pull = null;
 
   const stop = async (text) => {
     try {
@@ -383,17 +453,49 @@ export async function readBindUntilAnswer(response, { signal, limit } = {}) {
     return text;
   };
 
-  const answered = (text) => {
-    if (text.includes("wrb.fr")) return text;
-    const extracted = extractProcessSessionAnswer(text);
+  const readyBody = () => {
+    if (buffer.includes("wrb.fr") && !isTransientThinking(extractBindAnswer(buffer))) {
+      return buffer;
+    }
+    const extracted = extractBindAnswer(buffer);
     if (!extracted) return "";
-    return extracted.includes("wrb.fr") ? extracted : streamBodyFromAnswerText(extracted);
+    return streamBodyFromAnswerText(extracted);
   };
+
+  const nextRead = () => {
+    if (!pull) {
+      pull = reader.read().finally(() => {
+        pull = null;
+      });
+    }
+    return pull;
+  };
+
+  const waitIdle = () =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve({ idle: true }), BIND_IDLE_MS);
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(abortError(signal?.reason));
+      };
+      if (signal?.aborted) {
+        clearTimeout(timer);
+        reject(abortError(signal.reason));
+        return;
+      }
+      signal?.addEventListener?.("abort", onAbort, { once: true });
+    });
 
   try {
     for (;;) {
       if (signal?.aborted) throw abortError(signal.reason);
-      const { done, value } = await reader.read();
+      const body = readyBody();
+      if (body.includes("wrb.fr")) return await stop(body);
+      const raced = body
+        ? await Promise.race([nextRead(), waitIdle()])
+        : await nextRead();
+      if (raced?.idle) return await stop(body);
+      const { done, value } = raced;
       if (value) {
         total += value.byteLength;
         if (limit && total > limit) {
@@ -401,18 +503,9 @@ export async function readBindUntilAnswer(response, { signal, limit } = {}) {
         }
         buffer += decoder.decode(value, { stream: !done });
       }
-      const ready = answered(buffer);
-      if (ready) return await stop(ready);
-      try {
-        JSON.parse(stripXssi(buffer));
-        const complete = answered(buffer);
-        if (complete) return await stop(complete);
-      } catch {
-        // Incomplete JSON: keep reading.
-      }
       if (done) {
         buffer += decoder.decode();
-        return answered(buffer);
+        return readyBody();
       }
     }
   } finally {
@@ -423,5 +516,3 @@ export async function readBindUntilAnswer(response, { signal, limit } = {}) {
     }
   }
 }
-
-
