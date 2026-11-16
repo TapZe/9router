@@ -9,7 +9,9 @@ import {
   GEMINI_WEB_DEFAULT_LANGUAGE,
   GEMINI_WEB_ENDPOINTS,
   GEMINI_WEB_ORIGIN,
+  abortError,
   normalizeAuthUser,
+  upstreamError,
 } from "./config.js";
 
 const TEXT_ENC = new TextEncoder();
@@ -364,4 +366,62 @@ export function streamBodyFromAnswerText(text) {
   const frame = JSON.stringify([["wrb.fr", null, JSON.stringify(payload)]]);
   return `${XSSI_GUARD}${Buffer.byteLength(frame)}\n${frame}\n`;
 }
+
+export async function readBindUntilAnswer(response, { signal, limit } = {}) {
+  if (!response?.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let total = 0;
+
+  const stop = async (text) => {
+    try {
+      await reader.cancel();
+    } catch {
+      // The reader may already be closed.
+    }
+    return text;
+  };
+
+  const answered = (text) => {
+    if (text.includes("wrb.fr")) return text;
+    const extracted = extractProcessSessionAnswer(text);
+    if (!extracted) return "";
+    return extracted.includes("wrb.fr") ? extracted : streamBodyFromAnswerText(extracted);
+  };
+
+  try {
+    for (;;) {
+      if (signal?.aborted) throw abortError(signal.reason);
+      const { done, value } = await reader.read();
+      if (value) {
+        total += value.byteLength;
+        if (limit && total > limit) {
+          throw upstreamError("Gemini Web response exceeds the allowed size");
+        }
+        buffer += decoder.decode(value, { stream: !done });
+      }
+      const ready = answered(buffer);
+      if (ready) return await stop(ready);
+      try {
+        JSON.parse(stripXssi(buffer));
+        const complete = answered(buffer);
+        if (complete) return await stop(complete);
+      } catch {
+        // Incomplete JSON: keep reading.
+      }
+      if (done) {
+        buffer += decoder.decode();
+        return answered(buffer);
+      }
+    }
+  } finally {
+    try {
+      reader.releaseLock?.();
+    } catch {
+      // cancel() already released the lock.
+    }
+  }
+}
+
 

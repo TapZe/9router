@@ -867,6 +867,47 @@ describe("Gemini Web policy-code models", () => {
     expect(events.some((event) => event.type === "text" && event.text.includes("pong"))).toBe(true);
   });
 
+  it("returns a Bind answer without waiting for the rpc GET to close", async () => {
+    const { transport } = createTransport((call) => {
+      const url = new URL(call.url);
+      if (!url.pathname.includes("processSession")) {
+        return new Response("unexpected", { status: 500 });
+      }
+      const body = String(call.options.body || "");
+      if (body === "count=0" || body.startsWith("count=0")) {
+        return new Response('[[0,["c","synthetic-sid","0",8]]]', {
+          status: 200,
+          headers: { "x-http-session-id": "synthetic-gsession" },
+        });
+      }
+      if (call.options.method === "GET" || url.searchParams.get("RID") === "rpc") {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(streamBodyFromAnswerText("pong")));
+            },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(")]}'\n[[1,[]]]\n", { status: 200 });
+    });
+
+    const result = await generateGeminiWeb({
+      session: BASE_SESSION,
+      authUser: "9",
+      model: ARGON_MODEL,
+      prompt: "ping",
+      thinkingLevel: "low",
+      transport,
+    });
+
+    expect(result.ok).toBe(true);
+    const events = await collect(decodeGeminiWebStream(result.body));
+    expect(events.some((event) => event.type === "text" && event.text.includes("pong"))).toBe(true);
+  }, 2000);
+
+
   it("parses a BrowserChannel open reply and Bind answer text", () => {
     expect(parseBrowserChannelOpen('[[0,["c","sid-a","0",8]]]')).toEqual({
       sid: "sid-a",

@@ -36,6 +36,7 @@ import {
   processSessionUrl,
   protoToBase64,
   randomBindRid,
+  readBindUntilAnswer,
   streamBodyFromAnswerText,
 } from "./processSession.js";
 import { fetchGeminiWeb as defaultTransport, readGeminiWebBodyText } from "./transport.js";
@@ -659,13 +660,12 @@ async function generateGeminiWebProcessSession({
     "generation"
   );
   if (!rpcResponse.ok) return rpcResponse;
-  const rpcText = await readGeminiWebBodyText(rpcResponse, GEMINI_WEB_LIMITS.maxFrameBytes);
-  if (rpcText.includes("wrb.fr")) {
-    return new Response(rpcText, { status: 200 });
-  }
-  const rpcAnswer = extractProcessSessionAnswer(rpcText);
-  if (!rpcAnswer) throw upstreamError("Gemini Web ProcessSession completed without an answer");
-  return new Response(streamBodyFromAnswerText(rpcAnswer), { status: 200 });
+  const rpcText = await readBindUntilAnswer(rpcResponse, {
+    signal,
+    limit: GEMINI_WEB_LIMITS.maxFrameBytes,
+  });
+  if (!rpcText) throw upstreamError("Gemini Web ProcessSession completed without an answer");
+  return new Response(rpcText, { status: 200 });
 }
 
 /** Build and dispatch one native StreamGenerate request. */
