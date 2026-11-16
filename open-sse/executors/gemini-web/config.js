@@ -11,6 +11,7 @@ export const GEMINI_WEB_ENDPOINTS = Object.freeze({
   app: "https://gemini.google.com/app",
   generate:
     "https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate",
+  processSession: "https://geminiweb-pa.clients6.google.com/v1/processSession",
   batchExec: "https://gemini.google.com/_/BardChatUi/data/batchexecute",
   rotateCookies: "https://accounts.google.com/RotateCookies",
   upload: "https://content-push.googleapis.com/upload",

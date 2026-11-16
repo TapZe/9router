@@ -18,6 +18,7 @@
 - **Factory**: add Muse Spark 1.3 and Nemotron 3.5 Super from Droid 1.2.0.
 
 ## Fixes
+- **Gemini Web**: send Code & analysis (Argon) turns through ProcessSession Bind instead of StreamGenerate, which finished with no answer.
 - **Gemini Web**: allow cookie-session saves from the deployed dashboard when the configured base URL still points to localhost. Validate the actual request origin and browser same-origin metadata while rejecting cross-site requests, invalid origins, and forged forwarded hosts.
 - **Gemini Web**: keep cancellation active while native HTTP response bodies are being read.
 - **Gemini Web**: make retained cookie sessions reusable through a dedicated reconnect form that asks only for account slots and a proxy setting. Deleting the last account keeps the saved cookies until the user deletes the empty session.

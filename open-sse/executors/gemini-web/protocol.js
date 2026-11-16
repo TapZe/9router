@@ -28,6 +28,17 @@ import {
   upstreamError,
 } from "./config.js";
 import { fetchGeminiWebModels } from "./models.js";
+import {
+  encodeProcessSessionReq0,
+  encodeProcessSessionReq1,
+  extractProcessSessionAnswer,
+  mintBotguard,
+  parseBrowserChannelOpen,
+  processSessionUrl,
+  protoToBase64,
+  randomBindRid,
+  streamBodyFromAnswerText,
+} from "./processSession.js";
 import { fetchGeminiWeb as defaultTransport, readGeminiWebBodyText } from "./transport.js";
 
 export { geminiAccountUrl, geminiSourcePath, normalizeAuthUser };
@@ -502,6 +513,171 @@ async function withTimeout(fn, signal, timeoutMs, what) {
   }
 }
 
+async function generateGeminiWebProcessSession({
+  session,
+  authUser,
+  model,
+  prompt,
+  thinkingLevel,
+  signal,
+  proxyOptions,
+  transport,
+  botguard,
+}) {
+  const slot = normalizeAuthUser(authUser);
+  const language = session.language || GEMINI_WEB_DEFAULT_LANGUAGE;
+  const requestId = randomRequestId();
+  const generationId = UUID_PATTERN.test(String(session.generationId || ""))
+    ? session.generationId
+    : createGenerationId();
+  const fetchImpl = transport || defaultTransport;
+  const proxy = { ...(proxyOptions || {}), strictProxy: true };
+  const headers = {
+    ...GEMINI_WEB_DEFAULT_HEADERS,
+    cookie: session.cookieHeader,
+    referer: `${GEMINI_WEB_GEMINI_PREFIX}${slot ? `u/${slot}/` : ""}app`,
+  };
+
+  const post = (url, body) =>
+    withTimeout(
+      (combinedSignal) =>
+        fetchImpl(
+          url,
+          {
+            method: "POST",
+            headers,
+            body,
+            redirect: "manual",
+            strictTls: true,
+            maxHeaderSize: GEMINI_WEB_LIMITS.maxHeaderSize,
+            forceFreshSocket: true,
+            timeoutMs: GEMINI_WEB_LIMITS.generationTimeoutMs,
+            signal: combinedSignal,
+          },
+          proxy
+        ),
+      signal,
+      GEMINI_WEB_LIMITS.generationTimeoutMs,
+      "generation"
+    );
+
+  const openRid = randomBindRid();
+  let attestation = botguard;
+  if (!attestation) {
+    try {
+      attestation = await mintBotguard({
+        fetchImpl,
+        proxyOptions: proxy,
+        cookieHeader: session.cookieHeader,
+        prompt: typeof prompt === "string" ? prompt : "",
+        signal,
+      });
+    } catch {
+      attestation = null;
+    }
+  }
+
+  const openResponse = await post(
+    processSessionUrl({
+      authUser: slot,
+      rid: openRid,
+      cookieHeader: session.cookieHeader,
+      mode: "open",
+    }),
+    "count=0"
+  );
+  if (openResponse.status >= 300 && openResponse.status < 400) {
+    await drain(openResponse);
+    throw upstreamError("Gemini Web ProcessSession returned an unexpected redirect");
+  }
+  if (!openResponse.ok) return openResponse;
+
+  const openText = await readGeminiWebBodyText(openResponse, GEMINI_WEB_LIMITS.modelResponseBytes);
+  const channel = parseBrowserChannelOpen(openText);
+  if (!channel?.sid || !channel?.gsessionid) {
+    throw upstreamError("Gemini Web ProcessSession did not open a Bind channel");
+  }
+
+  const req0 = encodeProcessSessionReq0({
+    modelId: model.modelId,
+    language,
+    generationId,
+    requestId,
+    modelNumber: model.modelNumber,
+    thinkingLevel,
+    botguardToken: attestation?.token,
+    botguardHash: attestation?.hash,
+  });
+  const req1 = encodeProcessSessionReq1(typeof prompt === "string" ? prompt : "");
+  const form = new URLSearchParams({
+    count: "2",
+    ofs: "0",
+    req0___data__: protoToBase64(req0),
+    req1___data__: protoToBase64(req1),
+  }).toString();
+
+  const sendResponse = await post(
+    processSessionUrl({
+      authUser: slot,
+      rid: openRid + 1,
+      sid: channel.sid,
+      gsessionid: channel.gsessionid,
+      cookieHeader: session.cookieHeader,
+      mode: "send",
+    }),
+    form
+  );
+  if (sendResponse.status >= 300 && sendResponse.status < 400) {
+    await drain(sendResponse);
+    throw upstreamError("Gemini Web ProcessSession returned an unexpected redirect");
+  }
+  if (!sendResponse.ok) return sendResponse;
+
+  const sendText = await readGeminiWebBodyText(sendResponse, GEMINI_WEB_LIMITS.maxFrameBytes);
+  if (sendText.includes("wrb.fr") || sendText.includes(")]}'")) {
+    return new Response(sendText, { status: 200 });
+  }
+
+  const answer = extractProcessSessionAnswer(sendText);
+  if (answer) return new Response(streamBodyFromAnswerText(answer), { status: 200 });
+
+  const rpcResponse = await withTimeout(
+    (combinedSignal) =>
+      fetchImpl(
+        processSessionUrl({
+          authUser: slot,
+          rid: "rpc",
+          sid: channel.sid,
+          gsessionid: channel.gsessionid,
+          cookieHeader: session.cookieHeader,
+          mode: "rpc",
+        }),
+        {
+          method: "GET",
+          headers,
+          redirect: "manual",
+          strictTls: true,
+          maxHeaderSize: GEMINI_WEB_LIMITS.maxHeaderSize,
+          forceFreshSocket: true,
+          timeoutMs: GEMINI_WEB_LIMITS.generationTimeoutMs,
+          signal: combinedSignal,
+        },
+        proxy
+      ),
+    signal,
+    GEMINI_WEB_LIMITS.generationTimeoutMs,
+    "generation"
+  );
+  if (!rpcResponse.ok) return rpcResponse;
+  const rpcText = await readGeminiWebBodyText(rpcResponse, GEMINI_WEB_LIMITS.maxFrameBytes);
+  if (rpcText.includes("wrb.fr") || rpcText.includes(")]}'")) {
+    return new Response(rpcText, { status: 200 });
+  }
+  const rpcAnswer = extractProcessSessionAnswer(rpcText);
+  if (!rpcAnswer) throw upstreamError("Gemini Web ProcessSession completed without an answer");
+  return new Response(streamBodyFromAnswerText(rpcAnswer), { status: 200 });
+}
+
 /** Build and dispatch one native StreamGenerate request. */
 export async function generateGeminiWeb({
   session,
@@ -513,6 +689,7 @@ export async function generateGeminiWeb({
   signal,
   proxyOptions,
   transport,
+  botguard,
 } = {}) {
   const slot = normalizeAuthUser(authUser);
   const level = resolveThinkingLevel(thinkingLevel);
@@ -523,6 +700,19 @@ export async function generateGeminiWeb({
     throw geminiWebError("Gemini Web session is not initialized", { status: 502 });
   }
 
+  if (model.policy === true) {
+    return generateGeminiWebProcessSession({
+      session,
+      authUser: slot,
+      model,
+      prompt,
+      thinkingLevel: level,
+      signal,
+      proxyOptions,
+      transport,
+      botguard,
+    });
+  }
   const language = session.language || GEMINI_WEB_DEFAULT_LANGUAGE;
   const requestId = randomRequestId();
   const generationId = UUID_PATTERN.test(String(session.generationId || ""))

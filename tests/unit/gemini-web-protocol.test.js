@@ -14,6 +14,14 @@ import {
   geminiSourcePath,
 } from "../../open-sse/executors/gemini-web/protocol.js";
 import {
+  encodeProcessSessionReq0,
+  encodeProcessSessionReq1,
+  extractProcessSessionAnswer,
+  parseBrowserChannelOpen,
+  protoToBase64,
+  streamBodyFromAnswerText,
+} from "../../open-sse/executors/gemini-web/processSession.js";
+import {
   fetchGeminiWebModels,
   parseGeminiModels,
   resolveGeminiModel,
@@ -61,6 +69,16 @@ const FLASH_MODEL = Object.freeze({
   modelNumber: 1,
   capacity: 2,
   capacityField: 12,
+});
+
+const ARGON_MODEL = Object.freeze({
+  id: "gemini-code-analysis",
+  name: "Code & analysis",
+  modelId: "argon",
+  modelNumber: 8,
+  capacity: 2,
+  capacityField: 12,
+  policy: true,
 });
 
 function createTransport(handler) {
@@ -753,34 +771,69 @@ describe("Gemini Web policy-code models", () => {
     expect(resolveGeminiModel("code & analysis", models).modelId).toBe("argon");
   });
 
-  it("sends the live Argon model header for a policy-code model", async () => {
-    const { transport, calls } = createTransport(() => new Response("ok", { status: 200 }));
-    await generateGeminiWeb({
+  it("encodes the captured Argon req1 prompt protobuf", () => {
+    expect(protoToBase64(encodeProcessSessionReq1("ping"))).toBe("EgoIAUoGCgRwaW5n");
+  });
+
+  it("encodes req0 with argon, model number 8, and thinking 1", () => {
+    const bytes = encodeProcessSessionReq0({
+      modelId: "argon",
+      language: "en",
+      generationId: SYNTHETIC_GENERATION_ID,
+      requestId: SYNTHETIC_GENERATION_ID,
+      modelNumber: 8,
+      thinkingLevel: 1,
+    });
+    const text = Buffer.from(bytes).toString("utf8");
+    expect(text).toContain("argon");
+    expect(text).toContain(SYNTHETIC_GENERATION_ID);
+    expect(text).not.toContain("StreamGenerate");
+  });
+
+  it("sends policy-code models through ProcessSession instead of StreamGenerate", async () => {
+    const { transport, calls } = createTransport((call) => {
+      const url = new URL(call.url);
+      if (!url.pathname.includes("processSession")) {
+        return new Response("unexpected", { status: 500 });
+      }
+      const body = String(call.options.body || "");
+      if (body === "count=0" || body.startsWith("count=0")) {
+        return new Response('[[0,["c","synthetic-sid","synthetic-gsession",8]]]', { status: 200 });
+      }
+      return new Response(streamBodyFromAnswerText("pong"), { status: 200 });
+    });
+
+    const result = await generateGeminiWeb({
       session: BASE_SESSION,
-      authUser: "",
-      model: {
-        id: "gemini-code-analysis",
-        name: "Code & analysis",
-        modelId: "argon",
-        modelNumber: 8,
-        capacity: 2,
-        capacityField: 12,
-        policy: true,
-      },
-      prompt: "Hello",
+      authUser: "9",
+      model: ARGON_MODEL,
+      prompt: "ping",
       thinkingLevel: "low",
       transport,
     });
 
-    const modelHeader = JSON.parse(header(calls[0], GEMINI_WEB_MODEL_HEADER));
-    expect(modelHeader[4]).toBe("argon");
-    expect(modelHeader[6]).toBe("en");
-    expect(modelHeader[8]).toEqual([4, 33, 22, 5, 6, 8, 16, 19, 20, 38]);
-    expect(modelHeader[15]).toBe(8);
-    expect(modelHeader[16]).toBe(1);
-    expect(modelHeader[17]).toBe(SYNTHETIC_GENERATION_ID);
-    expect(modelHeader[18]).toEqual([SYNTHETIC_BUILD]);
-    expect(modelHeader[25]).toBe("argon");
+    expect(result.ok).toBe(true);
+    expect(calls.some((call) => call.url.includes("StreamGenerate"))).toBe(false);
+    expect(calls.some((call) => call.url.includes("/v1/processSession"))).toBe(true);
+    const send = calls.find((call) => String(call.options.body || "").includes("req1___data__"));
+    expect(send).toBeTruthy();
+    const form = new URLSearchParams(send.options.body);
+    expect(form.get("count")).toBe("2");
+    expect(form.get("ofs")).toBe("0");
+    expect(form.get("req1___data__")).toBe("EgoIAUoGCgRwaW5n");
+    const req0 = Buffer.from(form.get("req0___data__"), "base64").toString("utf8");
+    expect(req0).toContain("argon");
+    expect(new URL(send.url).searchParams.get("authuser")).toBe("9");
+    const events = await collect(decodeGeminiWebStream(result.body));
+    expect(events.some((event) => event.type === "text" && event.text.includes("pong"))).toBe(true);
+  });
+
+  it("parses a BrowserChannel open reply and Bind answer text", () => {
+    expect(parseBrowserChannelOpen('[[0,["c","sid-a","gsess-b",8]]]')).toEqual({
+      sid: "sid-a",
+      gsessionid: "gsess-b",
+    });
+    expect(extractProcessSessionAnswer(streamBodyFromAnswerText("pong"))).toContain("wrb.fr");
   });
 });
 
