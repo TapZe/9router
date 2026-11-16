@@ -8,6 +8,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   GEMINI_WEB_DEFAULT_LANGUAGE,
   GEMINI_WEB_ENDPOINTS,
+  GEMINI_WEB_LIMITS,
   GEMINI_WEB_ORIGIN,
   normalizeAuthUser,
 } from "./config.js";
@@ -233,14 +234,14 @@ export function parseBrowserChannelOpen(bodyText) {
   try {
     value = JSON.parse(text);
   } catch {
-    const match = text.match(/\["c","([^"]+)","([^"]+)"/);
+    const match = text.match(/\["c","([^"]+)"/);
     if (!match) return null;
-    return { sid: match[1], gsessionid: match[2] };
+    return { sid: match[1] };
   }
   const walk = (node) => {
     if (!Array.isArray(node)) return null;
-    if (node[0] === "c" && typeof node[1] === "string" && typeof node[2] === "string") {
-      return { sid: node[1], gsessionid: node[2] };
+    if (node[0] === "c" && typeof node[1] === "string") {
+      return { sid: node[1] };
     }
     for (const child of node) {
       const found = walk(child);
@@ -424,6 +425,7 @@ export async function mintBotguard({ fetchImpl, proxyOptions, cookieHeader, prom
       body: JSON.stringify([salt]),
       redirect: "manual",
       strictTls: true,
+      timeoutMs: GEMINI_WEB_LIMITS.bootstrapTimeoutMs,
       signal,
     },
     proxyOptions

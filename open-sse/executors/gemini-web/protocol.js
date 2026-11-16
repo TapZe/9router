@@ -594,7 +594,10 @@ async function generateGeminiWebProcessSession({
 
   const openText = await readGeminiWebBodyText(openResponse, GEMINI_WEB_LIMITS.modelResponseBytes);
   const channel = parseBrowserChannelOpen(openText);
-  if (!channel?.sid || !channel?.gsessionid) {
+  const gsessionid =
+    openResponse.headers?.get?.("x-http-session-id") ||
+    openResponse.headers?.["x-http-session-id"];
+  if (!channel?.sid || !gsessionid) {
     throw upstreamError("Gemini Web ProcessSession did not open a Bind channel");
   }
 
@@ -621,7 +624,7 @@ async function generateGeminiWebProcessSession({
       authUser: slot,
       rid: openRid + 1,
       sid: channel.sid,
-      gsessionid: channel.gsessionid,
+      gsessionid,
       cookieHeader: session.cookieHeader,
       mode: "send",
     }),
@@ -634,7 +637,7 @@ async function generateGeminiWebProcessSession({
   if (!sendResponse.ok) return sendResponse;
 
   const sendText = await readGeminiWebBodyText(sendResponse, GEMINI_WEB_LIMITS.maxFrameBytes);
-  if (sendText.includes("wrb.fr") || sendText.includes(")]}'")) {
+  if (sendText.includes("wrb.fr")) {
     return new Response(sendText, { status: 200 });
   }
 
@@ -648,7 +651,7 @@ async function generateGeminiWebProcessSession({
           authUser: slot,
           rid: "rpc",
           sid: channel.sid,
-          gsessionid: channel.gsessionid,
+          gsessionid,
           cookieHeader: session.cookieHeader,
           mode: "rpc",
         }),
@@ -670,7 +673,7 @@ async function generateGeminiWebProcessSession({
   );
   if (!rpcResponse.ok) return rpcResponse;
   const rpcText = await readGeminiWebBodyText(rpcResponse, GEMINI_WEB_LIMITS.maxFrameBytes);
-  if (rpcText.includes("wrb.fr") || rpcText.includes(")]}'")) {
+  if (rpcText.includes("wrb.fr")) {
     return new Response(rpcText, { status: 200 });
   }
   const rpcAnswer = extractProcessSessionAnswer(rpcText);

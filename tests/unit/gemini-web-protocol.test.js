@@ -798,7 +798,10 @@ describe("Gemini Web policy-code models", () => {
       }
       const body = String(call.options.body || "");
       if (body === "count=0" || body.startsWith("count=0")) {
-        return new Response('[[0,["c","synthetic-sid","synthetic-gsession",8]]]', { status: 200 });
+        return new Response('[[0,["c","synthetic-sid","0",8]]]', {
+          status: 200,
+          headers: { "x-http-session-id": "synthetic-gsession" },
+        });
       }
       return new Response(streamBodyFromAnswerText("pong"), { status: 200 });
     });
@@ -824,14 +827,48 @@ describe("Gemini Web policy-code models", () => {
     const req0 = Buffer.from(form.get("req0___data__"), "base64").toString("utf8");
     expect(req0).toContain("argon");
     expect(new URL(send.url).searchParams.get("authuser")).toBe("9");
+    expect(new URL(send.url).searchParams.get("gsessionid")).toBe("synthetic-gsession");
+    expect(new URL(send.url).searchParams.get("SID")).toBe("synthetic-sid");
+    const events = await collect(decodeGeminiWebStream(result.body));
+    expect(events.some((event) => event.type === "text" && event.text.includes("pong"))).toBe(true);
+  });
+
+  it("reads the Bind answer from the rpc GET when the send ACK is only XSSI", async () => {
+    const { transport } = createTransport((call) => {
+      const url = new URL(call.url);
+      if (!url.pathname.includes("processSession")) {
+        return new Response("unexpected", { status: 500 });
+      }
+      const body = String(call.options.body || "");
+      if (body === "count=0" || body.startsWith("count=0")) {
+        return new Response('[[0,["c","synthetic-sid","0",8]]]', {
+          status: 200,
+          headers: { "x-http-session-id": "synthetic-gsession" },
+        });
+      }
+      if (call.options.method === "GET" || url.searchParams.get("RID") === "rpc") {
+        return new Response(streamBodyFromAnswerText("pong"), { status: 200 });
+      }
+      return new Response(")]}'\n[[1,[]]]\n", { status: 200 });
+    });
+
+    const result = await generateGeminiWeb({
+      session: BASE_SESSION,
+      authUser: "9",
+      model: ARGON_MODEL,
+      prompt: "ping",
+      thinkingLevel: "low",
+      transport,
+    });
+
+    expect(result.ok).toBe(true);
     const events = await collect(decodeGeminiWebStream(result.body));
     expect(events.some((event) => event.type === "text" && event.text.includes("pong"))).toBe(true);
   });
 
   it("parses a BrowserChannel open reply and Bind answer text", () => {
-    expect(parseBrowserChannelOpen('[[0,["c","sid-a","gsess-b",8]]]')).toEqual({
+    expect(parseBrowserChannelOpen('[[0,["c","sid-a","0",8]]]')).toEqual({
       sid: "sid-a",
-      gsessionid: "gsess-b",
     });
     expect(extractProcessSessionAnswer(streamBodyFromAnswerText("pong"))).toContain("wrb.fr");
   });
