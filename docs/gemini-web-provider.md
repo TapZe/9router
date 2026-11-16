@@ -1,6 +1,6 @@
 # Gemini Web provider
 
-`gemini-web`, also available as `gweb`, uses an authenticated Gemini website session for native chat and image requests. It is separate from the `gemini`, `gemini-cli`, and `antigravity` providers. It does not require a Google API key.
+`gemini-web`, also available as `gweb`, uses an authenticated Gemini website session for native chat and image requests. It is separate from the `gemini`, `gemini-cli`, and `antigravity` providers. You do not supply a Google API key. The protocol reads Gemini's public website API consumer key from its live bootstrap.
 
 ## Terms
 
@@ -38,6 +38,8 @@ Deleting an account removes its routable slot, not its saved cookie session. Use
 Use the ids returned by `/v1/models` or the selected account's model list. The provider prefix is `gemini-web/` or `gweb/`; `gmw` is not an alias. Old fixed names such as `gemini-web-flash-lite` are not a current model catalog.
 
 The account catalog selects the exact model. A missing or ambiguous model returns an error instead of silently substituting another model. Policy-code models such as Code & analysis use Argon ProcessSession Bind; hex-id models use StreamGenerate. The image endpoint uses `gemini-image`. Bind responses use decoded completion flags rather than a text prefix or idle timer. Progress labels and answer text have separate protocol fields.
+
+Argon's channel-open request declares that bootstrap key and `application/x-protobuf` in its `$httpHeaders` tunnel. Missing consumer identity is rejected before a turn is sent. The receive poll starts before the turn POST, and heartbeat-only polls resume with the last acknowledged sequence on the same channel. The turn is posted once, with one deadline covering channel open, send, and all receive polls. Google channel-status errors retain their code and message rather than becoming an empty-answer error.
 
 Chat supports OpenAI-shaped JSON and SSE responses. Message history is flattened into the native prompt. PNG, JPEG, and WebP image input must use validated data URLs. Generated images are downloaded from allowed Google media hosts and validated before returning their bytes.
 

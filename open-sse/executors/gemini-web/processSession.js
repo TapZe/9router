@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import {
   GEMINI_WEB_DEFAULT_LANGUAGE,
   GEMINI_WEB_ENDPOINTS,
+  GEMINI_WEB_LIMITS,
   GEMINI_WEB_ORIGIN,
   abortError,
   normalizeAuthUser,
@@ -17,6 +18,10 @@ import { isJsonWhitespace, scanJsonValue } from "./stream.js";
 
 const TEXT_ENC = new TextEncoder();
 const XSSI_GUARD = ")]}'\n";
+
+// ProcessSession carries base64 protobuf request records; the channel must be
+// told so at handshake time or the service parses them as JSON.
+const BIND_CONTENT_TYPE = "application/x-protobuf";
 
 export const GEMINI_WEB_PROCESS_SESSION_PATH = "/v1/processSession";
 
@@ -195,6 +200,8 @@ export function processSessionUrl({
   gsessionid,
   cookieHeader,
   mode = "open",
+  aid = 0,
+  apiKey = "",
 }) {
   const slot = normalizeAuthUser(authUser);
   const query = new URLSearchParams({
@@ -205,12 +212,21 @@ export function processSessionUrl({
   if (slot !== "") query.set("authuser", slot);
   if (mode === "open") {
     query.set("X-HTTP-Session-Id", "gsessionid");
+    // The captured browser handshake declares the channel's caller identity and
+    // payload type here; ProcessSession rejects an unregistered caller, and
+    // without the protobuf declaration it parses the base64 body as JSON.
+    const declared = [];
     const auth = buildSapiSidHash(cookieHeader);
-    if (auth) query.set("$httpHeaders", `Authorization:${auth}`);
+    if (auth) declared.push(`Authorization:${auth}`);
+    if (apiKey) declared.push(`X-Goog-Api-Key:${apiKey}`);
+    declared.push(`X-WebChannel-Content-Type:${BIND_CONTENT_TYPE}`);
+    query.set("$httpHeaders", declared.join("\r\n"));
   } else {
     if (gsessionid) query.set("gsessionid", gsessionid);
     if (sid) query.set("SID", sid);
-    query.set("AID", "0");
+    // The channel acknowledgement cursor: a rearm asks for everything after
+    // the highest record already applied to this turn.
+    query.set("AID", String(aid));
   }
   if (mode === "rpc") {
     query.set("TYPE", "xmlhttp");
@@ -415,6 +431,145 @@ function frameCarriesWrb(value) {
   return Array.isArray(value) && value.some((item) => Array.isArray(item) && item[0] === "wrb.fr");
 }
 
+const BIND_CONTROL_TOKENS = Object.freeze(["noop", "close", "stop"]);
+
+/**
+ * One turn's Bind parser state. A receive poll can end mid-turn and be
+ * rearmed, so every later poll must see the labels, answer, partial frame and
+ * acknowledgement cursor the earlier ones produced. Keeping them here is what
+ * makes a rollover idempotent instead of a second generation.
+ */
+function createBindChannelState() {
+  return {
+    pending: "",
+    labels: [],
+    answer: "",
+    final: false,
+    typed: false,
+    frames: 0,
+    rawFrames: 0,
+    bytes: 0,
+    // Decoded wire text for the whole turn. A raw (hex/wrb) body can be split
+    // across a rollover, so the passthrough must return the whole run rather
+    // than the last poll's tail; `bytes` bounds it.
+    rawText: "",
+    sequence: null,
+    control: null,
+    sm: null,
+  };
+}
+
+function bindProgress(state) {
+  return {
+    labels: state.labels,
+    answer: state.answer,
+    final: state.final,
+    typed: state.typed,
+    control: state.control,
+    sm: state.sm,
+    sequence: state.sequence,
+    rawComplete: state.frames > 0 && state.rawFrames === state.frames && state.pending === "",
+  };
+}
+
+function entrySequence(entry) {
+  const value = Array.isArray(entry) ? entry[0] : null;
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+/**
+ * A rearm asks for everything after the highest record already applied, so a
+ * record at or below that cursor is a replay and cannot rewrite the answer.
+ */
+function isReplayedRecord(state, sequence) {
+  return sequence !== null && state.sequence !== null && sequence <= state.sequence;
+}
+
+function advanceSequence(state, sequence) {
+  if (sequence === null) return;
+  if (state.sequence === null || sequence > state.sequence) state.sequence = sequence;
+}
+
+function controlToken(payload) {
+  if (!Array.isArray(payload) || payload.length !== 1) return null;
+  const token = payload[0];
+  return typeof token === "string" && BIND_CONTROL_TOKENS.includes(token) ? token : null;
+}
+
+const SM_MAX_GROUPS = 8;
+const SM_MAX_RECORDS = 8;
+const SM_MAX_MESSAGE_CHARS = 300;
+const SM_MAX_REASON_CHARS = 64;
+
+function sanitizeSmText(value, limit) {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit);
+}
+
+function plainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * The channel's own service-error record, captured on a rejected Argon turn as
+ * `[1, {"__sm__": {"status": [[{"error": {code, message, status}}]]}}]`. It is
+ * bounded: a few records, sanitized text, and an HTTP status only when the
+ * upstream code is one. A status entry that is not this shape contributes
+ * nothing, so no failure is invented from unrelated metadata.
+ */
+function readSmStatus(entry) {
+  const envelope = entry?.[1];
+  if (!plainObject(envelope)) return null;
+  const serviceStatus = envelope.__sm__;
+  if (!plainObject(serviceStatus) || !Array.isArray(serviceStatus.status)) return null;
+  for (const group of serviceStatus.status.slice(0, SM_MAX_GROUPS)) {
+    const records = Array.isArray(group) ? group : [group];
+    for (const record of records.slice(0, SM_MAX_RECORDS)) {
+      if (!plainObject(record) || !plainObject(record.error)) continue;
+      const message = sanitizeSmText(record.error.message, SM_MAX_MESSAGE_CHARS);
+      if (!message) continue;
+      const code = Number(record.error.code);
+      return {
+        status: Number.isInteger(code) && code >= 400 && code <= 599 ? code : 502,
+        reason: sanitizeSmText(record.error.status, SM_MAX_REASON_CHARS),
+        message,
+      };
+    }
+  }
+  return null;
+}
+
+function bindSmError(failure) {
+  const detail = failure.reason ? `${failure.reason}: ${failure.message}` : failure.message;
+  const error = upstreamError(`Gemini Web rejected the request: ${detail}`, {
+    status: failure.status,
+  });
+  // An `__sm__` record only ever arrives on a channel that exists after the
+  // turn POST, so the generation may already be consumed. The executor still
+  // gates this on its own dispatch flag.
+  error.nonReplayable = true;
+  return error;
+}
+
+/**
+ * BrowserChannel authority for the channel itself: `noop` keeps it alive while
+ * `close` and `stop` end it without producing an answer. None of the three is
+ * evidence that the turn completed.
+ */
+function bindControlError(control) {
+  if (control === "close") {
+    return upstreamError("Gemini Web Bind channel closed before the turn completed");
+  }
+  if (control === "stop") {
+    return upstreamError("Gemini Web stopped the turn before it completed");
+  }
+  return null;
+}
+
 /**
  * Separate the parsed Bind source from the output this provider synthesizes.
  * A hex-shaped record is the response form the decoder owns, so it passes
@@ -427,45 +582,56 @@ function frameCarriesWrb(value) {
  * `typed` records that any protobuf record was seen at all, so a reader can
  * tell an incomplete turn from an empty heartbeat.
  */
-function extractBindProgress(buffer) {
-  const { frames, pending } = scanBindFrames(buffer);
-  const labels = [];
-  let answer = "";
-  let final = false;
-  let typed = false;
-  let rawFrames = 0;
-
+function absorbBindText(state, text) {
+  const { frames, pending } = scanBindFrames(state.pending + String(text ?? ""));
+  state.pending = pending;
   for (const value of frames) {
+    state.frames += 1;
     if (frameCarriesWrb(value)) {
-      rawFrames += 1;
+      state.rawFrames += 1;
       continue;
     }
     for (const entry of Array.isArray(value) ? value : []) {
-      if (!Array.isArray(entry) || !Array.isArray(entry[1])) continue;
+      if (!Array.isArray(entry)) continue;
+      const sequence = entrySequence(entry);
+      // Channel-level facts are not turn data: a close/stop or the service
+      // error describing why this channel ended still applies when its record
+      // id is at or below the acknowledged cursor, so they precede the replay
+      // skip that protects the answer.
+      if (!Array.isArray(entry[1])) {
+        const serviceError = readSmStatus(entry);
+        if (serviceError && !state.sm) state.sm = serviceError;
+        advanceSequence(state, sequence);
+        continue;
+      }
+      const control = controlToken(entry[1]);
+      if (control) {
+        if (control !== "noop" && !state.control) state.control = control;
+        advanceSequence(state, sequence);
+        continue;
+      }
+      if (isReplayedRecord(state, sequence)) continue;
+      advanceSequence(state, sequence);
       const encoded = entry[1][0];
       if (typeof encoded !== "string" || !encoded) continue;
       const message = readBindMessage(Buffer.from(encoded, "base64"));
-      if (message.present) typed = true;
+      if (message.present) state.typed = true;
       // The first completed turn owns the answer and completion. Labels and
       // text after it are post-answer chrome (labels) or a different turn's
       // text, and neither may replace what was already delivered.
-      if (!final) {
-        for (const label of message.labels) {
-          if (!labels.includes(label)) labels.push(label);
-        }
-        if (message.text) answer = message.text;
+      if (state.final) continue;
+      for (const label of message.labels) {
+        if (!state.labels.includes(label)) state.labels.push(label);
       }
-      if (message.final) final = true;
+      if (message.text) state.answer = message.text;
+      if (message.final) state.final = true;
     }
   }
+  return bindProgress(state);
+}
 
-  return {
-    labels,
-    answer,
-    final,
-    typed,
-    rawComplete: frames.length > 0 && rawFrames === frames.length && pending === "",
-  };
+function extractBindProgress(buffer) {
+  return absorbBindText(createBindChannelState(), buffer);
 }
 
 /**
@@ -508,34 +674,15 @@ function streamBodyFromBind(labels, text) {
 }
 
 /**
- * Read a Bind GET until the turn's own completion flags, then return the
- * decoder's input. Completion is the captured pair: turn.1 = 1 together with
- * candidate.15 = 1 and answer text. That returns immediately, so a long-lived
- * channel never delays the answer.
- *
- * EOF is not completion. A long-poll can close after a partial answer, so a
- * typed stream that ends without the completed turn is an upstream error -- the
- * caller must never receive a finished stream carrying a prefix. A heartbeat
- * that carried no protobuf record at all returns "" so the existing
- * "completed without an answer" path applies, and a label-only stream has no
- * answer text either.
+ * Read one Bind body to its own end and report what it proved. Completion is
+ * the captured flag pair, never a quiet poll: a body that ends with a partial
+ * turn, a heartbeat or nothing at all is a rollover the caller may rearm.
  */
-export async function readBindUntilAnswer(response, { signal, limit } = {}) {
-  if (!response?.body) return "";
+async function consumeBindBody(response, { state, signal, limit }) {
+  if (!response?.body) return { eof: true };
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
-  let total = 0;
   let pull = null;
-
-  const stop = async (text) => {
-    try {
-      await reader.cancel();
-    } catch {
-      // The reader may already be closed.
-    }
-    return text;
-  };
 
   // A pending read only settles when the body itself stops, so an abort must
   // cancel the reader before the loop can observe the signal.
@@ -560,37 +707,149 @@ export async function readBindUntilAnswer(response, { signal, limit } = {}) {
   try {
     for (;;) {
       if (signal?.aborted) throw abortError(signal.reason);
-      const progress = extractBindProgress(buffer);
-      if (progress.rawComplete) return await stop(buffer);
-      if (progress.final) return await stop(streamBodyFromBind(progress.labels, progress.answer));
+      const progress = bindProgress(state);
+      if (progress.rawComplete) return { rawComplete: true };
+      if (progress.final) return { final: true };
+      // An explicit service error outranks the close control that follows it in
+      // the same body: the status and message are the reason the channel ended.
+      if (progress.sm) return { sm: progress.sm };
+      if (progress.control) return { control: progress.control };
       const { done, value } = await nextRead();
       if (value) {
-        total += value.byteLength;
-        if (limit && total > limit) {
+        // The bound covers the whole turn, not one poll: a channel that reopens
+        // cannot reset the budget by closing.
+        state.bytes += value.byteLength;
+        if (limit && state.bytes > limit) {
           throw upstreamError("Gemini Web response exceeds the allowed size");
         }
-        buffer += decoder.decode(value, { stream: !done });
       }
       if (done) {
         if (signal?.aborted) throw abortError(signal.reason);
-        buffer += decoder.decode();
-        const complete = extractBindProgress(buffer);
-        if (complete.rawComplete) return buffer;
-        if (complete.final) return streamBodyFromBind(complete.labels, complete.answer);
-        if (complete.typed) {
-          throw upstreamError(
-            "Gemini Web Bind stream ended before the turn reported completion"
-          );
-        }
-        return "";
+        const tail = decoder.decode();
+        state.rawText += tail;
+        absorbBindText(state, tail);
+        const settled = bindProgress(state);
+        return {
+          final: settled.final,
+          rawComplete: settled.rawComplete,
+          control: settled.control,
+          sm: settled.sm,
+          eof: true,
+        };
       }
+      const text = decoder.decode(value, { stream: true });
+      if (!text) continue;
+      state.rawText += text;
+      absorbBindText(state, text);
     }
   } finally {
     signal?.removeEventListener?.("abort", cancelRead);
+    try {
+      await reader.cancel();
+    } catch {
+      // The reader may already be closed.
+    }
     try {
       reader.releaseLock?.();
     } catch {
       // cancel() already released the lock.
     }
+  }
+}
+
+/**
+ * Read one Bind GET until the turn's own completion flags, then return the
+ * decoder's input. Completion is the captured pair: turn.1 = 1 together with
+ * candidate.15 = 1 and answer text. That returns immediately, so a long-lived
+ * channel never delays the answer.
+ *
+ * EOF is not completion. A long-poll can close after a partial answer, so a
+ * typed stream that ends without the completed turn is an upstream error -- the
+ * caller must never receive a finished stream carrying a prefix. A heartbeat
+ * that carried no protobuf record at all returns "" so the existing
+ * "completed without an answer" path applies, and a label-only stream has no
+ * answer text either.
+ */
+export async function readBindUntilAnswer(response, { signal, limit } = {}) {
+  const state = createBindChannelState();
+  const result = await consumeBindBody(response, { state, signal, limit });
+  if (result.rawComplete) return state.rawText;
+  if (result.final) return streamBodyFromBind(state.labels, state.answer);
+  if (result.sm) throw bindSmError(result.sm);
+  const control = bindControlError(result.control);
+  if (control) throw control;
+  if (state.typed) {
+    throw upstreamError("Gemini Web Bind stream ended before the turn reported completion");
+  }
+  return "";
+}
+
+/**
+ * The channel's own service error from a complete body, as the error a caller
+ * can raise. The send ACK is read as a whole body, so a rejection that arrives
+ * as a 200 with an `__sm__` record must not be mistaken for an empty ACK.
+ */
+export function extractProcessSessionFailure(bodyText) {
+  const text = stripXssi(bodyText);
+  if (!text.trim()) return null;
+  const progress = extractBindProgress(text);
+  return progress.sm ? bindSmError(progress.sm) : null;
+}
+
+/**
+ * Drive one turn across Bind polls. A poll handle settles to its receive
+ * response without blocking, so the caller starts the first poll before it
+ * posts the turn and every later one only after a body ended without
+ * completion. Rollover is not completion: the next poll acknowledges the
+ * highest sequence seen and carries this state forward, so a replayed record
+ * cannot rewrite the answer and no poll ever re-sends the generation.
+ *
+ * Every rearm reuses the turn's own signal, so the caller keeps one deadline
+ * and one cancellation scope for the whole turn instead of a fresh budget per
+ * poll.
+ */
+export async function readBindChannel({ firstPoll, startPoll, signal, limit }) {
+  const state = createBindChannelState();
+  let poll = firstPoll;
+  const abandon = () => {
+    const current = poll;
+    poll = null;
+    current?.abandon?.();
+  };
+
+  try {
+    for (let polls = 0; ; polls += 1) {
+      if (signal?.aborted) throw abortError(signal.reason);
+      if (polls >= GEMINI_WEB_LIMITS.bindPollLimit) {
+        throw upstreamError(
+          `Gemini Web Bind stream ended before the turn reported completion (${GEMINI_WEB_LIMITS.bindPollLimit} polls)`
+        );
+      }
+      if (!poll) poll = startPoll(state.sequence ?? 0);
+      const current = poll;
+      const outcome = await current.settle();
+      if (!outcome.ok) {
+        if (signal?.aborted) throw abortError(signal.reason);
+        throw outcome.error;
+      }
+      if (!outcome.response.ok) {
+        // The read itself was rejected; the response carries the status and
+        // Retry-After the caller must report, so hand it back untouched.
+        poll = null;
+        return { rejected: outcome.response };
+      }
+      const result = await consumeBindBody(outcome.response, { state, signal, limit });
+      poll = null;
+      current.abandon?.();
+      if (result.rawComplete) return { rawText: state.rawText };
+      if (result.final) return { body: streamBodyFromBind(state.labels, state.answer) };
+      // A rejection that arrives as a 200 body is still the turn's reason for
+      // ending, and it must be reported with the upstream status.
+      if (result.sm) throw bindSmError(result.sm);
+      const control = bindControlError(result.control);
+      if (control) throw control;
+    }
+  } finally {
+    abandon();
   }
 }

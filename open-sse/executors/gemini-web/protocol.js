@@ -33,11 +33,12 @@ import {
   encodeProcessSessionReq0,
   encodeProcessSessionReq1,
   extractProcessSessionAnswer,
+  extractProcessSessionFailure,
   parseBrowserChannelOpen,
   processSessionUrl,
   protoToBase64,
   randomBindRid,
-  readBindUntilAnswer,
+  readBindChannel,
   streamBodyFromAnswerText,
 } from "./processSession.js";
 import { fetchGeminiWeb as defaultTransport, readGeminiWebBodyText } from "./transport.js";
@@ -54,7 +55,23 @@ const TOKEN_PATTERNS = {
   buildLabel: /"cfb2h":"([^"]+)"/,
   sessionId: /"FdrFJe":"([^"]+)"/,
   language: /"TuX5cc":"([^"]+)"/,
+  // Public API consumer key the application declares in WIZ_global_data. The
+  // ProcessSession service requires some caller identity; this is the same
+  // public value the browser ships, not a user credential.
+  apiConsumerKey: /"d2zJAe"\s*:\s*"([^"]+)"/,
 };
+
+const API_CONSUMER_KEY_SHAPE = /^[A-Za-z0-9_-]{20,128}$/;
+
+/**
+ * Read the bootstrap's public API consumer key. A value that is not shaped like
+ * one is treated as absent, so a page change yields the explicit "missing key"
+ * preparation error instead of sending junk identity.
+ */
+function readApiConsumerKey(body) {
+  const key = firstMatch(body, TOKEN_PATTERNS.apiConsumerKey).trim();
+  return API_CONSUMER_KEY_SHAPE.test(key) ? key : "";
+}
 
 
 function firstMatch(body, pattern) {
@@ -381,6 +398,9 @@ export async function bootstrapGeminiWeb({
     sessionId: firstMatch(body, TOKEN_PATTERNS.sessionId),
     language,
     generationId,
+    // Kept on the internal session object only: it never reaches a response,
+    // the persisted credential record, or the model catalog.
+    apiConsumerKey: readApiConsumerKey(body),
     account: readAccountIdentity(body),
   };
 
@@ -514,6 +534,32 @@ async function withTimeout(fn, signal, timeoutMs, what) {
   }
 }
 
+/**
+ * One deadline and one cancellation scope for a whole turn. Every send, poll
+ * and body read of that turn shares this signal, so a channel that rolls over
+ * cannot restart the budget, and a caller abort reaches whatever request is
+ * outstanding at that moment.
+ */
+function createTurnScope(signal, timeoutMs) {
+  const deadline = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    deadline.abort(new Error("Gemini Web generation timed out"));
+  }, timeoutMs);
+  return {
+    signal: combineSignals(signal, deadline.signal),
+    failure(error) {
+      if (signal?.aborted) return abortError(signal.reason);
+      if (timedOut) return upstreamError("Gemini Web generation timed out");
+      return error;
+    },
+    close() {
+      clearTimeout(timer);
+    },
+  };
+}
+
 async function generateGeminiWebProcessSession({
   session,
   authUser,
@@ -540,143 +586,214 @@ async function generateGeminiWebProcessSession({
     referer: `${GEMINI_WEB_GEMINI_PREFIX}${slot ? `u/${slot}/` : ""}app`,
   };
 
-  const post = (url, body) =>
-    withTimeout(
-      (combinedSignal) =>
-        fetchImpl(
-          url,
-          {
-            method: "POST",
-            headers,
-            body,
-            redirect: "manual",
-            strictTls: true,
-            maxHeaderSize: GEMINI_WEB_LIMITS.maxHeaderSize,
-            forceFreshSocket: true,
-            timeoutMs: GEMINI_WEB_LIMITS.generationTimeoutMs,
-            signal: combinedSignal,
-          },
-          proxy
-        ),
-      signal,
-      GEMINI_WEB_LIMITS.generationTimeoutMs,
-      "generation"
-    );
-
   const openRid = randomBindRid();
   const attestation = botguard;
 
 
-  const openResponse = await post(
-    processSessionUrl({
-      authUser: slot,
-      rid: openRid,
-      cookieHeader: session.cookieHeader,
-      mode: "open",
-    }),
-    "count=0"
-  );
-  if (openResponse.status >= 300 && openResponse.status < 400) {
-    await drain(openResponse);
-    throw upstreamError("Gemini Web ProcessSession returned an unexpected redirect");
-  }
-  if (!openResponse.ok) return openResponse;
-
-  const openText = await readGeminiWebBodyText(openResponse, GEMINI_WEB_LIMITS.modelResponseBytes);
-  const channel = parseBrowserChannelOpen(openText);
-  const gsessionid =
-    openResponse.headers?.get?.("x-http-session-id") ||
-    openResponse.headers?.["x-http-session-id"];
-  if (!channel?.sid || !gsessionid) {
-    throw upstreamError("Gemini Web ProcessSession did not open a Bind channel");
+  // The API consumer key identifies this client to the ProcessSession service.
+  // Without it the channel has no caller identity, so a policy-code turn fails
+  // as preparation before dispatch instead of spending a generation on a call
+  // the service is guaranteed to reject.
+  const apiConsumerKey =
+    typeof session.apiConsumerKey === "string" ? session.apiConsumerKey.trim() : "";
+  if (!apiConsumerKey) {
+    throw geminiWebError(
+      "Gemini Web session is missing the API consumer key that policy-code models require; re-bootstrap the account",
+      { status: 502 }
+    );
   }
 
-  const req0 = encodeProcessSessionReq0({
-    modelId: model.modelId,
-    language,
-    generationId,
-    requestId,
-    modelNumber: model.modelNumber,
-    thinkingLevel,
-    botguardToken: attestation?.token,
-    botguardHash: attestation?.hash,
-  });
-  const req1 = encodeProcessSessionReq1(typeof prompt === "string" ? prompt : "");
-  const form = new URLSearchParams({
-    count: "2",
-    ofs: "0",
-    req0___data__: protoToBase64(req0),
-    req1___data__: protoToBase64(req1),
-  }).toString();
+  // One turn owns one deadline and one cancellation scope: the channel open,
+  // the send and every poll share them, so no stage restarts a budget and the
+  // model-test deadline covers the whole operation.
+  const turn = createTurnScope(signal, GEMINI_WEB_LIMITS.generationTimeoutMs);
+  let firstPoll = null;
+  let handedOffResponse = false;
 
-  // Opening the Bind channel does not consume a turn; posting req0/req1 does.
-  // Everything after this point must never be replayed on another account.
-  onDispatch?.();
-  const sendResponse = await post(
-    processSessionUrl({
-      authUser: slot,
-      rid: openRid + 1,
-      sid: channel.sid,
-      gsessionid,
-      cookieHeader: session.cookieHeader,
-      mode: "send",
-    }),
-    form
-  );
-  if (sendResponse.status >= 300 && sendResponse.status < 400) {
-    await drain(sendResponse);
-    throw upstreamError("Gemini Web ProcessSession returned an unexpected redirect");
-  }
-  if (!sendResponse.ok) return sendResponse;
+  try {
+    const openResponse = await fetchImpl(
+      processSessionUrl({
+        authUser: slot,
+        rid: openRid,
+        cookieHeader: session.cookieHeader,
+        mode: "open",
+        apiKey: apiConsumerKey,
+      }),
+      {
+        method: "POST",
+        headers,
+        body: "count=0",
+        redirect: "manual",
+        strictTls: true,
+        maxHeaderSize: GEMINI_WEB_LIMITS.maxHeaderSize,
+        forceFreshSocket: true,
+        signal: turn.signal,
+      },
+      proxy
+    );
+    if (openResponse.status >= 300 && openResponse.status < 400) {
+      await drain(openResponse);
+      throw upstreamError("Gemini Web ProcessSession returned an unexpected redirect");
+    }
+    if (!openResponse.ok) return openResponse;
 
-  const sendText = await readGeminiWebBodyText(sendResponse, GEMINI_WEB_LIMITS.maxFrameBytes);
-  if (sendText.includes("wrb.fr")) {
-    return new Response(sendText, { status: 200 });
-  }
+    const openText = await readGeminiWebBodyText(
+      openResponse,
+      GEMINI_WEB_LIMITS.modelResponseBytes
+    );
+    const channel = parseBrowserChannelOpen(openText);
+    const gsessionid =
+      openResponse.headers?.get?.("x-http-session-id") ||
+      openResponse.headers?.["x-http-session-id"];
+    if (!channel?.sid || !gsessionid) {
+      throw upstreamError("Gemini Web ProcessSession did not open a Bind channel");
+    }
 
-  const answer = extractProcessSessionAnswer(sendText);
-  if (answer) return new Response(streamBodyFromAnswerText(answer), { status: 200 });
+    const req0 = encodeProcessSessionReq0({
+      modelId: model.modelId,
+      language,
+      generationId,
+      requestId,
+      modelNumber: model.modelNumber,
+      thinkingLevel,
+      botguardToken: attestation?.token,
+      botguardHash: attestation?.hash,
+    });
+    const req1 = encodeProcessSessionReq1(typeof prompt === "string" ? prompt : "");
+    const form = new URLSearchParams({
+      count: "2",
+      ofs: "0",
+      req0___data__: protoToBase64(req0),
+      req1___data__: protoToBase64(req1),
+    }).toString();
 
-  const rpcResponse = await withTimeout(
-    (combinedSignal) =>
-      fetchImpl(
-        processSessionUrl({
-          authUser: slot,
-          rid: "rpc",
-          sid: channel.sid,
-          gsessionid,
-          cookieHeader: session.cookieHeader,
-          mode: "rpc",
-        }),
-        {
-          method: "GET",
-          headers,
-          redirect: "manual",
-          strictTls: true,
-          maxHeaderSize: GEMINI_WEB_LIMITS.maxHeaderSize,
-          forceFreshSocket: true,
-          timeoutMs: GEMINI_WEB_LIMITS.generationTimeoutMs,
-          signal: combinedSignal,
+    // The receive poll is issued before the turn is posted and is never
+    // awaited here, so a poll whose headers are still pending cannot delay the
+    // send. The settle promise is already normalized, so a late failure can
+    // never surface as an unhandled rejection.
+    const startReceive = (aid) => {
+      const controller = new AbortController();
+      const settle = (async () => {
+        try {
+          const response = await fetchImpl(
+            processSessionUrl({
+              authUser: slot,
+              rid: "rpc",
+              sid: channel.sid,
+              gsessionid,
+              cookieHeader: session.cookieHeader,
+              mode: "rpc",
+              aid,
+            }),
+            {
+              method: "GET",
+              headers,
+              redirect: "manual",
+              strictTls: true,
+              maxHeaderSize: GEMINI_WEB_LIMITS.maxHeaderSize,
+              forceFreshSocket: true,
+              signal: combineSignals(turn.signal, controller.signal),
+            },
+            proxy
+          );
+          return { ok: true, response };
+        } catch (error) {
+          return { ok: false, error: turn.failure(error) };
+        }
+      })();
+      return {
+        settle: () => settle,
+        abandon: () => {
+          controller.abort(new Error("Gemini Web Bind receive abandoned"));
+          void settle.then((outcome) => {
+            if (outcome.ok) void drain(outcome.response);
+          });
         },
-        proxy
-      ),
-    signal,
-    GEMINI_WEB_LIMITS.generationTimeoutMs,
-    "generation"
-  );
-  if (!rpcResponse.ok) {
-    // The turn POST was already accepted, so a rejection while reading its
-    // channel is evidence the generation may have been consumed. Mark the
-    // response so the executor never offers it to another account, even when
-    // the status alone would look like a plain rejection.
-    return markNonReplayableResponse(rpcResponse);
+      };
+    };
+
+    // The browser arms the receive channel first and posts the turn without
+    // waiting for the poll's headers; only the POST can consume a generation.
+    firstPoll = startReceive(0);
+
+    // Opening the Bind channel does not consume a turn; posting req0/req1
+    // does. Everything after this point must never be replayed on another
+    // account.
+    onDispatch?.();
+
+    const sendResponse = await fetchImpl(
+      processSessionUrl({
+        authUser: slot,
+        rid: openRid + 1,
+        sid: channel.sid,
+        gsessionid,
+        cookieHeader: session.cookieHeader,
+        mode: "send",
+      }),
+      {
+        method: "POST",
+        headers,
+        body: form,
+        redirect: "manual",
+        strictTls: true,
+        maxHeaderSize: GEMINI_WEB_LIMITS.maxHeaderSize,
+        forceFreshSocket: true,
+        signal: turn.signal,
+      },
+      proxy
+    );
+    if (sendResponse.status >= 300 && sendResponse.status < 400) {
+      await drain(sendResponse);
+      throw upstreamError("Gemini Web ProcessSession returned an unexpected redirect");
+    }
+    if (!sendResponse.ok) {
+      // A rejected send is the turn's outcome; the armed receive has no owner.
+      return sendResponse;
+    }
+
+    const sendText = await readGeminiWebBodyText(sendResponse, GEMINI_WEB_LIMITS.maxFrameBytes);
+    if (sendText.includes("wrb.fr")) {
+      return new Response(sendText, { status: 200 });
+    }
+
+    const answer = extractProcessSessionAnswer(sendText);
+    if (answer) {
+      return new Response(streamBodyFromAnswerText(answer), { status: 200 });
+    }
+
+    // A 200 ACK can still carry the channel's explicit rejection; report it
+    // with its own status before waiting on a poll that will never answer.
+    const sendFailure = extractProcessSessionFailure(sendText);
+    if (sendFailure) throw sendFailure;
+
+    const outcome = await readBindChannel({
+      firstPoll,
+      startPoll: startReceive,
+      signal: turn.signal,
+      limit: GEMINI_WEB_LIMITS.maxFrameBytes,
+    });
+    if (outcome.rejected) {
+      // The turn POST was already accepted, so a rejection while reading its
+      // channel is evidence the generation may have been consumed. Mark the
+      // response so the executor never offers it to another account, even when
+      // the status alone would look like a plain rejection.
+      handedOffResponse = true;
+      return markNonReplayableResponse(outcome.rejected);
+    }
+    const body = outcome.rawText ?? outcome.body;
+    if (!body) throw upstreamError("Gemini Web ProcessSession completed without an answer");
+    return new Response(body, { status: 200 });
+  } catch (error) {
+    // One classification point for the whole operation: a stalled header, a
+    // stalled body read or a poll failure surfaces the same way, so the turn's
+    // own deadline is never mistaken for the caller cancelling.
+    throw turn.failure(error);
+  } finally {
+    turn.close();
+    // A response handed to the executor still owns its body; every other exit
+    // leaves the armed receive with no reader, so it must be released here.
+    if (!handedOffResponse) firstPoll?.abandon();
   }
-  const rpcText = await readBindUntilAnswer(rpcResponse, {
-    signal,
-    limit: GEMINI_WEB_LIMITS.maxFrameBytes,
-  });
-  if (!rpcText) throw upstreamError("Gemini Web ProcessSession completed without an answer");
-  return new Response(rpcText, { status: 200 });
 }
 
 /** Build and dispatch one native StreamGenerate request. */

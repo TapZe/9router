@@ -34,6 +34,7 @@ import {
   BOOTSTRAP_HTML_FALLBACK_ARRAY,
   SIGN_IN_HTML,
   SYNTHETIC_AT,
+  SYNTHETIC_API_KEY,
   SYNTHETIC_BUILD,
   SYNTHETIC_COOKIE,
   SYNTHETIC_GENERATION_ID,
@@ -66,6 +67,7 @@ const BASE_SESSION = Object.freeze({
   sessionId: SYNTHETIC_GOOGLE_SESSION,
   language: "en",
   generationId: SYNTHETIC_GENERATION_ID,
+  apiConsumerKey: SYNTHETIC_API_KEY,
   models: [],
 });
 
@@ -839,6 +841,90 @@ describe("Gemini Web policy-code models", () => {
     expect(calls.some((call) => call.url.includes("waa-pa"))).toBe(false);
     const events = await collect(decodeGeminiWebStream(result.body));
     expect(events.some((event) => event.type === "text" && event.text.includes("pong"))).toBe(true);
+  });
+
+  it("declares the API consumer key and protobuf payload type when opening the channel", async () => {
+    const { transport, calls } = createTransport((call) => {
+      const body = String(call.options.body || "");
+      if (body.startsWith("count=0")) {
+        return new Response('[[0,["c","synthetic-sid","0",8]]]', {
+          status: 200,
+          headers: { "x-http-session-id": "synthetic-gsession" },
+        });
+      }
+      if (call.options.method === "GET") return new Response(streamBodyFromAnswerText("pong"));
+      return new Response(")]}'\n[[1,[]]]\n", { status: 200 });
+    });
+
+    const result = await generateGeminiWeb({
+      session: {
+        ...BASE_SESSION,
+        cookieHeader: `${SYNTHETIC_COOKIE}; SAPISID=synthetic-sapisid`,
+      },
+      authUser: "9",
+      model: ARGON_MODEL,
+      prompt: "ping",
+      thinkingLevel: "low",
+      transport,
+    });
+    expect(result.ok).toBe(true);
+
+    const open = calls.find((call) => String(call.options.body || "").startsWith("count=0"));
+    const declared = (new URL(open.url).searchParams.get("$httpHeaders") || "").split("\r\n");
+    expect(declared[0]).toMatch(/^Authorization:SAPISIDHASH \d+_[0-9a-f]{40}$/);
+    expect(declared).toContain(`X-Goog-Api-Key:${SYNTHETIC_API_KEY}`);
+    expect(declared).toContain("X-WebChannel-Content-Type:application/x-protobuf");
+
+    // The handshake declares identity once; the turn and its polls do not
+    // repeat it.
+    for (const call of calls) {
+      if (String(call.options.body || "").startsWith("count=0")) continue;
+      expect(new URL(call.url).searchParams.has("$httpHeaders")).toBe(false);
+    }
+  });
+
+  it("parses the API consumer key from bootstrap and keeps it out of the model catalog", async () => {
+    const { transport } = bootstrapTransport();
+    const session = await bootstrapGeminiWeb({
+      cookieHeader: SYNTHETIC_COOKIE,
+      authUser: "2",
+      transport,
+    });
+
+    expect(session.apiConsumerKey).toBe(SYNTHETIC_API_KEY);
+    expect(JSON.stringify(session.models)).not.toContain(SYNTHETIC_API_KEY);
+  });
+
+  it("keeps a bootstrap without the key shaped the same for hex-id models", async () => {
+    const { transport } = bootstrapTransport({
+      root: () => new Response("primed", { status: 200 }),
+      app: () => new Response(BOOTSTRAP_HTML_FALLBACK_ARRAY, { status: 200 }),
+    });
+    const session = await bootstrapGeminiWeb({
+      cookieHeader: SYNTHETIC_COOKIE,
+      authUser: "",
+      transport,
+    });
+
+    expect(session.apiConsumerKey).toBe("");
+    expect(session.at).toBe(SYNTHETIC_AT);
+  });
+
+  it("fails a policy-code turn as preparation, before any request, when the key is missing", async () => {
+    const { transport, calls } = createTransport(() => new Response("unexpected", { status: 500 }));
+    const error = await generateGeminiWeb({
+      session: { ...BASE_SESSION, apiConsumerKey: "" },
+      authUser: "9",
+      model: ARGON_MODEL,
+      prompt: "ping",
+      thinkingLevel: "low",
+      transport,
+    }).catch((caught) => caught);
+
+    expect(error).toMatchObject({ status: 502 });
+    expect(String(error.message)).toContain("API consumer key");
+    expect(error.nonReplayable).toBeUndefined();
+    expect(calls).toHaveLength(0);
   });
 
   it("reads the Bind answer from the rpc GET when the send ACK is only XSSI", async () => {

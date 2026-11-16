@@ -9,6 +9,9 @@ export const SYNTHETIC_AT = "synthetic-at-token";
 export const SYNTHETIC_BUILD = "synthetic-build-label";
 export const SYNTHETIC_GOOGLE_SESSION = "synthetic-google-session";
 export const SYNTHETIC_GENERATION_ID = "11111111-2222-3333-4444-555555555555";
+// Shape-only stand-in for the public API consumer key the Gemini application
+// declares in WIZ_global_data. It is not a real key and grants nothing.
+export const SYNTHETIC_API_KEY = "AIzaSySyntheticKey000000000000000000000";
 
 export function jsonFrame(value) {
   return JSON.stringify(value);
@@ -141,7 +144,7 @@ export const BARD_ERROR_FIXTURE = `)]}'
 
 [["wrb.fr",null,null,null,null,[13,null,[["type.googleapis.com/assistant.boq.bard.application.BardErrorInfo",[1152]]]]],["di",2461]]`;
 
-export const BOOTSTRAP_HTML = `<html><head><script>window.WIZ_global_data = {"SNlM0e":"${SYNTHETIC_AT}","qKIAYe":"feeds/synthetic-push","cfb2h":"${SYNTHETIC_BUILD}","FdrFJe":"${SYNTHETIC_GOOGLE_SESSION}","TuX5cc":"vi"};</script></head><body>signed in</body></html>`;
+export const BOOTSTRAP_HTML = `<html><head><script>window.WIZ_global_data = {"SNlM0e":"${SYNTHETIC_AT}","qKIAYe":"feeds/synthetic-push","cfb2h":"${SYNTHETIC_BUILD}","FdrFJe":"${SYNTHETIC_GOOGLE_SESSION}","TuX5cc":"vi","d2zJAe":"${SYNTHETIC_API_KEY}"};</script></head><body>signed in</body></html>`;
 
 export const BOOTSTRAP_HTML_FALLBACK_ARRAY = `<html><script>AF_initDataCallback([["SNlM0e","${SYNTHETIC_AT}"]]);</script></html>`;
 

@@ -46,6 +46,10 @@ export const GEMINI_WEB_LIMITS = Object.freeze({
   downloadTimeoutMs: 2 * 60 * 1000,
   maxFrameBytes: 8 * 1024 * 1024,
   modelResponseBytes: 8 * 1024 * 1024,
+  // One turn may rearm its receive channel at most this many times. A poll
+  // that keeps closing without advancing the acknowledgement cursor is a dead
+  // channel, not a long generation; the turn deadline still bounds total time.
+  bindPollLimit: 64,
   inputImagesBytes: 32 * 1024 * 1024,
   generatedImageBytes: 32 * 1024 * 1024,
   maxRedirects: 5,

@@ -769,6 +769,7 @@ describe("Gemini Web generation ownership", () => {
       if (call.options.method === "GET") return new Response("rejected", { status: 401 });
       return new Response(")]}'\n[[1,[]]]\n", { status: 200 });
     });
+
     const attempts = [];
     const response = await handleComboChat({
       body: chatBody([userText("Hi")]),
@@ -792,6 +793,31 @@ describe("Gemini Web generation ownership", () => {
 
     expect(response.status).toBe(401);
     expect(attempts).toEqual(["gemini-web/gemini-code-analysis"]);
+  });
+
+  it("surfaces a channel service error with its upstream status and never replays it", async () => {
+    // Literal body of the live rejected Argon poll: the service names the
+    // missing API consumer identity, then the channel closes.
+    const serviceError =
+      '[[1,{"__sm__":{"status":[[{"error":{"code":403,"message":"Method doesn\'t allow ' +
+      'unregistered callers (callers without established identity). Please use API Key or ' +
+      'other form of API consumer identity to call this API.","status":"PERMISSION_DENIED"}}]]}}],' +
+      '[2,["close"]]]';
+    const harness = policyHarness((call) => {
+      const body = String(call.options.body || "");
+      if (body.startsWith("count=0")) return openOk();
+      if (call.options.method === "GET") return new Response(serviceError, { status: 200 });
+      return new Response(")]}'\n[[1,[]]]\n", { status: 200 });
+    });
+
+    const result = await executeWith(harness, { model: "gemini-code-analysis" });
+    const payload = await jsonOf(result);
+
+    expect(result.response.status).toBe(403);
+    expect(payload.error.code).toBe("gemini_web_upstream_error");
+    expect(payload.error.message).toContain("unregistered callers");
+    expect(isNonReplayableResponse(result.response)).toBe(true);
+    expect(sentTurn(harness.calls)).toBe(true);
   });
 
   it("keeps a rejected image send retryable on another account", async () => {
