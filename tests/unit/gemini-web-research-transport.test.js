@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { generateGeminiWeb } from "../../open-sse/executors/gemini-web/protocol.js";
 import { decodeGeminiWebStream } from "../../open-sse/executors/gemini-web/stream.js";
 import { parseGeminiModels } from "../../open-sse/executors/gemini-web/models.js";
-import { BOOTSTRAP_HTML, SYNTHETIC_COOKIE, SYNTHETIC_AT, SYNTHETIC_API_KEY, modelDiscoveryBody, modelEntry, answerFrame, imageFrame, lengthPrefixedBody } from "../fixtures/gemini-web/wireFixtures.js";
+import { BOOTSTRAP_HTML, SYNTHETIC_COOKIE, SYNTHETIC_AT, SYNTHETIC_API_KEY, modelDiscoveryBody, modelEntry, policyGroup, answerFrame, imageFrame, lengthPrefixedBody } from "../fixtures/gemini-web/wireFixtures.js";
 import { ARGON_BIND_RECORDS, ARGON_BIND_FINAL_TEXT, argonBindBody } from "../fixtures/gemini-web/argonBindFixtures.js";
 import { GeminiWebExecutor } from "../../open-sse/executors/gemini-web.js";
 import { TINY_PNG } from "../fixtures/gemini-web/imageFixtures.js";
@@ -47,7 +47,7 @@ describe("Gemini Web Detailed research generation transport", () => {
     expect(Buffer.from(new URLSearchParams(sends[0].body).get("req0___data__"), "base64").toString("utf8")).toContain(PRO_MODEL_ID);
   });
 
-  it("leaves an unlisted hex model on StreamGenerate even when its label says Detailed research", async () => {
+  it("carries an unlisted hex model on the channel when the label says Detailed research", async () => {
     const { models } = parseGeminiModels(modelDiscoveryBody({
       tiers: [8],
       entries: [modelEntry("unlisted-account-model", "Other", "Detailed research", 1)],
@@ -58,23 +58,57 @@ describe("Gemini Web Detailed research generation transport", () => {
       model: models[0],
       prompt: "hello",
       thinkingLevel: "low",
-      transport: async (url) => {
-        calls.push(new URL(url).pathname);
-        return new Response(lengthPrefixedBody([answerFrame("unchanged hex answer")]));
+      transport: async (url, options) => {
+        const parsed = new URL(url);
+        calls.push({ path: parsed.pathname, body: String(options.body || "") });
+        if (parsed.pathname.includes("StreamGenerate")) return new Response("wrong transport", { status: 400 });
+        if (options.method === "GET") return new Response(argonBindBody([finalRecord]));
+        if (String(options.body).startsWith("count=0")) return new Response('[[0,["c","synthetic-research-channel","0",8]]]', { headers: { "x-http-session-id": "synthetic-research-session" } });
+        return new Response("[[0,0,0]]");
       },
     });
 
-    expect(await output(response)).toBe("unchanged hex answer");
+    expect(await output(response)).toBe(ARGON_BIND_FINAL_TEXT);
+    expect(calls.every(call => call.path === "/v1/processSession")).toBe(true);
+    const sends = calls.filter(call => call.body.includes("req1___data__"));
+    expect(sends).toHaveLength(1);
+    expect(Buffer.from(new URLSearchParams(sends[0].body).get("req0___data__"), "base64").toString("utf8")).toContain("unlisted-account-model");
+  });
+
+  it("falls back to StreamGenerate for an ordinary model without channel identity", async () => {
+    const calls = [];
+    const response = await generateGeminiWeb({
+      session: { ...session, apiConsumerKey: "" },
+      model: proModel("Detailed research"),
+      prompt: "hello",
+      thinkingLevel: "low",
+      transport: async (url) => {
+        const parsed = new URL(url);
+        calls.push(parsed.pathname);
+        if (parsed.pathname.includes("processSession")) return new Response("wrong transport", { status: 400 });
+        return new Response(lengthPrefixedBody([answerFrame("streamed answer")]));
+      },
+    });
+
+    expect(await output(response)).toBe("streamed answer");
     expect(calls).toHaveLength(1);
     expect(calls[0]).toContain("StreamGenerate");
   });
 
-  it("rejects missing ProcessSession identity before sending a Pro generation", async () => {
+  it("rejects a policy code without channel identity before dispatch", async () => {
+    const { models } = parseGeminiModels(modelDiscoveryBody({
+      tiers: [8],
+      entries: [modelEntry(PRO_MODEL_ID, "Pro", "Detailed research", 3)],
+      policy: [null, [policyGroup("synthetic-policy-code", "Code", "Code & analysis", 2)]],
+    }));
+    const policyModel = models.find((model) => model.policy === true);
+    expect(policyModel).toBeTruthy();
+
     let dispatches = 0;
     let requests = 0;
     await expect(generateGeminiWeb({
       session: { ...session, apiConsumerKey: "" },
-      model: proModel("Detailed research"),
+      model: policyModel,
       prompt: "hello",
       thinkingLevel: "low",
       onDispatch: () => { dispatches += 1; },

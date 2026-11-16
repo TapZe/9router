@@ -10,6 +10,7 @@ import {
 import {
   bootstrapGeminiWeb,
   generateGeminiWeb,
+  generateGeminiWebStreamGenerate,
   geminiAccountUrl,
   geminiSourcePath,
 } from "../../open-sse/executors/gemini-web/protocol.js";
@@ -1507,7 +1508,7 @@ describe("Gemini Web generation wire contract", () => {
   it("supports the alternate capacity-field header layout", async () => {
     const { transport, calls } = generateTransport();
     const model = { ...FLASH_MODEL, capacityField: 13, capacity: 3, modelNumber: 2 };
-    await generateGeminiWeb({
+    await generateGeminiWebStreamGenerate({
       session: BASE_SESSION,
       authUser: "",
       model,
@@ -1541,7 +1542,7 @@ describe("Gemini Web generation wire contract", () => {
     { level: 2, wire: 2 },
   ])("maps thinking intent $level to wire enum $wire", async ({ level, wire }) => {
     const { transport, calls } = generateTransport();
-    await generateGeminiWeb({
+    await generateGeminiWebStreamGenerate({
       session: BASE_SESSION,
       authUser: "",
       model: FLASH_MODEL,
@@ -1582,7 +1583,7 @@ describe("Gemini Web generation wire contract", () => {
   it("issues a fresh request UUID per call while keeping the bootstrap generation ID", async () => {
     const { transport, calls } = generateTransport();
     for (let index = 0; index < 2; index += 1) {
-      await generateGeminiWeb({
+      await generateGeminiWebStreamGenerate({
         session: BASE_SESSION,
         authUser: "",
         model: FLASH_MODEL,

@@ -146,6 +146,16 @@ export const BARD_ERROR_FIXTURE = `)]}'
 
 export const BOOTSTRAP_HTML = `<html><head><script>window.WIZ_global_data = {"SNlM0e":"${SYNTHETIC_AT}","qKIAYe":"feeds/synthetic-push","cfb2h":"${SYNTHETIC_BUILD}","FdrFJe":"${SYNTHETIC_GOOGLE_SESSION}","TuX5cc":"vi","d2zJAe":"${SYNTHETIC_API_KEY}"};</script></head><body>signed in</body></html>`;
 
+/**
+ * The same signed-in page for an account whose bootstrap carries no channel
+ * consumer key. Text chat for that account stays on StreamGenerate, so the wire
+ * and response contracts can be exercised without a channel in the way.
+ */
+export const BOOTSTRAP_HTML_WITHOUT_CHANNEL_IDENTITY = BOOTSTRAP_HTML.replace(
+  `,"d2zJAe":"${SYNTHETIC_API_KEY}"`,
+  ""
+);
+
 export const BOOTSTRAP_HTML_FALLBACK_ARRAY = `<html><script>AF_initDataCallback([["SNlM0e","${SYNTHETIC_AT}"]]);</script></html>`;
 
 export const SIGN_IN_HTML = `<html><body>Sign in to continue</body></html>`;

@@ -15,7 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  BOOTSTRAP_HTML,
+  BOOTSTRAP_HTML_WITHOUT_CHANNEL_IDENTITY,
   SYNTHETIC_COOKIE,
   answerFrame,
   lengthPrefixedBody,
@@ -84,7 +84,12 @@ function createGeminiTransport() {
     const parsed = new URL(call.url);
     if (parsed.origin === "https://www.google.com") return new Response("warm", { status: 200 });
     if (parsed.pathname === "/") return new Response("primed", { status: 200 });
-    if (parsed.pathname.endsWith("/app")) return new Response(BOOTSTRAP_HTML, { status: 200 });
+    if (parsed.pathname.endsWith("/app")) {
+      // These assertions read the thinking enum off the StreamGenerate wire, so
+      // the account here has no channel identity and text chat stays on it.
+      // Channel-lane precedence has its own case below.
+      return new Response(BOOTSTRAP_HTML_WITHOUT_CHANNEL_IDENTITY, { status: 200 });
+    }
     if (parsed.searchParams.has("rpcids")) return new Response(discoveryBody(), { status: 200 });
     if (parsed.pathname.includes("StreamGenerate")) {
       return new Response(lengthPrefixedBody([answerFrame("Hello")]), { status: 200 });

@@ -21,6 +21,7 @@ import { buildImagePrompt } from "../../open-sse/executors/gemini-web/imageGen.j
 import { GEMINI_WEB_LIMITS } from "../../open-sse/executors/gemini-web/config.js";
 import {
   BOOTSTRAP_HTML,
+  BOOTSTRAP_HTML_WITHOUT_CHANNEL_IDENTITY,
   SIGN_IN_HTML,
   SYNTHETIC_COOKIE,
   answerFrame,
@@ -140,9 +141,14 @@ function googleTransport(options = {}) {
 
     if (url.pathname.endsWith("/app")) {
       state.bootstrap += 1;
+      // One fixture, two accounts. A test that supplies a channel handler is
+      // exercising the channel, so it gets the page whose bootstrap carries the
+      // consumer key. Otherwise the account has no channel identity and text
+      // chat stays on StreamGenerate, which is what the wire contracts describe.
+      const page = options.session ? BOOTSTRAP_HTML : BOOTSTRAP_HTML_WITHOUT_CHANNEL_IDENTITY;
       return options.app
         ? options.app(call, state)
-        : new Response(BOOTSTRAP_HTML, { status: 200 });
+        : new Response(page, { status: 200 });
     }
 
     if (url.searchParams.has("rpcids")) {
@@ -820,11 +826,33 @@ describe("Gemini Web generation ownership", () => {
     expect(sentTurn(harness.calls)).toBe(true);
   });
 
+  it("refuses an upload on a channel-only policy code instead of dropping it", async () => {
+    // Code & analysis is published only inside the channel's model group, and
+    // the channel's request records carry no uploaded-file slot. A turn that
+    // carried an image would answer without it, so it must be refused before an
+    // upload is spent and before any turn is sent.
+    const harness = policyHarness(openOk);
+    const result = await executeWith(harness, {
+      model: "gemini-code-analysis",
+      body: chatBody([
+        { role: "user", content: [{ type: "image_url", image_url: { url: PNG_DATA_URL } }] },
+      ]),
+    });
+
+    const payload = await jsonOf(result);
+    expect(result.response.status).toBe(400);
+    expect(payload.error.code).toBe("unsupported_control_for_provider");
+    expect(harness.state.upload).toBe(0);
+    expect(harness.state.session).toBe(0);
+    expect(sentTurn(harness.calls)).toBe(false);
+  });
+
   it("keeps a rejected image send retryable on another account", async () => {
-    const harness = policyHarness((call) => {
-      const body = String(call.options.body || "");
-      if (body.startsWith("count=0")) return openOk();
-      return new Response("rejected", { status: 401 });
+    // Image generation must reach the media-capable surface even when the
+    // catalog offers only a policy code, which the image task then picks.
+    const harness = googleTransport({
+      discover: () => new Response(policyDiscovery(), { status: 200 }),
+      generate: () => new Response("rejected", { status: 401 }),
     });
     const executor = new geminiWeb.GeminiWebExecutor();
     const { credentials } = makeCredentials();
@@ -833,12 +861,14 @@ describe("Gemini Web generation ownership", () => {
       .generateMedia({ prompt: "a teal square", n: 1, credentials, transport: harness.transport })
       .catch((caught) => caught);
 
+    expect(harness.state.session).toBe(0);
+    expect(harness.state.generation).toBe(1);
     expect(error.status).toBe(401);
     expect(error.nonReplayable).toBeUndefined();
   });
 
-  it("keeps a failed image Bind open retryable on another account", async () => {
-    const harness = policyHarness(() => new Response("upstream broke", { status: 500 }));
+  it("keeps a failed image preparation before dispatch retryable on another account", async () => {
+    const harness = googleTransport({ discover: () => new Response("discovery broke", { status: 500 }) });
     const executor = new geminiWeb.GeminiWebExecutor();
     const { credentials } = makeCredentials();
 
@@ -846,9 +876,9 @@ describe("Gemini Web generation ownership", () => {
       .generateMedia({ prompt: "a teal square", n: 1, credentials, transport: harness.transport })
       .catch((caught) => caught);
 
-    expect(error.status).toBe(500);
+    expect(error.status).toBe(502);
     expect(error.nonReplayable).toBeUndefined();
-    expect(harness.state.session).toBe(1);
+    expect(harness.state.session).toBe(0);
     expect(harness.state.generation).toBe(0);
   });
 });

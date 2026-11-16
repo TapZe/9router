@@ -781,7 +781,13 @@ async function generateGeminiWebProcessSession({
   }
 }
 
-/** Build and dispatch one native StreamGenerate request. */
+/**
+ * The single entry for a Gemini Web generation.
+ *
+ * Routing is the only thing this function decides: it names the surface for
+ * this request and hands the request to it. Each surface keeps its own wire
+ * builder below, so a surface can be exercised without routing in between.
+ */
 export async function generateGeminiWeb({
   session,
   authUser,
@@ -805,7 +811,14 @@ export async function generateGeminiWeb({
     throw geminiWebError("Gemini Web session is not initialized", { status: 502 });
   }
 
-  const lane = selectGeminiTransport({ model, files, task });
+  const lane = selectGeminiTransport({
+    model,
+    files,
+    task,
+    channelIdentity: Boolean(
+      typeof session.apiConsumerKey === "string" && session.apiConsumerKey.trim()
+    ),
+  });
   if (lane === GEMINI_WEB_TRANSPORT.PROCESS_SESSION) {
     return generateGeminiWebProcessSession({
       session,
@@ -820,7 +833,37 @@ export async function generateGeminiWeb({
       onDispatch,
     });
   }
+  return generateGeminiWebStreamGenerate({
+    session,
+    authUser: slot,
+    model,
+    prompt,
+    files,
+    thinkingLevel: level,
+    signal,
+    proxyOptions,
+    transport,
+    onDispatch,
+  });
+}
+
+/** Build and dispatch one native StreamGenerate request. */
+export async function generateGeminiWebStreamGenerate({
+  session,
+  authUser,
+  model,
+  prompt,
+  files = [],
+  thinkingLevel,
+  signal,
+  proxyOptions,
+  transport,
+  onDispatch,
+} = {}) {
+  const slot = normalizeAuthUser(authUser);
+  const level = resolveThinkingLevel(thinkingLevel);
   const language = session.language || GEMINI_WEB_DEFAULT_LANGUAGE;
+
   const requestId = randomRequestId();
   const generationId = UUID_PATTERN.test(String(session.generationId || ""))
     ? session.generationId

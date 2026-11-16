@@ -418,6 +418,22 @@ export class GeminiWebExecutor extends BaseExecutor {
     }
 
     const reportedModel = cleanModel || routing.id;
+    // A policy code is published only inside the channel's model group, and the
+    // channel's request records carry no uploaded-file slot. Sending the turn
+    // anyway would keep the [Image N] marker and silently drop the image, so the
+    // request is refused here, before an upload is spent.
+    if (routing.policy === true && inputImages.length > 0) {
+      return result(
+        errorResponse(
+          unsupportedControl(
+            'Model provider "gemini-web" cannot attach input images to a channel-only model. ' +
+              `"${reportedModel}" is published only for text turns. Remove the images or route to ` +
+              "a model that accepts them."
+          ),
+          reportedModel
+        )
+      );
+    }
     const knownModelIds = new Set(
       (resolved.session.models || [])
         .map((entry) => entry.modelId)

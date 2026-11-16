@@ -9,7 +9,6 @@ import {
   GEMINI_WEB_ENDPOINTS,
   GEMINI_WEB_LIMITS,
   GEMINI_WEB_MODEL_HEADER,
-  GEMINI_WEB_PROCESS_SESSION_TEXT_MODEL_IDS,
   GEMINI_WEB_USER_STATUS_RPC,
   geminiAccountUrl,
   geminiSourcePath,
@@ -37,24 +36,34 @@ export const GEMINI_WEB_TASK = Object.freeze({ CHAT: "chat", IMAGE: "image" });
 /**
  * The one place that decides how a resolved model is generated.
  *
- * Policy-code models always use ProcessSession. The verified text-only Pro
- * selector also does, because StreamGenerate leaves that turn pending without
- * ever reporting completion. Every other lane keeps StreamGenerate: uploaded
- * attachments and the image task rely on the file and generated-media payload
- * slots that the ProcessSession encoders do not carry yet.
+ * The choice follows what each surface can carry, not which model it is.
+ * ProcessSession owns text-only chat: it reports the turn's own completion
+ * flags, whereas StreamGenerate leaves some selectors pending without ever
+ * reporting completion, so a text turn there can only end at the deadline.
+ * StreamGenerate owns everything else, because its payload carries the uploaded
+ * file slots and the generated-media slots that the ProcessSession encoders do
+ * not. That media rule is checked first for the image task: a policy code
+ * picked by the image task must still reach the media-capable surface.
+ *
+ * Policy codes stay channel-only. They are published only inside the channel's
+ * own model group, so there is no verified StreamGenerate form of them; when
+ * the bootstrap identity is missing the preparation error is the honest answer
+ * rather than an unverified request. A policy chat turn that carries uploads is
+ * refused by the executor rather than encoded without them. For every other
+ * model a missing identity falls back to StreamGenerate, because a slower text
+ * lane beats refusing every text model when one bootstrap token moves.
  */
 export function selectGeminiTransport({
   model,
   files = [],
   task = GEMINI_WEB_TASK.CHAT,
+  channelIdentity = true,
 } = {}) {
+  if (task !== GEMINI_WEB_TASK.CHAT) return GEMINI_WEB_TRANSPORT.STREAM_GENERATE;
   if (model?.policy === true) return GEMINI_WEB_TRANSPORT.PROCESS_SESSION;
-  const textOnly =
-    task === GEMINI_WEB_TASK.CHAT && Array.isArray(files) && files.length === 0;
-  if (textOnly && GEMINI_WEB_PROCESS_SESSION_TEXT_MODEL_IDS.includes(model?.modelId)) {
-    return GEMINI_WEB_TRANSPORT.PROCESS_SESSION;
-  }
-  return GEMINI_WEB_TRANSPORT.STREAM_GENERATE;
+  if (!Array.isArray(files) || files.length > 0) return GEMINI_WEB_TRANSPORT.STREAM_GENERATE;
+  if (!channelIdentity) return GEMINI_WEB_TRANSPORT.STREAM_GENERATE;
+  return GEMINI_WEB_TRANSPORT.PROCESS_SESSION;
 }
 
 
