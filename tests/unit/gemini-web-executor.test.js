@@ -19,6 +19,7 @@ import { isNonReplayableResponse } from "../../open-sse/utils/replayPolicy.js";
 import { handleComboChat } from "../../open-sse/services/combo.js";
 import { buildImagePrompt } from "../../open-sse/executors/gemini-web/imageGen.js";
 import { GEMINI_WEB_LIMITS } from "../../open-sse/executors/gemini-web/config.js";
+import { estimateUsage } from "../../open-sse/utils/usageTracking.js";
 import {
   BOOTSTRAP_HTML,
   BOOTSTRAP_HTML_WITHOUT_CHANNEL_IDENTITY,
@@ -233,7 +234,7 @@ function userImage(url) {
   return { role: "user", content: [{ type: "image_url", image_url: { url } }] };
 }
 
-async function executeWith(harness, { credentials, model = "gemini-auto", body, stream = false, signal } = {}) {
+async function executeWith(harness, { credentials, model = "gemini-auto", body, stream = false, signal, log } = {}) {
   const executor = new geminiWeb.GeminiWebExecutor();
   const creds = credentials || makeCredentials().credentials;
   return executor.execute({
@@ -242,6 +243,7 @@ async function executeWith(harness, { credentials, model = "gemini-auto", body, 
     stream,
     credentials: creds,
     signal,
+    log,
     transport: harness.transport,
   });
 }
@@ -482,6 +484,65 @@ describe("Gemini Web tool history", () => {
   });
 });
 
+describe("Gemini Web tool history edge cases", () => {
+  const promptOf = (harness) => innerOf(generationCalls(harness.calls).at(-1))[0][0];
+
+  it("writes calls and results with missing fields as empty text", async () => {
+    const harness = googleTransport();
+    await executeWith(harness, {
+      body: chatBody([
+        userText("Go"),
+        { role: "assistant", content: "", tool_calls: [null, { id: "call_9" }] },
+        { role: "tool", content: null },
+        { role: "tool", tool_call_id: "call_9" },
+      ]),
+    });
+
+    expect(promptOf(harness)).toBe(
+      "Previous conversation:\nUser: Go\n\n" +
+        "Assistant: [Call Tool:  with ID  and Input: {}]\n[Call Tool:  with ID call_9 and Input: {}]\n\n" +
+        "User: [Tool Result for ID ]: \n\nCurrent user message:\n[Tool Result for ID call_9]: "
+    );
+  });
+
+  it("uploads only user images, and reads tool_calls only on assistant turns", async () => {
+    const harness = googleTransport();
+    const image = { type: "image_url", image_url: { url: PNG_DATA_URL } };
+    await executeWith(harness, {
+      body: chatBody([
+        { role: "user", content: [{ type: "text", text: "Look" }], tool_calls: [{ id: "x", function: { name: "f" } }] },
+        { role: "assistant", content: [{ type: "text", text: "Seen" }, image] },
+        { role: "tool", tool_call_id: "t1", content: [{ type: "text", text: "ok" }, image] },
+        userText("And now?"),
+      ]),
+    });
+
+    expect(harness.state.upload).toBe(0);
+    expect(promptOf(harness)).toBe(
+      "Previous conversation:\nUser: Look\n\nAssistant: Seen\n\nUser: [Tool Result for ID t1]: ok\n\n" +
+        "Current user message:\nAnd now?"
+    );
+  });
+
+  it("skips empty turns, so a trailing empty user message does not replace the last one", async () => {
+    const harness = googleTransport();
+    await executeWith(harness, { body: chatBody([userText("Hi"), { role: "assistant", content: "" }, userText("")]) });
+
+    expect(promptOf(harness)).toBe("Hi");
+  });
+
+  it("needs a user turn with text, not only a tool result", async () => {
+    const harness = googleTransport();
+    const result = await executeWith(harness, {
+      body: chatBody([userText(""), { role: "tool", tool_call_id: "t1", content: "ok" }]),
+    });
+
+    expect(result.response.status).toBe(400);
+    expect((await jsonOf(result)).error.message).toBe("No user message found");
+    expect(harness.state.generation).toBe(0);
+  });
+});
+
 describe("Gemini Web tool calling", () => {
   const LOOKUP = {
     type: "function",
@@ -497,6 +558,7 @@ describe("Gemini Web tool calling", () => {
   function replies(...texts) {
     return (_call, state) => answerResponse([answerFrame(texts[Math.min(state.generation, texts.length) - 1])]);
   }
+  replies.frames = (frames) => () => answerResponse(frames);
 
   it("returns a tool call from a bridged reply", async () => {
     const harness = googleTransport({ generate: replies(CALL_REPLY) });
@@ -507,6 +569,7 @@ describe("Gemini Web tool calling", () => {
     const payload = await jsonOf(result);
     expect(result.response.status).toBe(200);
     expect(payload.choices[0].finish_reason).toBe("tool_calls");
+    expect(payload.choices[0].message.role).toBe("assistant");
     expect(payload.choices[0].message.content).toBeNull();
     expect(payload.choices[0].message.tool_calls).toEqual([
       { id: expect.stringMatching(/^call_/), type: "function", function: { name: "lookup", arguments: '{"q":"gemini"}' } },
@@ -617,6 +680,123 @@ describe("Gemini Web tool calling", () => {
     expect(done).toBe(true);
     expect(streamedContent(chunks)).toBe("A constellation.");
     expect(chunks.at(-1).choices[0].finish_reason).toBe("stop");
+  });
+
+  it("shapes a bridged answer like a plain one, with Google's thoughts and estimated usage", async () => {
+    const harness = googleTransport({
+      generate: replies.frames([labelFrame("Weighing it"), answerFrame(CALL_REPLY)]),
+    });
+    const body = chatBody([userText("Define gemini")], { tools: [LOOKUP] });
+    const before = Math.floor(Date.now() / 1000);
+    const result = await executeWith(harness, { body });
+
+    expect(result.response.headers.get("content-type")).toBe("application/json");
+    const payload = await jsonOf(result);
+    expect(payload.id).toMatch(/^chatcmpl-gw-[0-9a-f-]{24}$/);
+    expect(payload.object).toBe("chat.completion");
+    expect(payload.created).toBeGreaterThanOrEqual(before);
+    expect(payload.created).toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+    expect(payload.choices[0].message.reasoning_content).toBe("Weighing it");
+    const calls = payload.choices[0].message.tool_calls;
+    expect(payload.usage).toEqual(
+      estimateUsage(body, JSON.stringify(calls).length + "Weighing it".length, "openai")
+    );
+  });
+
+  it("estimates text usage from the bridged text and streams thoughts first", async () => {
+    const harness = googleTransport({
+      generate: replies.frames([labelFrame("Weighing it"), answerFrame('{"content":"Plain."}')]),
+    });
+    const body = chatBody([userText("Define gemini")], {
+      stream: true,
+      tools: [LOOKUP],
+      stream_options: { include_usage: true },
+    });
+    const result = await executeWith(harness, { stream: true, body });
+
+    expect(result.response.headers.get("content-type")).toContain("text/event-stream");
+    const { chunks } = await readSse(result);
+    expect(chunks.map((chunk) => chunk.choices[0]?.delta)).toEqual([
+      { role: "assistant", content: "" },
+      { reasoning_content: "Weighing it" },
+      { content: "Plain." },
+      {},
+      undefined,
+    ]);
+    expect(new Set(chunks.map((chunk) => chunk.id)).size).toBe(1);
+    expect(chunks[0].id).toMatch(/^chatcmpl-gw-[0-9a-f-]{24}$/);
+    expect(chunks[0].created).toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+    expect(chunks[0].created).toBeGreaterThan(Math.floor(Date.now() / 1000) - 60);
+    expect(chunks.at(-1).usage).toEqual(estimateUsage(body, "Plain.".length + "Weighing it".length, "openai"));
+  });
+
+  it("fails with 502 when a bridged reply is empty", async () => {
+    const harness = googleTransport({ generate: replies("  \n ") });
+    const result = await executeWith(harness, { body: chatBody([userText("Define gemini")], { tools: [LOOKUP] }) });
+
+    const payload = await jsonOf(result);
+    expect(result.response.status).toBe(502);
+    expect(payload.error.message).toBe("Gemini Web did not return an answer");
+    expect(harness.state.generation).toBe(1);
+  });
+
+  it("stops when a bridged reply comes from another model", async () => {
+    const payload = answerPayload(CALL_REPLY);
+    payload[3] = { model: PRO_ENTRY.modelId };
+    const harness = googleTransport({ generate: () => answerResponse([payloadFrame(payload)]) });
+    const result = await executeWith(harness, { body: chatBody([userText("Define gemini")], { tools: [LOOKUP] }) });
+
+    expect(result.response.status).toBe(502);
+    expect((await jsonOf(result)).error.code).toBe("upstream_model_mismatch");
+    expect(isNonReplayableResponse(result.response)).toBe(true);
+    expect(harness.state.generation).toBe(1);
+  });
+
+  it("reports a cancellation during a bridged turn as 499", async () => {
+    const body = chatBody([userText("Define gemini")], { tools: [LOOKUP] });
+    const thrown = await executeWith(
+      googleTransport({
+        generate: () => {
+          throw new DOMException("aborted", "AbortError");
+        },
+      }),
+      { body }
+    );
+    const controller = new AbortController();
+    const aborted = await executeWith(
+      googleTransport({
+        generate: () => {
+          controller.abort();
+          throw new Error("socket closed");
+        },
+      }),
+      { body, signal: controller.signal }
+    );
+
+    for (const result of [thrown, aborted]) {
+      expect(result.response.status).toBe(499);
+      expect((await jsonOf(result)).error.message).toBe("The Gemini Web request was aborted");
+    }
+  });
+
+  it("does not replay once Google accepted an earlier attempt, even if a retry is rejected", async () => {
+    const harness = googleTransport({
+      generate: (_call, state) =>
+        state.generation === 1 ? answerResponse([answerFrame("No call.")]) : new Response("", { status: 429 }),
+    });
+    const debug = vi.fn();
+    const result = await executeWith(harness, {
+      body: chatBody([userText("Define gemini")], { tools: [LOOKUP], tool_choice: "required" }),
+      log: { debug, info() {}, warn() {}, error() {} },
+    });
+
+    expect(result.response.status).toBe(429);
+    expect(isNonReplayableResponse(result.response)).toBe(true);
+    expect(harness.state.generation).toBe(2);
+    expect(debug).toHaveBeenCalledWith(
+      "GEMINI-WEB",
+      "Unusable tool-bridge reply (attempt 1): the reply contained no tool call"
+    );
   });
 });
 

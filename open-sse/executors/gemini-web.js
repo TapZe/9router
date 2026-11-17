@@ -132,7 +132,6 @@ function turnOf(message, images) {
   }
   const text = flattenContent(message.content, images, message.role === "user");
   const calls = message.role === "assistant" && Array.isArray(message.tool_calls) ? message.tool_calls : [];
-  if (calls.length === 0) return { role: message.role, content: text };
   return { role: message.role, content: [text, ...calls.map(toolCallText)].filter(Boolean).join("\n") };
 }
 
@@ -451,7 +450,7 @@ async function bridgedTurn({ bridge, prompt, sendTurn, collect, routing, request
 async function runToolBridge({ bridge, prompt, log, ...context }) {
   const bridgePrompt = buildToolBridgePrompt(bridge, prompt);
   let attemptPrompt = bridgePrompt;
-  let reason = "";
+  let reason;
   for (let attempt = 1; attempt <= MAX_TOOL_BRIDGE_ATTEMPTS; attempt += 1) {
     const outcome = await bridgedTurn({ bridge, prompt: attemptPrompt, ...context });
     if (!outcome.error) {
@@ -524,7 +523,7 @@ function toolBridgeResponse({ outcome, wantsStream, requestBody, reportedModel, 
   const usage = usagePayload(
     outcome.collected.usage,
     requestBody,
-    output.length + (outcome.collected.reasoning?.length || 0)
+    output.length + outcome.collected.reasoning.length
   );
   if (wantsStream) return toolBridgeSse({ message, finishReason, usage, reportedModel, includeUsage });
   return new Response(JSON.stringify(completionPayload({ message, finishReason, reportedModel, usage })), {

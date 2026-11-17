@@ -18,7 +18,8 @@ export const MAX_TOOL_BRIDGE_ATTEMPTS = 3;
 /** `error.code` when every attempt came back without a usable tool call. */
 export const GEMINI_WEB_INVALID_TOOL_CALL_CODE = "gemini_web_invalid_tool_call";
 
-const CHOICE_MODES = new Set(["none", "auto", "required"]);
+/** tool_choice modes other than auto, which is also what anything unknown means. */
+const CHOICE_MODES = new Set(["none", "required"]);
 
 // ─── Request ────────────────────────────────────────────────────────────────
 
@@ -138,16 +139,6 @@ export function toolBridgeRetryPrompt(prompt, reason) {
 
 // ─── Reply ──────────────────────────────────────────────────────────────────
 
-function stripCodeFence(value) {
-  let trimmed = value.trim();
-  if (!trimmed.startsWith("```")) return trimmed;
-  trimmed = trimmed.slice(3);
-  if (trimmed.startsWith("json") || trimmed.startsWith("JSON")) trimmed = trimmed.slice(4);
-  trimmed = trimmed.trim();
-  const end = trimmed.lastIndexOf("```");
-  return end >= 0 ? trimmed.slice(0, end).trim() : trimmed;
-}
-
 /** Scan state for JSON string literals: inside a string, and after a backslash. */
 function stepString(state, ch) {
   if (state.escaped) state.escaped = false;
@@ -169,10 +160,9 @@ function balancedObjectAt(value, start) {
   return "";
 }
 
-const CONTROL_ESCAPES = { "\n": "\\n", "\r": "\\r", "\t": "\\t" };
-
+/** A \uXXXX escape parses to the same character as \n, \r or \t would. */
 function escapeControl(ch) {
-  return CONTROL_ESCAPES[ch] ?? `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
+  return `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
 }
 
 /** Escape raw control characters inside JSON string literals. */
@@ -223,13 +213,14 @@ function bridgePayload(value) {
   return { toolCalls, content };
 }
 
-/** Find the bridge JSON in a reply, tolerating prose and stray braces around it. */
+/**
+ * The first balanced `{...}` in a reply that is bridge JSON. This also finds
+ * it inside a code fence or with prose and stray braces around it, so the
+ * reply needs no fence stripping first.
+ */
 function findBridgePayload(value) {
-  const whole = bridgePayload(value);
-  if (whole) return whole;
   for (let start = value.indexOf("{"); start >= 0; start = value.indexOf("{", start + 1)) {
-    const object = balancedObjectAt(value, start);
-    const payload = object ? bridgePayload(object) : null;
+    const payload = bridgePayload(balancedObjectAt(value, start));
     if (payload) return payload;
   }
   return null;
@@ -252,7 +243,6 @@ function rawArguments(call) {
 function argumentsFromString(value) {
   const trimmed = value.trim();
   if (!trimmed) return {};
-  if (!trimmed.startsWith("{")) throw new Error("arguments must be a JSON object");
   const parsed = parseLenientJson(trimmed);
   if (parsed === undefined) throw new Error("arguments are not valid JSON");
   return parsed;
@@ -279,8 +269,8 @@ function missingRequired(schema, value, path = "") {
 }
 
 function missingNested(properties, value, path) {
-  const entries = isObject(properties) ? Object.entries(properties) : [];
-  for (const [key, sub] of entries) {
+  if (!isObject(properties)) return null;
+  for (const [key, sub] of Object.entries(properties)) {
     const nested = Object.hasOwn(value, key) ? missingRequired(sub, value[key], `${path}${key}.`) : null;
     if (nested) return nested;
   }
@@ -303,6 +293,7 @@ function usableTool(bridge, name) {
   return bridge.tools.find((tool) => tool.name === name) || null;
 }
 
+/** The usable calls, or the reason a call Gemini tried to make cannot be used. */
 function bridgeCalls(bridge, toolCalls) {
   const calls = [];
   for (const call of toolCalls) {
@@ -312,38 +303,33 @@ function bridgeCalls(bridge, toolCalls) {
     try {
       calls.push(toolCall(tool, rawArguments(call)));
     } catch (error) {
-      return { calls: [], error: `tool "${name}": ${error.message}` };
+      return { error: `tool "${name}": ${error.message}` };
     }
   }
   if (toolCalls.length > 0 && calls.length === 0) {
-    return { calls, error: "no tool call named one of the requested tools" };
+    return { error: "no tool call named one of the requested tools" };
   }
-  return { calls, error: null };
+  return { calls };
 }
 
-function replyOf(bridge, reply) {
-  const cleaned = stripCodeFence(reply);
-  if (!cleaned) return { calls: [], content: "", error: null };
-  const payload = findBridgePayload(cleaned);
-  if (!payload) return { calls: [], content: reply.trim(), error: null };
-  const { calls, error } = bridgeCalls(bridge, payload.toolCalls);
-  if (error) return { calls: [], content: "", error };
-  const content = payload.content || (calls.length === 0 ? reply.trim() : "");
-  return { calls, content, error: null };
+function unusable(error) {
+  return { calls: [], content: "", error };
 }
 
 /**
  * Turn a Gemini reply into OpenAI tool calls or assistant text. `error` is set
  * when the reply cannot be used: a call Gemini tried to make is unknown,
- * malformed or incomplete, or a forcing tool_choice got no call at all.
+ * malformed or incomplete, or a forcing tool_choice got no call at all. A
+ * reply that is not bridge JSON is the assistant's text.
  *
  * @returns {{ calls: object[], content: string, error: string|null }}
  */
 export function parseToolBridgeOutput(bridge, reply) {
-  const result = replyOf(bridge, typeof reply === "string" ? reply : "");
+  const payload = findBridgePayload(reply);
+  const { calls, error } = payload ? bridgeCalls(bridge, payload.toolCalls) : { calls: [] };
+  if (error) return unusable(error);
   const mustCall = bridge.mode === "required" || bridge.mode === "function";
-  if (!result.error && mustCall && result.calls.length === 0) {
-    return { calls: [], content: "", error: "the reply contained no tool call" };
-  }
-  return result;
+  if (mustCall && calls.length === 0) return unusable("the reply contained no tool call");
+  // Content is empty only for an empty reply; the executor fails that turn.
+  return { calls, content: payload ? payload.content : reply.trim(), error: null };
 }
