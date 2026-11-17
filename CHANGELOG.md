@@ -1,6 +1,7 @@
 # Unreleased
 
 ## Features
+- **Gemini Web**: support OpenAI tool calling through a prompt bridge ported from gemini-web-to-api. Tools and `tool_choice` (`auto`, `none`, `required`, a named function) are written into the prompt, and Gemini's JSON reply becomes `tool_calls` or text. Earlier tool calls and tool results stay in the prompt. An unusable reply is asked for again up to three turns, then fails with 502 `gemini_web_invalid_tool_call` instead of a made-up call. With tools on, the reply is buffered, also for streaming clients. Legacy `functions` and non-function tools are still rejected with 400.
 - **Gemini Web**: list Code & analysis (Argon) from GetUserStatus's picker overlay when Google sends no hex model id, and route it with the live `argon` header Google's web client uses.
 
 - **Gemini Web**: name new account slots from their authenticated Google profile during cookie verification. Use the matching account-menu display name or the active account email, keep cookie-session labels separate, and preserve existing account names.
