@@ -34,6 +34,7 @@ import {
   payloadFrame,
   policyGroup,
   streamFromText,
+  usageFrame,
 } from "../fixtures/gemini-web/wireFixtures.js";
 import {
   HTML_BYTES,
@@ -774,6 +775,37 @@ describe("Gemini Web responses", () => {
     expect(isNonReplayableResponse(result.response)).toBe(true);
   });
 
+  it("streams Google's own usage when the client asks for it", async () => {
+    const usage = { promptTokenCount: 7, candidatesTokenCount: 3, totalTokenCount: 10 };
+    const harness = googleTransport({ generate: () => answerResponse([usageFrame("Counted", usage)]) });
+    const result = await executeWith(harness, {
+      stream: true,
+      body: chatBody([userText("Hi")], { stream: true, stream_options: { include_usage: true } }),
+    });
+
+    const { chunks, done } = await readSse(result);
+    expect(done).toBe(true);
+    expect(streamedContent(chunks)).toBe("Counted");
+    expect(chunks.at(-2).choices[0].finish_reason).toBe("stop");
+    expect(chunks.at(-1)).toMatchObject({
+      object: "chat.completion.chunk",
+      choices: [],
+      usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+    });
+  });
+
+  it("ends a stream with an error when Google answers with a different model", async () => {
+    const payload = answerPayload("Wrong model");
+    payload[3] = { model: PRO_ENTRY.modelId };
+    const harness = googleTransport({ generate: () => answerResponse([payloadFrame(payload)]) });
+    const result = await executeWith(harness, { stream: true, body: chatBody([userText("Hi")], { stream: true }) });
+
+    const { chunks, done } = await readSse(result);
+    expect(done).toBe(false);
+    expect(chunks.at(-1).error.code).toBe("upstream_model_mismatch");
+    expect(isNonReplayableResponse(result.response)).toBe(true);
+  });
+
   it("does not send a consumed mismatched generation to the fallback account", async () => {
     const payload = answerPayload("Already generated on the wrong model");
     payload[3] = { model: PRO_ENTRY.modelId };
@@ -1257,6 +1289,32 @@ describe("Gemini Web bootstrap lifecycle", () => {
     expect(headerOf(rotateCall, "cookie")).toBe(
       "__Secure-1PSID=synthetic-psid-value; __Secure-1PSIDTS=synthetic-psidts-value"
     );
+  });
+
+  it("returns the bootstrap failure without generating", async () => {
+    const harness = googleTransport({ app: () => new Response(SIGN_IN_HTML, { status: 200 }) });
+    const result = await executeWith(harness);
+
+    const payload = await jsonOf(result);
+    expect(result.response.status).toBe(401);
+    expect(payload.error.message).toBe("Gemini Web session is not signed in");
+    expect(isNonReplayableResponse(result.response)).toBe(false);
+    expect(harness.state.generation).toBe(0);
+  });
+
+  it("reports a cancellation during bootstrap as 499", async () => {
+    const controller = new AbortController();
+    const harness = googleTransport({
+      app: () => {
+        controller.abort();
+        throw new DOMException("aborted", "AbortError");
+      },
+    });
+    const result = await executeWith(harness, { signal: controller.signal });
+
+    expect(result.response.status).toBe(499);
+    expect((await jsonOf(result)).error.code).toBe("request_aborted");
+    expect(harness.state.generation).toBe(0);
   });
 
   it("keeps working when rotation fails and does not retry it on every request", async () => {
