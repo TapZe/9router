@@ -731,7 +731,7 @@ describe("Gemini Web tool calling", () => {
   });
 
   it("fails with 502 when a bridged reply is empty", async () => {
-    const harness = googleTransport({ generate: replies("  \n ") });
+    const harness = googleTransport({ generate: replies('{"content":""}') });
     const result = await executeWith(harness, { body: chatBody([userText("Define gemini")], { tools: [LOOKUP] }) });
 
     const payload = await jsonOf(result);

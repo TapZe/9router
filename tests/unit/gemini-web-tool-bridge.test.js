@@ -313,8 +313,14 @@ describe("Gemini Web tool bridge reply parser", () => {
   });
 
   it("keeps a reply that is not bridge JSON as trimmed text", () => {
-    for (const reply of ['{"content":42}', '{"content":null}', '{"tool_calls":{"name":"lookup"}}', '{"other":true}']) {
+    for (const reply of ['{"content":42}', '{"tool_calls":{"name":"lookup"}}', '{"other":true}']) {
       expect(parseToolBridgeOutput(lookup, `  ${reply}\n`)).toEqual({ calls: [], content: reply, error: null });
+    }
+  });
+
+  it("reads an empty bridge reply as empty, not as its JSON text", () => {
+    for (const reply of ['{"content":""}', '{"content":null}', '{"tool_calls":[]}', '{"tool_calls":null,"content":" "}']) {
+      expect(parseToolBridgeOutput(lookup, reply)).toEqual({ calls: [], content: "", error: null });
     }
   });
 

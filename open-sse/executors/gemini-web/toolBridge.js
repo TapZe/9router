@@ -202,14 +202,16 @@ function payloadContent(content) {
   return null;
 }
 
-/** Bridge JSON, or null when `value` is not a bridge reply (e.g. a nested argument object). */
+/**
+ * Bridge JSON, or null when `value` is not a bridge reply: an object without
+ * `tool_calls` or `content`, such as a nested argument object.
+ */
 function bridgePayload(value) {
   const parsed = parseLenientJson(value);
-  if (!isObject(parsed)) return null;
+  if (!isObject(parsed) || !(Object.hasOwn(parsed, "tool_calls") || Object.hasOwn(parsed, "content"))) return null;
   const toolCalls = parsed.tool_calls ?? [];
   const content = payloadContent(parsed.content);
   if (!Array.isArray(toolCalls) || content === null) return null;
-  if (toolCalls.length === 0 && !content) return null;
   return { toolCalls, content };
 }
 
@@ -330,6 +332,6 @@ export function parseToolBridgeOutput(bridge, reply) {
   if (error) return unusable(error);
   const mustCall = bridge.mode === "required" || bridge.mode === "function";
   if (mustCall && calls.length === 0) return unusable("the reply contained no tool call");
-  // Content is empty only for an empty reply; the executor fails that turn.
+  // Content may be empty here ({"content":""}); the executor fails that turn.
   return { calls, content: payload ? payload.content : reply.trim(), error: null };
 }
