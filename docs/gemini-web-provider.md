@@ -45,7 +45,21 @@ Chat supports OpenAI-shaped JSON and SSE responses. Message history is flattened
 
 Google's thought summaries appear as `reasoning_content`. Supported effort levels are `low`, `medium`, and `high`. Disabling thinking or requesting a token budget is rejected. Explicit client controls take precedence over provider defaults and are checked before translation can normalize them.
 
-Caller-defined function tools and forced tool calls are not supported. Neither are video, music, Canvas, or Deep Research. Use a provider with native function calling for a coding client that requires tools.
+### Tool calling
+
+Gemini Web has no function calling of its own, so OpenAI function tools go through a prompt bridge ported from [gemini-web-to-api](https://github.com/ntthanh2603/gemini-web-to-api). Clients in other formats, such as Claude, work too, because their tools are translated to OpenAI tools first.
+
+- When a request has `tools` and `tool_choice` is not `none`, the prompt lists each tool's name, description, and parameter schema. It asks Gemini to reply with JSON only: `{"tool_calls":[{"name":...,"arguments":{...}}]}` or `{"content":"..."}`.
+- The reply is parsed into OpenAI `tool_calls` with `finish_reason: "tool_calls"`, or into normal text. The parser accepts code fences, text around the JSON, raw newlines inside strings, and the keys `args`, `parameters`, and `input`. Calls to tools that were not declared, or to a tool other than the one `tool_choice` names, are dropped. Arguments must be a JSON object that sets every required property of the tool's schema.
+- `tool_choice` supports `auto`, `none`, `required`, and `{"type":"function","function":{"name":...}}`. With `none`, the tools are left out of the prompt.
+- 9router never makes up a call. If a reply cannot be used, Gemini is asked again with the reason, up to three turns in total. Then the request fails with 502 and code `gemini_web_invalid_tool_call`. Every attempt is a separate turn on the account.
+- Earlier tool calls and tool results in the history are written into the prompt as `[Call Tool: name with ID id and Input: args]` and `[Tool Result for ID id]: result`. The whole history is sent on every turn.
+- With tools on, the reply is read in full before it is returned, because a tool call is known only once the JSON is complete. Streaming clients then get the reasoning, the tool calls or text, and the finish chunk together.
+- A tool that is not a named function tool, a forced tool name that was not declared, and the legacy `functions` field are rejected with 400 before any Google request.
+
+This depends on Gemini following the JSON format. It is less reliable than native function calling, especially with many or complex tools. `response_format` is not applied, with or without tools.
+
+Video, music, Canvas, and Deep Research are not supported.
 
 ## Session updates and errors
 

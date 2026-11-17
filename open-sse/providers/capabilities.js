@@ -889,8 +889,10 @@ export function getCapabilitiesForModel(provider, model) {
     };
   }
 
-  // Gemini Web chat/image must not inherit canonical Gemini-family tools or
-  // measured context windows. Limits stay on DEFAULT until measured.
+  // Gemini Web chat/image must not inherit canonical Gemini-family
+  // capabilities or measured context windows. Limits stay on DEFAULT until
+  // measured. Chat models take OpenAI function tools through the executor's
+  // prompt tool bridge; the image task does not.
   if (provider === "gemini-web" || provider === "gweb") {
     const id = String(baseModel || model);
     if (id === "gemini-image") {
@@ -898,7 +900,7 @@ export function getCapabilitiesForModel(provider, model) {
     }
     return {
       ...DEFAULT_CAPABILITIES,
-      tools: false,
+      tools: true,
       vision: true,
       reasoning: true,
       thinkingFormat: "openai",

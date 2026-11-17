@@ -10,6 +10,7 @@ import {
   parseToolBridgeOutput,
 } from "../../open-sse/executors/gemini-web/toolBridge.js";
 import { checkGeminiWebUnsupportedControls } from "../../open-sse/executors/gemini-web/capabilities.js";
+import { getCapabilitiesForModel } from "../../open-sse/providers/capabilities.js";
 
 const DONE_TOOL = {
   type: "function",
@@ -75,6 +76,15 @@ describe("Gemini Web request guard", () => {
     expect(checkGeminiWebUnsupportedControls({ tools: [DONE_TOOL], tool_choice: "required" })).toBeNull();
     expect(checkGeminiWebUnsupportedControls({ tool_choice: FORCED_DONE })).toBeNull();
     expect(checkGeminiWebUnsupportedControls({ functions: [DONE_TOOL.function] })).toMatchObject({ param: "functions" });
+  });
+});
+
+describe("Gemini Web published capabilities", () => {
+  it("lists tool calling for chat models and not for the image task", () => {
+    for (const provider of ["gemini-web", "gweb"]) {
+      expect(getCapabilitiesForModel(provider, "gemini-auto").tools).toBe(true);
+      expect(getCapabilitiesForModel(provider, "gemini-image").tools).toBe(false);
+    }
   });
 });
 
