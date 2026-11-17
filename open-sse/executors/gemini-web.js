@@ -94,6 +94,38 @@ function flattenContent(content, images, allowImages) {
   return parts.join(" ").trim();
 }
 
+function toolArgumentsText(value) {
+  return typeof value === "string" ? value : JSON.stringify(value ?? {});
+}
+
+/** An earlier assistant tool call, written the way gemini-web-to-api renders it. */
+function toolCallText(call) {
+  const fn = call?.function || {};
+  return `[Call Tool: ${fn.name ?? ""} with ID ${call?.id ?? ""} and Input: ${toolArgumentsText(fn.arguments)}]`;
+}
+
+function toolResultText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return flattenContent(content, [], false);
+  return content === undefined || content === null ? "" : JSON.stringify(content);
+}
+
+/**
+ * One message as prompt text. Gemini Web only sees text, so an assistant's
+ * tool calls and a tool result are written out; a tool result speaks as the
+ * user, as in gemini-web-to-api.
+ */
+function turnOf(message, images) {
+  if (message.role === "tool") {
+    const content = `[Tool Result for ID ${message.tool_call_id ?? ""}]: ${toolResultText(message.content)}`;
+    return { role: "user", content };
+  }
+  const text = flattenContent(message.content, images, message.role === "user");
+  const calls = message.role === "assistant" && Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  if (calls.length === 0) return { role: message.role, content: text };
+  return { role: message.role, content: [text, ...calls.map(toolCallText)].filter(Boolean).join("\n") };
+}
+
 /**
  * Flatten the whole message list once, so the prompt and the upload list can
  * never disagree about image order or numbering.
@@ -105,11 +137,10 @@ function flattenMessages(messages) {
 
   for (const message of Array.isArray(messages) ? messages : []) {
     if (!message || typeof message !== "object") continue;
-    const allowImages = message.role === "user";
-    const text = flattenContent(message.content, images, allowImages);
-    if (allowImages && text) hasUserTurn = true;
-    if (!text) continue;
-    turns.push({ role: message.role, content: text });
+    const turn = turnOf(message, images);
+    if (message.role === "user" && turn.content) hasUserTurn = true;
+    if (!turn.content) continue;
+    turns.push(turn);
   }
 
   return { turns, images, hasUserTurn };

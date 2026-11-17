@@ -425,6 +425,62 @@ describe("Gemini Web prompt images", () => {
   });
 });
 
+describe("Gemini Web tool history", () => {
+  const promptOf = (harness) => innerOf(generationCalls(harness.calls).at(-1))[0][0];
+  const weatherCall = {
+    id: "call_1",
+    type: "function",
+    function: { name: "get_weather", arguments: '{"city":"Hanoi"}' },
+  };
+
+  it("renders an earlier tool call and its result as text, the result as the current turn", async () => {
+    const harness = googleTransport();
+    const result = await executeWith(harness, {
+      body: chatBody([
+        { role: "system", content: "Use tools." },
+        userText("Weather in Hanoi?"),
+        { role: "assistant", content: null, tool_calls: [weatherCall] },
+        { role: "tool", tool_call_id: "call_1", content: "30C, sunny" },
+      ]),
+    });
+
+    expect(result.response.status).toBe(200);
+    expect(promptOf(harness)).toBe(
+      "System:\nUse tools.\n\nPrevious conversation:\nUser: Weather in Hanoi?\n\n" +
+        'Assistant: [Call Tool: get_weather with ID call_1 and Input: {"city":"Hanoi"}]\n\n' +
+        "Current user message:\n[Tool Result for ID call_1]: 30C, sunny"
+    );
+  });
+
+  it("keeps assistant text before its tool calls and reads text-part tool results", async () => {
+    const harness = googleTransport();
+    await executeWith(harness, {
+      body: chatBody([
+        userText("Weather in Hanoi and Hue?"),
+        {
+          role: "assistant",
+          content: "Checking both.",
+          tool_calls: [
+            weatherCall,
+            { id: "call_2", type: "function", function: { name: "get_weather", arguments: { city: "Hue" } } },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_1", content: [{ type: "text", text: "30C" }] },
+        { role: "tool", tool_call_id: "call_2", content: { temp: 25 } },
+      ]),
+    });
+
+    const prompt = promptOf(harness);
+    expect(prompt).toContain(
+      "Assistant: Checking both.\n" +
+        '[Call Tool: get_weather with ID call_1 and Input: {"city":"Hanoi"}]\n' +
+        '[Call Tool: get_weather with ID call_2 and Input: {"city":"Hue"}]'
+    );
+    expect(prompt).toContain("User: [Tool Result for ID call_1]: 30C");
+    expect(prompt).toContain('Current user message:\n[Tool Result for ID call_2]: {"temp":25}');
+  });
+});
+
 describe("Gemini Web request contract", () => {
   it("rejects function tools before any upstream call", async () => {
     const harness = googleTransport();
