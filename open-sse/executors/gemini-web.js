@@ -418,9 +418,11 @@ async function sendGeminiWebTurn({
  */
 function turnFailure(error, signal, turn) {
   if (signal?.aborted || error?.name === "AbortError") return errorResponse(abortError());
-  const mayHaveRun =
-    turn.dispatched && (error?.nonReplayable === true || isAmbiguousGenerationError(error));
-  return errorResponse(error, { nonReplayable: turn.accepted || mayHaveRun });
+  return errorResponse(error, { nonReplayable: turn.accepted || mayHaveRun(error, turn) });
+}
+
+function mayHaveRun(error, turn) {
+  return turn.dispatched && (error?.nonReplayable === true || isAmbiguousGenerationError(error));
 }
 
 function invalidToolCallError(reason) {
@@ -540,6 +542,215 @@ function imageTaskModel(models) {
   return chosen;
 }
 
+// ─── Execute stages ─────────────────────────────────────────────────────────
+
+function noUserMessageError() {
+  return geminiWebError("No user message found", {
+    status: 400,
+    code: GEMINI_WEB_UNSUPPORTED_CONTROL_CODE,
+  });
+}
+
+/**
+ * Stages 1 and 2: reject controls Gemini Web cannot honor, then build the
+ * prompt, the tool bridge and the image input. No network call is made.
+ */
+function prepareRequest(requestBody, requestedModel, log) {
+  const violation = checkGeminiWebUnsupportedControls(requestBody, requestedModel);
+  if (violation) {
+    const error = unsupportedControl(violation.message);
+    error.param = violation.param;
+    log?.debug?.("GEMINI-WEB", `Rejected request: unsupported ${violation.param}`);
+    return { failure: errorResponse(error) };
+  }
+
+  const { cleanModel } = parseModelSuffix(requestedModel);
+  try {
+    const bridge = parseToolBridge(requestBody);
+    const flattened = flattenMessages(requestBody.messages);
+    const prompt = promptFromTurns(flattened.turns);
+    if (!prompt || !flattened.hasUserTurn) throw noUserMessageError();
+    const inputImages = decodeInputImages(flattened.images);
+    return { requestBody, requestedModel, cleanModel, prompt, bridge, inputImages };
+  } catch (error) {
+    return { failure: errorResponse(error) };
+  }
+}
+
+function knownModelIdsOf(models) {
+  return new Set(
+    (models || []).map((entry) => entry.modelId).filter((value) => typeof value === "string" && value)
+  );
+}
+
+function channelImageError(reportedModel) {
+  return unsupportedControl(
+    'Model provider "gemini-web" cannot attach input images to a channel-only model. ' +
+      `"${reportedModel}" is published only for text turns. Remove the images or route to ` +
+      "a model that accepts them."
+  );
+}
+
+/**
+ * Stages 3 and 4: the account session (bootstrap plus optional PSIDTS
+ * rotation) and its catalog entry for the model, never a substitute.
+ */
+async function resolveAccount(request, options) {
+  const session = await resolveSession(options);
+  if (session.failure) return session;
+  return routeModel(request, session.resolved);
+}
+
+async function resolveSession({ credentials, signal, log, proxyOptions, transport }) {
+  try {
+    return { resolved: await resolveGeminiWebSession(credentials, { signal, proxyOptions, transport }) };
+  } catch (error) {
+    if (signal?.aborted || error?.name === "AbortError") return { failure: errorResponse(abortError()) };
+    log?.debug?.("GEMINI-WEB", `Bootstrap failed with HTTP ${errorStatus(error)}`);
+    return { failure: errorResponse(error) };
+  }
+}
+
+function routeModel(request, resolved) {
+  let routing;
+  try {
+    routing = resolveGeminiModel(request.cleanModel, resolved.session.models);
+  } catch (error) {
+    return { failure: errorResponse(modelNotFoundError(error)) };
+  }
+
+  const reportedModel = request.cleanModel || routing.id;
+  // A policy code is published only inside the channel's model group, and the
+  // channel's request records carry no uploaded-file slot. Sending the turn
+  // anyway would keep the [Image N] marker and silently drop the image, so the
+  // request is refused here, before an upload is spent.
+  if (routing.policy === true && request.inputImages.length > 0) {
+    return { failure: errorResponse(channelImageError(reportedModel)) };
+  }
+  return { resolved, routing, reportedModel, knownModelIds: knownModelIdsOf(resolved.session.models) };
+}
+
+/** The whole answer, or the error response that replaces it. */
+async function collectAnswer({ upstream, signal, account, request }) {
+  let collected;
+  try {
+    collected = await collectEvents(upstream.body, { signal, knownModelIds: account.knownModelIds });
+  } catch (error) {
+    if (signal?.aborted || error?.name === "AbortError") return { failure: errorResponse(abortError()) };
+    return { failure: errorResponse(error, { nonReplayable: true }) };
+  }
+  if (collected.modelId && collected.modelId !== account.routing.modelId) {
+    return { failure: errorResponse(modelMismatchError(request.cleanModel), { nonReplayable: true }) };
+  }
+  return { collected };
+}
+
+/** A plain (no tool bridge) JSON completion read from the whole answer. */
+async function plainCompletion(context) {
+  const { collected, failure } = await collectAnswer(context);
+  if (failure) return failure;
+
+  const content = composeContent(collected.text, collected.images);
+  if (!content) {
+    return errorResponse(upstreamError("Gemini Web did not return an answer"), { nonReplayable: true });
+  }
+
+  const message = { role: "assistant", content };
+  if (collected.reasoning) message.reasoning_content = collected.reasoning;
+
+  const payload = completionPayload({
+    message,
+    finishReason: "stop",
+    reportedModel: context.account.reportedModel,
+    usage: usagePayload(
+      collected.usage,
+      context.request.requestBody,
+      content.length + (collected.reasoning?.length || 0)
+    ),
+  });
+  return markNonReplayableResponse(
+    new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })
+  );
+}
+
+/** A tool-bridge completion: every attempt read in full, then JSON or SSE. */
+async function bridgedCompletion({ request, account, sendTurn, turn, signal, log, wantsStream, includeUsage }) {
+  let outcome;
+  try {
+    outcome = await runToolBridge({
+      bridge: request.bridge,
+      prompt: request.prompt,
+      sendTurn,
+      collect: (body) => collectEvents(body, { signal, knownModelIds: account.knownModelIds }),
+      routing: account.routing,
+      requestedModel: request.cleanModel,
+      turn,
+      log,
+    });
+  } catch (error) {
+    return turnFailure(error, signal, turn);
+  }
+  return markNonReplayableResponse(
+    toolBridgeResponse({
+      outcome,
+      wantsStream,
+      requestBody: request.requestBody,
+      reportedModel: account.reportedModel,
+      includeUsage,
+    })
+  );
+}
+
+/**
+ * Stage 5: send the turn and shape the answer. Only the request that can
+ * consume a generation counts as dispatched; a failed upload or a Bind
+ * channel that never opened stays retryable.
+ */
+async function completeTurn({ request, account, requestBody, wantsStream, signal, log, proxyOptions, transport }) {
+  const turn = { dispatched: false, accepted: false };
+  const sendTurn = (turnPrompt) =>
+    sendGeminiWebTurn({
+      resolved: account.resolved,
+      routing: account.routing,
+      prompt: turnPrompt,
+      inputImages: request.inputImages,
+      thinkingLevel: resolveRequestedThinking(requestBody, request.requestedModel),
+      signal,
+      proxyOptions,
+      transport,
+      turn,
+    });
+  const includeUsage = Boolean(requestBody.stream_options?.include_usage);
+
+  if (request.bridge) {
+    return bridgedCompletion({ request, account, sendTurn, turn, signal, log, wantsStream, includeUsage });
+  }
+
+  let upstream;
+  try {
+    upstream = await sendTurn(request.prompt);
+  } catch (error) {
+    return turnFailure(error, signal, turn);
+  }
+
+  if (!wantsStream) return plainCompletion({ upstream, signal, account, request });
+
+  const response = streamCompletion({
+    upstream,
+    signal,
+    requestBody,
+    knownModelIds: account.knownModelIds,
+    routing: account.routing,
+    reportedModel: account.reportedModel,
+    requestedModel: request.cleanModel,
+    includeUsage,
+  });
+  return markNonReplayableResponse(response);
+}
+
 // ─── Executor ───────────────────────────────────────────────────────────────
 
 export class GeminiWebExecutor extends BaseExecutor {
@@ -560,7 +771,8 @@ export class GeminiWebExecutor extends BaseExecutor {
     throw error;
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions, transport }) {
+  async execute(options) {
+    const { model, body, stream, credentials, signal, log } = options;
     const requestBody = body && typeof body === "object" ? body : {};
     const requestedModel = typeof model === "string" ? model : "";
     const wantsStream = Boolean(stream);
@@ -575,187 +787,17 @@ export class GeminiWebExecutor extends BaseExecutor {
       return result(errorResponse(abortError()));
     }
 
-    // 1. Controls Gemini Web structurally cannot honor.
-    const violation = checkGeminiWebUnsupportedControls(requestBody, requestedModel);
-    if (violation) {
-      const error = unsupportedControl(violation.message);
-      error.param = violation.param;
-      log?.debug?.("GEMINI-WEB", `Rejected request: unsupported ${violation.param}`);
-      return result(errorResponse(error));
-    }
+    // 1-2. Controls, prompt and image input, validated before any network call.
+    const request = prepareRequest(requestBody, requestedModel, log);
+    if (request.failure) return result(request.failure);
 
-    // 2. Prompt and image input, validated before any network call.
-    const { cleanModel } = parseModelSuffix(requestedModel);
-    let prompt;
-    let inputImages;
-    let bridge;
-    try {
-      bridge = parseToolBridge(requestBody);
-      const flattened = flattenMessages(requestBody.messages);
-      prompt = promptFromTurns(flattened.turns);
-      if (!prompt || !flattened.hasUserTurn) {
-        throw geminiWebError("No user message found", {
-          status: 400,
-          code: GEMINI_WEB_UNSUPPORTED_CONTROL_CODE,
-        });
-      }
-      inputImages = decodeInputImages(flattened.images);
-    } catch (error) {
-      return result(errorResponse(error));
-    }
-
-    // 3. Account session (bootstrap + optional PSIDTS rotation).
-    let resolved;
-    try {
-      resolved = await resolveGeminiWebSession(credentials, {
-        signal,
-        proxyOptions,
-        transport,
-      });
-    } catch (error) {
-      if (signal?.aborted || error?.name === "AbortError") return result(errorResponse(abortError()));
-      log?.debug?.("GEMINI-WEB", `Bootstrap failed with HTTP ${errorStatus(error)}`);
-      return result(errorResponse(error));
-    }
-
-    // 4. Model routing: an account-specific catalog entry, never a substitute.
-    let routing;
-    try {
-      routing = resolveGeminiModel(cleanModel, resolved.session.models);
-    } catch (error) {
-      return result(errorResponse(modelNotFoundError(error), cleanModel));
-    }
-
-    const reportedModel = cleanModel || routing.id;
-    // A policy code is published only inside the channel's model group, and the
-    // channel's request records carry no uploaded-file slot. Sending the turn
-    // anyway would keep the [Image N] marker and silently drop the image, so the
-    // request is refused here, before an upload is spent.
-    if (routing.policy === true && inputImages.length > 0) {
-      return result(
-        errorResponse(
-          unsupportedControl(
-            'Model provider "gemini-web" cannot attach input images to a channel-only model. ' +
-              `"${reportedModel}" is published only for text turns. Remove the images or route to ` +
-              "a model that accepts them."
-          ),
-          reportedModel
-        )
-      );
-    }
-    const knownModelIds = new Set(
-      (resolved.session.models || [])
-        .map((entry) => entry.modelId)
-        .filter((value) => typeof value === "string" && value)
-    );
+    // 3-4. Account session and the model it routes to.
+    const account = await resolveAccount(request, options);
+    if (account.failure) return result(account.failure);
 
     // 5. Upload every input image, in prompt order, then generate one turn.
-    // Only the request that can consume a generation counts as dispatched; a
-    // failed upload or a Bind channel that never opened stays retryable.
-    const turn = { dispatched: false, accepted: false };
-    const sendTurn = (turnPrompt) =>
-      sendGeminiWebTurn({
-        resolved,
-        routing,
-        prompt: turnPrompt,
-        inputImages,
-        thinkingLevel: resolveRequestedThinking(requestBody, requestedModel),
-        signal,
-        proxyOptions,
-        transport,
-        turn,
-      });
-    const failed = (error) => result(turnFailure(error, signal, turn), reportedModel);
-    const includeUsage = Boolean(requestBody.stream_options?.include_usage);
-
-    if (bridge) {
-      let outcome;
-      try {
-        outcome = await runToolBridge({
-          bridge,
-          prompt,
-          sendTurn,
-          collect: (body) => collectEvents(body, { signal, knownModelIds }),
-          routing,
-          requestedModel: cleanModel,
-          turn,
-          log,
-        });
-      } catch (error) {
-        return failed(error);
-      }
-      return result(
-        markNonReplayableResponse(
-          toolBridgeResponse({ outcome, wantsStream, requestBody, reportedModel, includeUsage })
-        ),
-        reportedModel
-      );
-    }
-
-    let upstream;
-    try {
-      upstream = await sendTurn(prompt);
-    } catch (error) {
-      return failed(error);
-    }
-
-    if (!wantsStream) {
-      let collected;
-      try {
-        collected = await collectEvents(upstream.body, { signal, knownModelIds });
-      } catch (error) {
-        if (signal?.aborted || error?.name === "AbortError") {
-          return result(errorResponse(abortError()), reportedModel);
-        }
-        return result(errorResponse(error, { nonReplayable: true }), reportedModel);
-      }
-      if (collected.modelId && collected.modelId !== routing.modelId) {
-        return result(errorResponse(modelMismatchError(cleanModel), { nonReplayable: true }), reportedModel);
-      }
-
-      const content = composeContent(collected.text, collected.images);
-      if (!content) {
-        return result(errorResponse(upstreamError("Gemini Web did not return an answer"), {
-          nonReplayable: true,
-        }), reportedModel);
-      }
-
-      const message = { role: "assistant", content };
-      if (collected.reasoning) message.reasoning_content = collected.reasoning;
-
-      const payload = completionPayload({
-        message,
-        finishReason: "stop",
-        reportedModel,
-        usage: usagePayload(
-          collected.usage,
-          requestBody,
-          content.length + (collected.reasoning?.length || 0)
-        ),
-      });
-
-      return result(
-        markNonReplayableResponse(
-          new Response(JSON.stringify(payload), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          })
-        ),
-        reportedModel
-      );
-    }
-
-    const response = streamCompletion({
-      upstream,
-      signal,
-      requestBody,
-      knownModelIds,
-      routing,
-      reportedModel,
-      requestedModel: cleanModel,
-      includeUsage,
-    });
-    return result(markNonReplayableResponse(response), reportedModel);
+    const response = await completeTurn({ ...options, request, account, requestBody, wantsStream });
+    return result(response, account.reportedModel);
   }
 
   /**
@@ -846,6 +888,100 @@ export class GeminiWebExecutor extends BaseExecutor {
 
 // ─── Streaming ──────────────────────────────────────────────────────────────
 
+/**
+ * Gemini resends the whole text so far. Only a longer text adds a tail, and a
+ * shorter one never replaces what was already sent.
+ */
+function growField(acc, key, text) {
+  const previous = acc[key];
+  if (text.length >= previous.length) acc[key] = text;
+  return text.length > previous.length ? text.slice(previous.length) : "";
+}
+
+function grownDelta(acc, key, text, deltaKey) {
+  const tail = growField(acc, key, text);
+  return tail ? { [deltaKey]: tail } : null;
+}
+
+/** One handler per decoded event type; each returns the delta to send, or null. */
+const STREAM_EVENT_HANDLERS = {
+  text: (acc, event) => grownDelta(acc, "text", event.text, "content"),
+  reasoning: (acc, event) => grownDelta(acc, "reasoning", event.text, "reasoning_content"),
+  images: (acc, event) => {
+    acc.images.push(...event.images);
+    return null;
+  },
+  usage: (acc, event) => {
+    acc.usage = event.usage;
+    return null;
+  },
+  model: (_acc, event, routing, requestedModel) => {
+    if (event.modelId && event.modelId !== routing.modelId) throw modelMismatchError(requestedModel);
+    return null;
+  },
+};
+
+/** Fold one decoded event into the stream state. Unknown event types are ignored. */
+function streamEventDelta(acc, event, routing, requestedModel) {
+  const handler = Object.hasOwn(STREAM_EVENT_HANDLERS, event.type) ? STREAM_EVENT_HANDLERS[event.type] : null;
+  return handler ? handler(acc, event, routing, requestedModel) : null;
+}
+
+/** Image links, the stop chunk and the optional usage chunk, in that order. */
+function closingChunks(acc, { chunk, usageChunk, includeUsage, requestBody }) {
+  const payloads = [];
+  if (acc.images.length > 0) {
+    const block = buildLinkBlock(acc.images);
+    payloads.push(chunk({ content: acc.text ? `\n\n${block}` : block }));
+  }
+  payloads.push(chunk({}, "stop"));
+  if (includeUsage) {
+    payloads.push(usageChunk(usagePayload(acc.usage, requestBody, acc.text.length + acc.reasoning.length)));
+  }
+  return payloads;
+}
+
+function streamErrorPayload(error, signal) {
+  if (signal?.aborted || error?.name === "AbortError") {
+    return { error: { message: "The Gemini Web request was aborted", type: "aborted", code: ABORT_CODE } };
+  }
+  return {
+    error: {
+      message: safeMessage(error, "Gemini Web stream failed"),
+      type: "upstream_error",
+      code: errorCode(errorStatus(error), error),
+    },
+  };
+}
+
+/** SSE writes that stop quietly once the client has gone. */
+function sseWriter(controller, state) {
+  const encoder = new TextEncoder();
+  const write = (text) => {
+    if (state.closed) return false;
+    try {
+      controller.enqueue(encoder.encode(text));
+      return true;
+    } catch {
+      state.closed = true;
+      return false;
+    }
+  };
+  return {
+    send: (payload) => write(`data: ${JSON.stringify(payload)}\n\n`),
+    done: () => write(SSE_DONE),
+    finish: () => {
+      if (state.closed) return;
+      state.closed = true;
+      try {
+        controller.close();
+      } catch {
+        // The client may already have closed the stream.
+      }
+    },
+  };
+}
+
 function streamCompletion({
   upstream,
   signal,
@@ -856,95 +992,25 @@ function streamCompletion({
   requestedModel,
   includeUsage,
 }) {
-  const encoder = new TextEncoder();
   const { chunk, usageChunk } = completionChunks(reportedModel);
   const state = { closed: false };
 
   const readable = new ReadableStream(
     {
       async start(controller) {
-        const send = (payload) => {
-          if (state.closed) return false;
-          try {
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
-            return true;
-          } catch {
-            state.closed = true;
-            return false;
-          }
-        };
-        const finish = () => {
-          if (state.closed) return;
-          state.closed = true;
-          try {
-            controller.close();
-          } catch {
-            // The client may already have closed the stream.
-          }
-        };
-
-        let emittedText = "";
-        let emittedReasoning = "";
-        let usage = null;
-        const pendingImages = [];
+        const { send, done, finish } = sseWriter(controller, state);
+        const acc = { text: "", reasoning: "", usage: null, images: [] };
 
         try {
           send(chunk({ role: "assistant", content: "" }));
-          for await (const event of decodeGeminiWebStream(upstream.body, {
-            signal,
-            knownModelIds,
-          })) {
-            if (event.type === "text") {
-              if (event.text.length > emittedText.length) {
-                send(chunk({ content: event.text.slice(emittedText.length) }));
-              }
-              if (event.text.length >= emittedText.length) emittedText = event.text;
-              continue;
-            }
-            if (event.type === "reasoning") {
-              if (event.text.length > emittedReasoning.length) {
-                send(chunk({ reasoning_content: event.text.slice(emittedReasoning.length) }));
-              }
-              if (event.text.length >= emittedReasoning.length) emittedReasoning = event.text;
-              continue;
-            }
-            if (event.type === "images") {
-              pendingImages.push(...event.images);
-              continue;
-            }
-            if (event.type === "usage") {
-              usage = event.usage;
-              continue;
-            }
-            if (event.type === "model" && event.modelId && event.modelId !== routing.modelId) {
-              throw modelMismatchError(requestedModel);
-            }
+          for await (const event of decodeGeminiWebStream(upstream.body, { signal, knownModelIds })) {
+            const delta = streamEventDelta(acc, event, routing, requestedModel);
+            if (delta) send(chunk(delta));
           }
-
-          if (pendingImages.length > 0) {
-            const block = buildLinkBlock(pendingImages);
-            send(chunk({ content: emittedText ? `\n\n${block}` : block }));
-          }
-
-          send(chunk({}, "stop"));
-          if (includeUsage) {
-            send(
-              usageChunk(usagePayload(usage, requestBody, emittedText.length + emittedReasoning.length))
-            );
-          }
-          if (!state.closed) controller.enqueue(encoder.encode(SSE_DONE));
+          for (const payload of closingChunks(acc, { chunk, usageChunk, includeUsage, requestBody })) send(payload);
+          done();
         } catch (error) {
-          if (signal?.aborted || error?.name === "AbortError") {
-            send({ error: { message: "The Gemini Web request was aborted", type: "aborted", code: ABORT_CODE } });
-          } else {
-            send({
-              error: {
-                message: safeMessage(error, "Gemini Web stream failed"),
-                type: "upstream_error",
-                code: errorCode(errorStatus(error), error),
-              },
-            });
-          }
+          send(streamErrorPayload(error, signal));
         } finally {
           finish();
         }

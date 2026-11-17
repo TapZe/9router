@@ -80,11 +80,17 @@ export function parseToolBridge(body) {
     );
   }
 
-  const forcedName = mode === "function" ? text(body.tool_choice.function.name) : null;
-  if (forcedName && !tools.some((tool) => tool.name === forcedName)) {
-    throw bridgeError(`tool_choice names "${forcedName}", which is not one of the declared tools.`);
+  return { tools, mode, forcedName: forcedToolName(mode, body.tool_choice, tools) };
+}
+
+/** The tool a function tool_choice names; it must be one of the declared tools. */
+function forcedToolName(mode, choice, tools) {
+  if (mode !== "function") return null;
+  const name = text(choice.function.name);
+  if (!tools.some((tool) => tool.name === name)) {
+    throw bridgeError(`tool_choice names "${name}", which is not one of the declared tools.`);
   }
-  return { tools, mode, forcedName };
+  return name;
 }
 
 // ─── Prompt ─────────────────────────────────────────────────────────────────
@@ -269,10 +275,13 @@ function missingRequired(schema, value, path = "") {
   const required = Array.isArray(schema.required) ? schema.required : [];
   const missing = required.find((key) => !Object.hasOwn(value, key));
   if (missing !== undefined) return path + missing;
-  const properties = isObject(schema.properties) ? schema.properties : {};
-  for (const [key, sub] of Object.entries(properties)) {
-    if (!Object.hasOwn(value, key)) continue;
-    const nested = missingRequired(sub, value[key], `${path}${key}.`);
+  return missingNested(schema.properties, value, path);
+}
+
+function missingNested(properties, value, path) {
+  const entries = isObject(properties) ? Object.entries(properties) : [];
+  for (const [key, sub] of entries) {
+    const nested = Object.hasOwn(value, key) ? missingRequired(sub, value[key], `${path}${key}.`) : null;
     if (nested) return nested;
   }
   return null;
