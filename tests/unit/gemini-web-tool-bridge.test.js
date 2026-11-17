@@ -9,6 +9,7 @@ import {
   parseToolBridge,
   parseToolBridgeOutput,
 } from "../../open-sse/executors/gemini-web/toolBridge.js";
+import { checkGeminiWebUnsupportedControls } from "../../open-sse/executors/gemini-web/capabilities.js";
 
 const DONE_TOOL = {
   type: "function",
@@ -61,6 +62,19 @@ describe("Gemini Web tool bridge request", () => {
     expect(() =>
       parseToolBridge({ tools: [DONE_TOOL], tool_choice: { type: "function", function: { name: "finish" } } })
     ).toThrow(/"finish"/);
+  });
+});
+
+describe("Gemini Web request guard", () => {
+  // chatCore runs this guard on the client's own body before translation, so
+  // Anthropic-shaped tools and tool_choice must pass it; the bridge judges the
+  // translated OpenAI tools later.
+  it("lets tools and every tool_choice through and still refuses legacy functions", () => {
+    const claudeTool = { name: "lookup", input_schema: { type: "object" } };
+    expect(checkGeminiWebUnsupportedControls({ tools: [claudeTool], tool_choice: { type: "any" } })).toBeNull();
+    expect(checkGeminiWebUnsupportedControls({ tools: [DONE_TOOL], tool_choice: "required" })).toBeNull();
+    expect(checkGeminiWebUnsupportedControls({ tool_choice: FORCED_DONE })).toBeNull();
+    expect(checkGeminiWebUnsupportedControls({ functions: [DONE_TOOL.function] })).toMatchObject({ param: "functions" });
   });
 });
 

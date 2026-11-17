@@ -1,13 +1,14 @@
 // Request-contract guards for the Gemini Web executor.
 //
 // Gemini Web is not a generic OpenAI upstream: it drives one native
-// StreamGenerate call per turn. Two classes of client controls have no wire
+// StreamGenerate call per turn. Some client controls have no wire
 // representation there, so they are rejected before any upstream request
 // instead of being silently dropped:
 //
-//   • tool calling — Gemini Web's own agentic tools are not the OpenAI
-//     function-calling contract, and a forced tool_choice is a guarantee a
-//     prompt cannot make.
+//   • legacy `functions` — OpenAI function tools in `tools` go through the
+//     prompt tool bridge (toolBridge.js), which validates them where the
+//     executor reads them. This guard also runs on the client's own body
+//     before translation, so it must not judge `tools` by OpenAI shape.
 //   • thinking control — Google exposes exactly low/medium/high, and its
 //     thought summaries are not a caller-controlled token budget.
 
@@ -22,32 +23,8 @@ const SUPPORTED_LEVELS = new Set(["low", "medium", "high"]);
 /** Level names that mean "let Gemini choose", resolved to the low enum. */
 const AUTOMATIC_LEVELS = new Set(["", "auto", "default", "automatic"]);
 
-/** `tool_choice` strings that demand a tool call rather than merely offering one. */
-const FORCING_TOOL_CHOICE_STRINGS = new Set(["required", "any"]);
-
-/** `tool_choice: { type }` values that pin the model to a specific/any tool. */
-const FORCING_TOOL_CHOICE_TYPES = new Set(["function", "tool", "any"]);
-
 function normalizeString(value) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : null;
-}
-
-/**
- * True when `tool_choice` demands a tool call. Covers the OpenAI strings
- * ("required"), the Anthropic-flavored ones the translators also emit ("any"),
- * and the object forms that name a function or force any tool. "auto" / "none"
- * and every unrecognized shape are treated as non-forcing.
- */
-export function isForcingToolChoice(toolChoice) {
-  const asString = normalizeString(toolChoice);
-  if (asString) return FORCING_TOOL_CHOICE_STRINGS.has(asString);
-
-  if (toolChoice && typeof toolChoice === "object" && !Array.isArray(toolChoice)) {
-    const type = normalizeString(toolChoice.type);
-    return type !== null && FORCING_TOOL_CHOICE_TYPES.has(type);
-  }
-
-  return false;
 }
 
 function nonEmptyList(value) {
@@ -112,31 +89,12 @@ function thinkingViolation(body, model) {
 export function checkGeminiWebUnsupportedControls(body, model = null) {
   if (!body || typeof body !== "object") return null;
 
-  if (nonEmptyList(body.tools)) {
-    return {
-      param: "tools",
-      message:
-        'Model provider "gemini-web" does not support OpenAI function tools. It drives one native ' +
-        "Gemini Web turn and never emits caller-defined tool calls. Remove \"tools\" or route to a " +
-        "model with native function calling.",
-    };
-  }
-
   if (nonEmptyList(body.functions)) {
     return {
       param: "functions",
       message:
-        'Model provider "gemini-web" does not support legacy function tools. Remove "functions" or ' +
-        "route to a model with native function calling.",
-    };
-  }
-
-  if (isForcingToolChoice(body.tool_choice)) {
-    return {
-      param: "tool_choice",
-      message:
-        'Model provider "gemini-web" cannot guarantee a forced tool call: it has no OpenAI tool ' +
-        'contract at all. Remove "tool_choice" or route to a model with native function calling.',
+        'Model provider "gemini-web" does not support the legacy "functions" field. Send the same ' +
+        'definitions as "tools" ({"type":"function","function":{...}}) instead.',
     };
   }
 

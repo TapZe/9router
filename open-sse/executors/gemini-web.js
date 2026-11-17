@@ -7,7 +7,9 @@
 // Auth: full Cookie request header (__Secure-1PSID + __Secure-1PSIDTS) shared
 // by every slot of that browser session; the slot selects the Google account.
 // Execution is stateless: the whole message history is sent as one prompt and
-// every generation starts a fresh Google turn.
+// every generation starts a fresh Google turn. OpenAI function tools go through
+// the prompt tool bridge (gemini-web/toolBridge.js); a bridged reply is read in
+// full before it is returned, also when the client streams.
 
 import { randomUUID } from "node:crypto";
 
@@ -35,6 +37,14 @@ import {
   uploadGeminiWebImage,
 } from "./gemini-web/media.js";
 import { GEMINI_WEB_TASK, resolveGeminiModel } from "./gemini-web/models.js";
+import {
+  GEMINI_WEB_INVALID_TOOL_CALL_CODE,
+  MAX_TOOL_BRIDGE_ATTEMPTS,
+  buildToolBridgePrompt,
+  parseToolBridge,
+  parseToolBridgeOutput,
+  toolBridgeRetryPrompt,
+} from "./gemini-web/toolBridge.js";
 import { generateGeminiWeb } from "./gemini-web/protocol.js";
 import {
   publicGeminiWebModels,
@@ -355,6 +365,172 @@ async function collectEvents(body, { signal, knownModelIds }) {
   return state;
 }
 
+/**
+ * Upload the turn's images and send one generation. Images are uploaded per
+ * turn, so a tool-bridge retry sends them again as gemini-web-to-api does.
+ */
+async function sendGeminiWebTurn({
+  resolved,
+  routing,
+  prompt,
+  inputImages,
+  thinkingLevel,
+  signal,
+  proxyOptions,
+  transport,
+  turn,
+}) {
+  const files = [];
+  for (const [index, image] of inputImages.entries()) {
+    const uploaded = await uploadGeminiWebImage(
+      resolved.session,
+      {
+        data: image.data,
+        mimeType: image.mime,
+        name: `image_${index + 1}.${image.extension}`,
+      },
+      { signal, proxyOptions, transport }
+    );
+    files.push(uploaded);
+  }
+
+  const upstream = await generateGeminiWeb({
+    session: resolved.session,
+    authUser: resolved.authUser,
+    model: routing,
+    prompt,
+    files,
+    thinkingLevel,
+    signal,
+    proxyOptions,
+    transport,
+    onDispatch: () => {
+      turn.dispatched = true;
+    },
+  });
+  if (!upstream.ok) throw await upstreamFailure(upstream);
+  return upstream;
+}
+
+/**
+ * The error response for a failed turn. Once Google accepted a turn, or may
+ * have, the request must not be replayed on another account.
+ */
+function turnFailure(error, signal, turn) {
+  if (signal?.aborted || error?.name === "AbortError") return errorResponse(abortError());
+  const mayHaveRun =
+    turn.dispatched && (error?.nonReplayable === true || isAmbiguousGenerationError(error));
+  return errorResponse(error, { nonReplayable: turn.accepted || mayHaveRun });
+}
+
+function invalidToolCallError(reason) {
+  return geminiWebError(
+    `Gemini Web did not return a valid tool call after ${MAX_TOOL_BRIDGE_ATTEMPTS} attempts: ${reason}`,
+    { status: 502, code: GEMINI_WEB_INVALID_TOOL_CALL_CODE }
+  );
+}
+
+/** One bridged turn: send, read the whole answer, check the model, parse. */
+async function bridgedTurn({ bridge, prompt, sendTurn, collect, routing, requestedModel, turn }) {
+  const upstream = await sendTurn(prompt);
+  turn.accepted = true;
+  const collected = await collect(upstream.body);
+  if (collected.modelId && collected.modelId !== routing.modelId) {
+    throw modelMismatchError(requestedModel);
+  }
+  return { collected, ...parseToolBridgeOutput(bridge, collected.text) };
+}
+
+/**
+ * Ask Gemini for a tool-bridge reply, and ask again with the reason while the
+ * reply has no usable tool call. A call is never made up: after the last
+ * attempt the request fails with 502, as in gemini-web-to-api.
+ */
+async function runToolBridge({ bridge, prompt, log, ...context }) {
+  const bridgePrompt = buildToolBridgePrompt(bridge, prompt);
+  let attemptPrompt = bridgePrompt;
+  let reason = "";
+  for (let attempt = 1; attempt <= MAX_TOOL_BRIDGE_ATTEMPTS; attempt += 1) {
+    const outcome = await bridgedTurn({ bridge, prompt: attemptPrompt, ...context });
+    if (!outcome.error) {
+      if (outcome.calls.length === 0 && !outcome.content) {
+        throw upstreamError("Gemini Web did not return an answer");
+      }
+      return outcome;
+    }
+    reason = outcome.error;
+    log?.debug?.("GEMINI-WEB", `Unusable tool-bridge reply (attempt ${attempt}): ${reason}`);
+    attemptPrompt = toolBridgeRetryPrompt(bridgePrompt, reason);
+  }
+  throw invalidToolCallError(reason);
+}
+
+function completionPayload({ message, finishReason, reportedModel, usage }) {
+  return {
+    id: `chatcmpl-gw-${randomUUID().slice(0, 24)}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: reportedModel,
+    choices: [{ index: 0, message, finish_reason: finishReason, logprobs: null }],
+    usage,
+  };
+}
+
+/** Chunk builders for one streamed completion: same id, time and model on every chunk. */
+function completionChunks(reportedModel) {
+  const id = `chatcmpl-gw-${randomUUID().slice(0, 24)}`;
+  const created = Math.floor(Date.now() / 1000);
+  const base = { id, object: "chat.completion.chunk", created, model: reportedModel };
+  return {
+    chunk: (delta, finish = null) => ({
+      ...base,
+      choices: [{ index: 0, delta, finish_reason: finish, logprobs: null }],
+    }),
+    usageChunk: (usage) => ({ ...base, choices: [], usage }),
+  };
+}
+
+function toolBridgeMessage({ calls, content, collected }) {
+  const message =
+    calls.length > 0
+      ? { role: "assistant", content: null, tool_calls: calls }
+      : { role: "assistant", content };
+  if (collected.reasoning) message.reasoning_content = collected.reasoning;
+  return message;
+}
+
+/** The whole bridged reply as SSE: it is only known once Gemini finished. */
+function toolBridgeSse({ message, finishReason, usage, reportedModel, includeUsage }) {
+  const { chunk, usageChunk } = completionChunks(reportedModel);
+  const events = [chunk({ role: "assistant", content: "" })];
+  if (message.reasoning_content) events.push(chunk({ reasoning_content: message.reasoning_content }));
+  if (message.tool_calls) {
+    message.tool_calls.forEach((call, index) => events.push(chunk({ tool_calls: [{ index, ...call }] })));
+  } else {
+    events.push(chunk({ content: message.content }));
+  }
+  events.push(chunk({}, finishReason));
+  if (includeUsage) events.push(usageChunk(usage));
+  const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + SSE_DONE;
+  return new Response(body, { status: 200, headers: { ...SSE_HEADERS_NO_BUFFER } });
+}
+
+function toolBridgeResponse({ outcome, wantsStream, requestBody, reportedModel, includeUsage }) {
+  const message = toolBridgeMessage(outcome);
+  const finishReason = outcome.calls.length > 0 ? "tool_calls" : "stop";
+  const output = outcome.calls.length > 0 ? JSON.stringify(outcome.calls) : outcome.content;
+  const usage = usagePayload(
+    outcome.collected.usage,
+    requestBody,
+    output.length + (outcome.collected.reasoning?.length || 0)
+  );
+  if (wantsStream) return toolBridgeSse({ message, finishReason, usage, reportedModel, includeUsage });
+  return new Response(JSON.stringify(completionPayload({ message, finishReason, reportedModel, usage })), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 function imageTaskModel(models) {
   const list = Array.isArray(models) ? models : [];
   const chosen = list.find((model) => model.id === "gemini-auto") || list[0];
@@ -412,7 +588,9 @@ export class GeminiWebExecutor extends BaseExecutor {
     const { cleanModel } = parseModelSuffix(requestedModel);
     let prompt;
     let inputImages;
+    let bridge;
     try {
+      bridge = parseToolBridge(requestBody);
       const flattened = flattenMessages(requestBody.messages);
       prompt = promptFromTurns(flattened.turns);
       if (!prompt || !flattened.hasUserTurn) {
@@ -472,58 +650,54 @@ export class GeminiWebExecutor extends BaseExecutor {
     );
 
     // 5. Upload every input image, in prompt order, then generate one turn.
-    let upstream;
     // Only the request that can consume a generation counts as dispatched; a
     // failed upload or a Bind channel that never opened stays retryable.
-    let dispatched = false;
-    const markDispatched = () => {
-      dispatched = true;
-    };
-    try {
-      const files = [];
-      for (const [index, image] of inputImages.entries()) {
-        const uploaded = await uploadGeminiWebImage(
-          resolved.session,
-          {
-            data: image.data,
-            mimeType: image.mime,
-            name: `image_${index + 1}.${image.extension}`,
-          },
-          { signal, proxyOptions, transport }
-        );
-        files.push(uploaded);
-      }
-
-      upstream = await generateGeminiWeb({
-        session: resolved.session,
-        authUser: resolved.authUser,
-        model: routing,
-        prompt,
-        files,
+    const turn = { dispatched: false, accepted: false };
+    const sendTurn = (turnPrompt) =>
+      sendGeminiWebTurn({
+        resolved,
+        routing,
+        prompt: turnPrompt,
+        inputImages,
         thinkingLevel: resolveRequestedThinking(requestBody, requestedModel),
         signal,
         proxyOptions,
         transport,
-        onDispatch: markDispatched,
+        turn,
       });
+    const failed = (error) => result(turnFailure(error, signal, turn), reportedModel);
+    const includeUsage = Boolean(requestBody.stream_options?.include_usage);
 
-      if (!upstream.ok) {
-        throw await upstreamFailure(upstream);
-      }
-    } catch (error) {
-      if (signal?.aborted || error?.name === "AbortError") {
-        return result(errorResponse(abortError()), reportedModel);
+    if (bridge) {
+      let outcome;
+      try {
+        outcome = await runToolBridge({
+          bridge,
+          prompt,
+          sendTurn,
+          collect: (body) => collectEvents(body, { signal, knownModelIds }),
+          routing,
+          requestedModel: cleanModel,
+          turn,
+          log,
+        });
+      } catch (error) {
+        return failed(error);
       }
       return result(
-        errorResponse(error, {
-          nonReplayable:
-            dispatched && (error?.nonReplayable === true || isAmbiguousGenerationError(error)),
-        }),
+        markNonReplayableResponse(
+          toolBridgeResponse({ outcome, wantsStream, requestBody, reportedModel, includeUsage })
+        ),
         reportedModel
       );
     }
 
-    const includeUsage = Boolean(requestBody.stream_options?.include_usage);
+    let upstream;
+    try {
+      upstream = await sendTurn(prompt);
+    } catch (error) {
+      return failed(error);
+    }
 
     if (!wantsStream) {
       let collected;
@@ -549,18 +723,16 @@ export class GeminiWebExecutor extends BaseExecutor {
       const message = { role: "assistant", content };
       if (collected.reasoning) message.reasoning_content = collected.reasoning;
 
-      const payload = {
-        id: `chatcmpl-gw-${randomUUID().slice(0, 24)}`,
-        object: "chat.completion",
-        created: Math.floor(Date.now() / 1000),
-        model: reportedModel,
-        choices: [{ index: 0, message, finish_reason: "stop", logprobs: null }],
+      const payload = completionPayload({
+        message,
+        finishReason: "stop",
+        reportedModel,
         usage: usagePayload(
           collected.usage,
           requestBody,
           content.length + (collected.reasoning?.length || 0)
         ),
-      };
+      });
 
       return result(
         markNonReplayableResponse(
@@ -685,17 +857,8 @@ function streamCompletion({
   includeUsage,
 }) {
   const encoder = new TextEncoder();
-  const id = `chatcmpl-gw-${randomUUID().slice(0, 24)}`;
-  const created = Math.floor(Date.now() / 1000);
+  const { chunk, usageChunk } = completionChunks(reportedModel);
   const state = { closed: false };
-
-  const chunk = (delta, finish = null) => ({
-    id,
-    object: "chat.completion.chunk",
-    created,
-    model: reportedModel,
-    choices: [{ index: 0, delta, finish_reason: finish, logprobs: null }],
-  });
 
   const readable = new ReadableStream(
     {
@@ -765,18 +928,9 @@ function streamCompletion({
 
           send(chunk({}, "stop"));
           if (includeUsage) {
-            send({
-              id,
-              object: "chat.completion.chunk",
-              created,
-              model: reportedModel,
-              choices: [],
-              usage: usagePayload(
-                usage,
-                requestBody,
-                emittedText.length + emittedReasoning.length
-              ),
-            });
+            send(
+              usageChunk(usagePayload(usage, requestBody, emittedText.length + emittedReasoning.length))
+            );
           }
           if (!state.closed) controller.enqueue(encoder.encode(SSE_DONE));
         } catch (error) {

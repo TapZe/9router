@@ -481,31 +481,170 @@ describe("Gemini Web tool history", () => {
   });
 });
 
+describe("Gemini Web tool calling", () => {
+  const LOOKUP = {
+    type: "function",
+    function: {
+      name: "lookup",
+      description: "Look a word up",
+      parameters: { type: "object", properties: { q: { type: "string" } }, required: ["q"] },
+    },
+  };
+  const CALL_REPLY = '{"tool_calls":[{"name":"lookup","arguments":{"q":"gemini"}}]}';
+  const promptAt = (harness, index) => innerOf(generationCalls(harness.calls)[index])[0][0];
+
+  function replies(...texts) {
+    return (_call, state) => answerResponse([answerFrame(texts[Math.min(state.generation, texts.length) - 1])]);
+  }
+
+  it("returns a tool call from a bridged reply", async () => {
+    const harness = googleTransport({ generate: replies(CALL_REPLY) });
+    const result = await executeWith(harness, {
+      body: chatBody([{ role: "system", content: "Be brief." }, userText("Define gemini")], { tools: [LOOKUP] }),
+    });
+
+    const payload = await jsonOf(result);
+    expect(result.response.status).toBe(200);
+    expect(payload.choices[0].finish_reason).toBe("tool_calls");
+    expect(payload.choices[0].message.content).toBeNull();
+    expect(payload.choices[0].message.tool_calls).toEqual([
+      { id: expect.stringMatching(/^call_/), type: "function", function: { name: "lookup", arguments: '{"q":"gemini"}' } },
+    ]);
+    expect(isNonReplayableResponse(result.response)).toBe(true);
+
+    const prompt = promptAt(harness, 0);
+    expect(prompt.startsWith("You are an OpenAI-compatible assistant running behind a bridge to Gemini web.")).toBe(true);
+    expect(prompt).toContain("- name: lookup | description: Look a word up | parameters: ");
+    expect(prompt.endsWith("\n\nConversation:\nSystem:\nBe brief.\n\nDefine gemini")).toBe(true);
+  });
+
+  it("keeps a plain answer under tool_choice auto with one turn", async () => {
+    const harness = googleTransport({ generate: replies("Gemini is a constellation.") });
+    const result = await executeWith(harness, { body: chatBody([userText("Define gemini")], { tools: [LOOKUP] }) });
+
+    const payload = await jsonOf(result);
+    expect(payload.choices[0].finish_reason).toBe("stop");
+    expect(payload.choices[0].message).toEqual({ role: "assistant", content: "Gemini is a constellation." });
+    expect(harness.state.generation).toBe(1);
+  });
+
+  it("sends a plain prompt when tool_choice is none", async () => {
+    const harness = googleTransport({ generate: replies("Plain.") });
+    const result = await executeWith(harness, {
+      body: chatBody([userText("Define gemini")], { tools: [LOOKUP], tool_choice: "none" }),
+    });
+
+    expect((await jsonOf(result)).choices[0].message.content).toBe("Plain.");
+    expect(promptAt(harness, 0)).toBe("Define gemini");
+  });
+
+  it("asks again with the reason when a forced call is unusable", async () => {
+    const harness = googleTransport({
+      generate: replies("Sure.", '{"tool_calls":[{"name":"lookup","arguments":{}}]}', CALL_REPLY),
+    });
+    const result = await executeWith(harness, {
+      body: chatBody([userText("Define gemini")], { tools: [LOOKUP], tool_choice: "required" }),
+    });
+
+    const payload = await jsonOf(result);
+    expect(payload.choices[0].message.tool_calls[0].function.arguments).toBe('{"q":"gemini"}');
+    expect(harness.state.generation).toBe(3);
+    expect(promptAt(harness, 1)).toContain(
+      "Your previous reply could not be used: the reply contained no tool call. Reply again with JSON only"
+    );
+    expect(promptAt(harness, 2)).toContain('Your previous reply could not be used: tool "lookup": missing required argument "q".');
+    expect(promptAt(harness, 2)).not.toContain("the reply contained no tool call");
+  });
+
+  it("fails with 502 instead of making up a call after three attempts", async () => {
+    const harness = googleTransport({ generate: replies("I cannot call tools.") });
+    const result = await executeWith(harness, {
+      body: chatBody([userText("Define gemini")], {
+        tools: [LOOKUP],
+        tool_choice: { type: "function", function: { name: "lookup" } },
+      }),
+    });
+
+    const payload = await jsonOf(result);
+    expect(result.response.status).toBe(502);
+    expect(payload.error.code).toBe("gemini_web_invalid_tool_call");
+    expect(payload.error.message).toContain("after 3 attempts: the reply contained no tool call");
+    expect(isNonReplayableResponse(result.response)).toBe(true);
+    expect(harness.state.generation).toBe(3);
+  });
+
+  it("keeps a rejected first turn retryable", async () => {
+    const harness = googleTransport({ generate: () => new Response("", { status: 429 }) });
+    const result = await executeWith(harness, { body: chatBody([userText("Define gemini")], { tools: [LOOKUP] }) });
+
+    expect(result.response.status).toBe(429);
+    expect(isNonReplayableResponse(result.response)).toBe(false);
+    expect(harness.state.generation).toBe(1);
+  });
+
+  it("streams a tool call as OpenAI tool_calls deltas after the whole reply", async () => {
+    const harness = googleTransport({ generate: replies(CALL_REPLY) });
+    const result = await executeWith(harness, {
+      stream: true,
+      body: chatBody([userText("Define gemini")], {
+        stream: true,
+        tools: [LOOKUP],
+        stream_options: { include_usage: true },
+      }),
+    });
+
+    const { chunks, done } = await readSse(result);
+    expect(done).toBe(true);
+    expect(chunks[0].choices[0].delta).toEqual({ role: "assistant", content: "" });
+    expect(chunks[1].choices[0].delta.tool_calls).toEqual([
+      { index: 0, id: expect.stringMatching(/^call_/), type: "function", function: { name: "lookup", arguments: '{"q":"gemini"}' } },
+    ]);
+    expect(chunks[2].choices[0].finish_reason).toBe("tool_calls");
+    expect(chunks[3].choices).toEqual([]);
+    expect(chunks[3].usage.total_tokens).toBeGreaterThan(0);
+    expect(streamedContent(chunks)).toBe("");
+  });
+
+  it("streams the bridged text, not the raw JSON, for a text reply", async () => {
+    const harness = googleTransport({ generate: replies('{"content":"A constellation."}') });
+    const result = await executeWith(harness, {
+      stream: true,
+      body: chatBody([userText("Define gemini")], { stream: true, tools: [LOOKUP] }),
+    });
+
+    const { chunks, done } = await readSse(result);
+    expect(done).toBe(true);
+    expect(streamedContent(chunks)).toBe("A constellation.");
+    expect(chunks.at(-1).choices[0].finish_reason).toBe("stop");
+  });
+});
+
 describe("Gemini Web request contract", () => {
-  it("rejects function tools before any upstream call", async () => {
+  it("rejects legacy functions and non-function tools before any upstream call", async () => {
     const harness = googleTransport();
-    const tool = {
-      type: "function",
-      function: { name: "lookup", parameters: { type: "object", properties: {} } },
-    };
+    const fn = { name: "lookup", parameters: { type: "object", properties: {} } };
 
-    const withTools = await executeWith(harness, {
-      body: chatBody([userText("Hi")], { tools: [tool] }),
-    });
     const withFunctions = await executeWith(harness, {
-      body: chatBody([userText("Hi")], { functions: [tool.function] }),
+      body: chatBody([userText("Hi")], { functions: [fn] }),
     });
-    const withForcedChoice = await executeWith(harness, {
-      body: chatBody([userText("Hi")], { tool_choice: "required" }),
+    const withBuiltInTool = await executeWith(harness, {
+      body: chatBody([userText("Hi")], { tools: [{ type: "function", function: fn }, { type: "web_search" }] }),
+    });
+    const withUndeclaredForcedTool = await executeWith(harness, {
+      body: chatBody([userText("Hi")], {
+        tools: [{ type: "function", function: fn }],
+        tool_choice: { type: "function", function: { name: "other" } },
+      }),
     });
 
-    for (const result of [withTools, withFunctions, withForcedChoice]) {
+    const params = [];
+    for (const result of [withFunctions, withBuiltInTool, withUndeclaredForcedTool]) {
       const payload = await jsonOf(result);
       expect(result.response.status).toBe(400);
       expect(payload.error.code).toBe("unsupported_control_for_provider");
-      if (result === withForcedChoice) expect(payload.error.param).toBe("tool_choice");
+      params.push(payload.error.param);
     }
-
+    expect(params).toEqual(["functions", "tools", "tools"]);
     expect(harness.calls).toHaveLength(0);
   });
 
