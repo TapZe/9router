@@ -38,6 +38,7 @@ import {
   streamFromText,
   usageFrame,
 } from "../fixtures/gemini-web/wireFixtures.js";
+import { PERSON_JSON, PERSON_SCHEMA } from "../fixtures/gemini-web/jsonModeFixtures.js";
 import {
   HTML_BYTES,
   JPEG_DATA_URL,
@@ -812,12 +813,6 @@ describe("Gemini Web tool calling", () => {
 });
 
 describe("Gemini Web JSON mode", () => {
-  const PERSON_SCHEMA = {
-    type: "object",
-    properties: { name: { type: "string" }, age: { type: "integer" } },
-    required: ["name", "age"],
-  };
-  const PERSON_JSON = '{"name":"Ada","age":36}';
   const PERSON_FORMAT = { type: "json_schema", json_schema: { name: "person", strict: true, schema: PERSON_SCHEMA } };
   const DONE = {
     type: "function",
@@ -829,6 +824,12 @@ describe("Gemini Web JSON mode", () => {
   const quietLog = () => ({ debug: vi.fn(), info() {}, warn: vi.fn(), error() {} });
   const ask = (harness, extra, options = {}) =>
     executeWith(harness, { body: chatBody([userText("Invent a person.")], extra), ...options });
+  /** A json_object request that still answers 200: its content. */
+  const objectReply = async (harness, log) => {
+    const result = await ask(harness, { response_format: { type: "json_object" } }, { log });
+    expect(result.response.status).toBe(200);
+    return (await jsonOf(result)).choices[0].message.content;
+  };
 
   it("asks for JSON and returns the JSON without its fence", async () => {
     const harness = googleTransport({ generate: replies("Invented:\n```json\n" + PERSON_JSON + "\n```") });
@@ -864,10 +865,8 @@ describe("Gemini Web JSON mode", () => {
   it("returns the raw first reply when the repair is still unusable", async () => {
     const harness = googleTransport({ generate: replies("Sure! Here is the person you asked for.", "Still not JSON.") });
     const log = quietLog();
-    const result = await ask(harness, { response_format: { type: "json_object" } }, { log });
 
-    expect(result.response.status).toBe(200);
-    expect((await jsonOf(result)).choices[0].message.content).toBe("Sure! Here is the person you asked for.");
+    expect(await objectReply(harness, log)).toBe("Sure! Here is the person you asked for.");
     expect(harness.state.generation).toBe(2);
     expect(log.warn).toHaveBeenCalledWith(
       "GEMINI-WEB",
@@ -882,10 +881,8 @@ describe("Gemini Web JSON mode", () => {
         state.generation === 1 ? answerResponse([answerFrame("Not JSON.")]) : new Response("", { status: 429 }),
     });
     const log = quietLog();
-    const result = await ask(harness, { response_format: { type: "json_object" } }, { log });
 
-    expect(result.response.status).toBe(200);
-    expect((await jsonOf(result)).choices[0].message.content).toBe("Not JSON.");
+    expect(await objectReply(harness, log)).toBe("Not JSON.");
     expect(log.warn.mock.calls[0][0]).toBe("GEMINI-WEB");
     expect(log.warn.mock.calls[0][1]).toMatch(/^response_format repair request failed; returning the raw reply: /);
   });
@@ -1087,6 +1084,18 @@ describe("Gemini Web buffered stream heartbeat", () => {
       body: chatBody([userText("Define gemini")], { stream: true, tools: [LOOKUP], ...extra }),
     });
 
+  /** A tool stream read up to its first heartbeat. */
+  async function afterFirstHeartbeat(harness) {
+    const sse = sseReader(await toolStream(harness));
+    await sse.next();
+    vi.advanceTimersByTime(15000);
+    expect(await sse.next()).toBe(HEARTBEAT);
+    return sse;
+  }
+
+  /** The last SSE payload in a stream's text. */
+  const lastPayload = (text) => JSON.parse(text.trim().split("\n\n").at(-1).slice(6));
+
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   });
@@ -1123,27 +1132,21 @@ describe("Gemini Web buffered stream heartbeat", () => {
   it("stops the heartbeat when the reply fails", async () => {
     const held = heldAnswer();
     const harness = googleTransport({ generate: () => held.response });
-    const sse = sseReader(await toolStream(harness));
+    const sse = await afterFirstHeartbeat(harness);
 
-    await sse.next();
-    vi.advanceTimersByTime(15000);
-    expect(await sse.next()).toBe(HEARTBEAT);
     held.controller.error(new Error("socket reset"));
 
     const text = await sse.rest();
     expect(text).not.toContain("[DONE]");
-    expect(JSON.parse(text.trim().split("\n\n").at(-1).slice(6)).error.type).toBe("upstream_error");
+    expect(lastPayload(text).error.type).toBe("upstream_error");
     expect(vi.getTimerCount()).toBe(0);
   });
 
   it("stops the heartbeat and Google's stream when the client cancels", async () => {
     const held = heldAnswer();
     const harness = googleTransport({ generate: () => held.response });
-    const sse = sseReader(await toolStream(harness));
+    const sse = await afterFirstHeartbeat(harness);
 
-    await sse.next();
-    vi.advanceTimersByTime(15000);
-    expect(await sse.next()).toBe(HEARTBEAT);
     await sse.reader.cancel("client went away");
     await vi.waitFor(() => expect(held.cancelled).toBe(true));
 
@@ -1166,7 +1169,7 @@ describe("Gemini Web buffered stream heartbeat", () => {
     client.abort();
     const text = await sse.rest();
 
-    expect(JSON.parse(text.trim().split("\n\n").at(-1).slice(6)).error.type).toBe("aborted");
+    expect(lastPayload(text).error.type).toBe("aborted");
     expect(held.cancelled).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
   });

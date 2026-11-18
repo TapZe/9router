@@ -11,13 +11,8 @@ import {
   repairJSONPrompt,
   validateJSONReply,
 } from "../../open-sse/executors/gemini-web/jsonMode.js";
+import { PERSON_JSON, PERSON_SCHEMA } from "../fixtures/gemini-web/jsonModeFixtures.js";
 
-const PERSON_SCHEMA = {
-  type: "object",
-  properties: { name: { type: "string" }, age: { type: "integer" } },
-  required: ["name", "age"],
-};
-const PERSON_JSON = '{"name":"Ada","age":36}';
 const OBJECT_MODE = { schema: null };
 const PERSON_MODE = { schema: PERSON_SCHEMA };
 
