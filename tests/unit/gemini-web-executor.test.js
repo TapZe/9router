@@ -20,6 +20,7 @@ import { handleComboChat } from "../../open-sse/services/combo.js";
 import { buildImagePrompt } from "../../open-sse/executors/gemini-web/imageGen.js";
 import { GEMINI_WEB_LIMITS } from "../../open-sse/executors/gemini-web/config.js";
 import { estimateUsage } from "../../open-sse/utils/usageTracking.js";
+import { buildJSONModePrompt, repairJSONPrompt } from "../../open-sse/executors/gemini-web/jsonMode.js";
 import {
   BOOTSTRAP_HTML,
   BOOTSTRAP_HTML_WITHOUT_CHANNEL_IDENTITY,
@@ -797,6 +798,190 @@ describe("Gemini Web tool calling", () => {
       "GEMINI-WEB",
       "Unusable tool-bridge reply (attempt 1): the reply contained no tool call"
     );
+  });
+});
+
+describe("Gemini Web JSON mode", () => {
+  const PERSON_SCHEMA = {
+    type: "object",
+    properties: { name: { type: "string" }, age: { type: "integer" } },
+    required: ["name", "age"],
+  };
+  const PERSON_JSON = '{"name":"Ada","age":36}';
+  const PERSON_FORMAT = { type: "json_schema", json_schema: { name: "person", strict: true, schema: PERSON_SCHEMA } };
+  const DONE = {
+    type: "function",
+    function: { name: "done", parameters: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } },
+  };
+  const promptAt = (harness, index) => innerOf(generationCalls(harness.calls)[index])[0][0];
+  const replies = (...texts) => (_call, state) =>
+    answerResponse([answerFrame(texts[Math.min(state.generation, texts.length) - 1])]);
+  const quietLog = () => ({ debug: vi.fn(), info() {}, warn: vi.fn(), error() {} });
+  const ask = (harness, extra, options = {}) =>
+    executeWith(harness, { body: chatBody([userText("Invent a person.")], extra), ...options });
+
+  it("asks for JSON and returns the JSON without its fence", async () => {
+    const harness = googleTransport({ generate: replies("Invented:\n```json\n" + PERSON_JSON + "\n```") });
+    const result = await ask(harness, { response_format: PERSON_FORMAT });
+
+    const payload = await jsonOf(result);
+    expect(payload.choices[0].message).toEqual({ role: "assistant", content: PERSON_JSON });
+    expect(payload.choices[0].finish_reason).toBe("stop");
+    expect(harness.state.generation).toBe(1);
+    expect(promptAt(harness, 0)).toBe(buildJSONModePrompt("Invent a person.", { schema: PERSON_SCHEMA }));
+    expect(isNonReplayableResponse(result.response)).toBe(true);
+  });
+
+  it("repairs an unusable reply once, with the reason", async () => {
+    const harness = googleTransport({
+      generate: replies('Here is the person: {"name":"Ada"}', "```json\n" + PERSON_JSON + "\n```"),
+    });
+    const log = quietLog();
+    const result = await ask(harness, { response_format: PERSON_FORMAT }, { log });
+
+    expect((await jsonOf(result)).choices[0].message.content).toBe(PERSON_JSON);
+    expect(harness.state.generation).toBe(2);
+    expect(promptAt(harness, 1)).toBe(
+      repairJSONPrompt(promptAt(harness, 0), { schema: PERSON_SCHEMA }, 'the reply is missing required key "age"')
+    );
+    expect(log.debug).toHaveBeenCalledWith(
+      "GEMINI-WEB",
+      'response_format reply was not usable: the reply is missing required key "age"'
+    );
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("returns the raw first reply when the repair is still unusable", async () => {
+    const harness = googleTransport({ generate: replies("Sure! Here is the person you asked for.", "Still not JSON.") });
+    const log = quietLog();
+    const result = await ask(harness, { response_format: { type: "json_object" } }, { log });
+
+    expect(result.response.status).toBe(200);
+    expect((await jsonOf(result)).choices[0].message.content).toBe("Sure! Here is the person you asked for.");
+    expect(harness.state.generation).toBe(2);
+    expect(log.warn).toHaveBeenCalledWith(
+      "GEMINI-WEB",
+      "Gemini reply still does not match response_format after one repair attempt; returning the raw reply: " +
+        "the reply is not valid JSON"
+    );
+  });
+
+  it("returns the raw first reply when the repair request fails", async () => {
+    const harness = googleTransport({
+      generate: (_call, state) =>
+        state.generation === 1 ? answerResponse([answerFrame("Not JSON.")]) : new Response("", { status: 429 }),
+    });
+    const log = quietLog();
+    const result = await ask(harness, { response_format: { type: "json_object" } }, { log });
+
+    expect(result.response.status).toBe(200);
+    expect((await jsonOf(result)).choices[0].message.content).toBe("Not JSON.");
+    expect(log.warn.mock.calls[0][1]).toMatch(/^response_format repair request failed; returning the raw reply: /);
+  });
+
+  it("reports a cancellation during the repair as 499, not as the raw reply", async () => {
+    const controller = new AbortController();
+    const harness = googleTransport({
+      generate: (_call, state) => {
+        if (state.generation === 1) return answerResponse([answerFrame("Not JSON.")]);
+        controller.abort();
+        throw new DOMException("aborted", "AbortError");
+      },
+    });
+    const result = await ask(harness, { response_format: { type: "json_object" } }, { signal: controller.signal });
+
+    expect(result.response.status).toBe(499);
+  });
+
+  it("ignores text, unknown and missing response_format types", async () => {
+    for (const response_format of [{ type: "text" }, { type: "xml" }, "json_object", null]) {
+      const harness = googleTransport({ generate: replies("The answer is 42.") });
+      const result = await ask(harness, { response_format });
+
+      expect((await jsonOf(result)).choices[0].message.content).toBe("The answer is 42.");
+      expect(promptAt(harness, 0)).toBe("Invent a person.");
+      expect(harness.state.generation).toBe(1);
+    }
+  });
+
+  it("keeps images out of a JSON reply but returns them when there is no text", async () => {
+    const withText = googleTransport({
+      generate: () => answerResponse([imageFrame({ url: GENERATED_URL, text: PERSON_JSON })]),
+    });
+    expect((await jsonOf(await ask(withText, { response_format: { type: "json_object" } }))).choices[0].message.content).toBe(
+      PERSON_JSON
+    );
+
+    const imageOnly = googleTransport({ generate: () => answerResponse([imageFrame({ url: GENERATED_URL })]) });
+    const content = (await jsonOf(await ask(imageOnly, { response_format: { type: "json_object" } }))).choices[0].message
+      .content;
+    expect(content).toBe(`![Generated image 1](<${GENERATED_URL}>)`);
+    expect(imageOnly.state.generation).toBe(1);
+  });
+
+  it("uses the JSON-mode prompt, not the bridge, when tool_choice is none", async () => {
+    const harness = googleTransport({ generate: replies(PERSON_JSON) });
+    await ask(harness, { response_format: { type: "json_object" }, tools: [DONE], tool_choice: "none" });
+
+    expect(promptAt(harness, 0)).toBe(buildJSONModePrompt("Invent a person.", { schema: null }));
+  });
+
+  it("does not ask for JSON again after a tool call", async () => {
+    const harness = googleTransport({ generate: replies('{"tool_calls":[{"name":"done","arguments":{"answer":"x"}}]}') });
+    const result = await ask(harness, {
+      response_format: { type: "json_object" },
+      tools: [DONE],
+      tool_choice: { type: "function", function: { name: "done" } },
+    });
+
+    const payload = await jsonOf(result);
+    expect(payload.choices[0].finish_reason).toBe("tool_calls");
+    expect(payload.choices[0].message.content).toBeNull();
+    expect(harness.state.generation).toBe(1);
+    expect(promptAt(harness, 0)).toContain('"content" must be the reply itself as a JSON object (not a string)');
+  });
+
+  it("unwraps a JSON object given as the bridge content", async () => {
+    for (const response_format of [{ type: "json_object" }, PERSON_FORMAT]) {
+      const harness = googleTransport({ generate: replies(`{"content":${PERSON_JSON}}`) });
+      const result = await ask(harness, { response_format, tools: [DONE] });
+
+      expect((await jsonOf(result)).choices[0].message.content).toBe(PERSON_JSON);
+      expect(harness.state.generation).toBe(1);
+    }
+  });
+
+  it("repairs bridge content with one more turn", async () => {
+    const harness = googleTransport({ generate: replies('{"content":"Sure, here you go."}', '{"content":"{\\"ok\\":true}"}') });
+    const result = await ask(harness, { response_format: { type: "json_object" }, tools: [DONE] });
+
+    expect((await jsonOf(result)).choices[0].message.content).toBe('{"ok":true}');
+    expect(harness.state.generation).toBe(2);
+    expect(promptAt(harness, 1).startsWith(promptAt(harness, 0))).toBe(true);
+    expect(promptAt(harness, 1)).toContain("Your previous reply could not be used: the reply is not valid JSON.");
+  });
+
+  it("spends one turn on a bridge repair, even when that reply is an unusable call", async () => {
+    const harness = googleTransport({
+      generate: replies('{"content":"Sure, here you go."}', '{"tool_calls":[{"name":"done","arguments":{}}]}'),
+    });
+    const result = await ask(harness, { response_format: { type: "json_object" }, tools: [DONE] });
+
+    expect((await jsonOf(result)).choices[0].message.content).toBe("Sure, here you go.");
+    expect(harness.state.generation).toBe(2);
+  });
+
+  it("streams the clean JSON as one content delta", async () => {
+    const harness = googleTransport({ generate: replies("Here you go:\n```json\n" + PERSON_JSON + "\n```") });
+    const result = await executeWith(harness, {
+      stream: true,
+      body: chatBody([userText("Invent a person.")], { stream: true, response_format: PERSON_FORMAT }),
+    });
+
+    const { chunks, done } = await readSse(result);
+    expect(done).toBe(true);
+    expect(streamedContent(chunks)).toBe(PERSON_JSON);
+    expect(chunks.at(-1).choices[0].finish_reason).toBe("stop");
   });
 });
 

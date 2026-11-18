@@ -57,7 +57,18 @@ Gemini Web has no function calling of its own, so OpenAI function tools go throu
 - With tools on, the reply is read in full before it is returned, because a tool call is known only once the JSON is complete. Streaming clients then get the reasoning, the tool calls or text, and the finish chunk together.
 - A tool that is not a named function tool, a forced tool name that was not declared, and the legacy `functions` field are rejected with 400 before any Google request.
 
-This depends on Gemini following the JSON format. It is less reliable than native function calling, especially with many or complex tools. `response_format` is not applied, with or without tools.
+This depends on Gemini following the JSON format. It is less reliable than native function calling, especially with many or complex tools.
+
+### JSON mode (`response_format`)
+
+Gemini Web has no JSON mode, so `response_format` is best-effort, ported from gemini-web-to-api (#110).
+
+- `{"type":"json_object"}` asks for one JSON object. `{"type":"json_schema","json_schema":{"schema":{...}}}` asks for a value that matches the schema. `text`, unknown types, and a missing field change nothing.
+- The prompt asks for JSON only. The reply is checked: a code fence and prose around the JSON are removed. `json_object` needs an object. `json_schema` needs the schema's top-level `type` and its `required` keys; nothing deeper is checked, and a schema that cannot be read only needs valid JSON.
+- An unusable reply is asked for once more, with the reason. If that reply is still unusable, or the repair turn fails, the first reply is returned as it came, with a warning in the log. The repair is one more turn on the account.
+- With tools, the tool bridge prompt carries the rule instead: a text reply puts the JSON itself in `content`. A tool call is returned as is and skips JSON mode. A repair is one turn, and a tool call in it is not used.
+- The reply is read in full before it is returned, also for streaming clients. Generated image links are left out when there is JSON text, because they would break it.
+- Only OpenAI chat clients can ask for it. Claude, Gemini, and Responses clients have no field that 9router translates into `response_format`.
 
 Video, music, Canvas, and Deep Research are not supported.
 

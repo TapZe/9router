@@ -38,6 +38,12 @@ import {
 } from "./gemini-web/media.js";
 import { GEMINI_WEB_TASK, resolveGeminiModel } from "./gemini-web/models.js";
 import {
+  buildJSONModePrompt,
+  parseResponseFormat,
+  repairJSONPrompt,
+  validateJSONReply,
+} from "./gemini-web/jsonMode.js";
+import {
   GEMINI_WEB_INVALID_TOOL_CALL_CODE,
   MAX_TOOL_BRIDGE_ATTEMPTS,
   buildToolBridgePrompt,
@@ -431,39 +437,87 @@ function invalidToolCallError(reason) {
   );
 }
 
-/** One bridged turn: send, read the whole answer, check the model, parse. */
-async function bridgedTurn({ bridge, prompt, sendTurn, collect, routing, requestedModel, turn }) {
-  const upstream = await sendTurn(prompt);
-  turn.accepted = true;
-  const collected = await collect(upstream.body);
-  if (collected.modelId && collected.modelId !== routing.modelId) {
-    throw modelMismatchError(requestedModel);
-  }
-  return { collected, ...parseToolBridgeOutput(bridge, collected.text) };
-}
-
 /**
  * Ask Gemini for a tool-bridge reply, and ask again with the reason while the
  * reply has no usable tool call. A call is never made up: after the last
  * attempt the request fails with 502, as in gemini-web-to-api.
  */
-async function runToolBridge({ bridge, prompt, log, ...context }) {
-  const bridgePrompt = buildToolBridgePrompt(bridge, prompt);
-  let attemptPrompt = bridgePrompt;
+async function runToolBridge({ bridge, prompt, readTurn, log }) {
+  let attemptPrompt = prompt;
   let reason;
   for (let attempt = 1; attempt <= MAX_TOOL_BRIDGE_ATTEMPTS; attempt += 1) {
-    const outcome = await bridgedTurn({ bridge, prompt: attemptPrompt, ...context });
-    if (!outcome.error) {
-      if (outcome.calls.length === 0 && !outcome.content) {
-        throw upstreamError("Gemini Web did not return an answer");
-      }
-      return outcome;
-    }
+    const collected = await readTurn(attemptPrompt);
+    const outcome = { collected, ...parseToolBridgeOutput(bridge, collected.text) };
+    if (!outcome.error) return outcome;
     reason = outcome.error;
     log?.debug?.("GEMINI-WEB", `Unusable tool-bridge reply (attempt ${attempt}): ${reason}`);
-    attemptPrompt = toolBridgeRetryPrompt(bridgePrompt, reason);
+    attemptPrompt = toolBridgeRetryPrompt(prompt, reason);
   }
   throw invalidToolCallError(reason);
+}
+
+/** A JSON-mode answer without tools: its text. */
+async function jsonModeTurn({ prompt, readTurn }) {
+  const collected = await readTurn(prompt);
+  return { collected, calls: [], content: collected.text.trim() };
+}
+
+/**
+ * Check a text reply against response_format and repair it once. A repair is
+ * another turn on the account, so a reply still unusable after it, or a
+ * repair that fails, returns the raw reply, as in gemini-web-to-api.
+ * Cancellation is not a failed repair.
+ */
+async function ensureJSONReply({ jsonMode, prompt, reply, regenerate, signal, log }) {
+  const first = validateJSONReply(reply, jsonMode);
+  if (!first.error) return first.json;
+  log?.debug?.("GEMINI-WEB", `response_format reply was not usable: ${first.error}`);
+
+  let repaired;
+  try {
+    repaired = await regenerate(repairJSONPrompt(prompt, jsonMode, first.error));
+  } catch (error) {
+    if (signal?.aborted || error?.name === "AbortError") throw error;
+    log?.warn?.("GEMINI-WEB", `response_format repair request failed; returning the raw reply: ${safeMessage(error)}`);
+    return reply;
+  }
+  const second = validateJSONReply(repaired, jsonMode);
+  if (!second.error) return second.json;
+  log?.warn?.(
+    "GEMINI-WEB",
+    `Gemini reply still does not match response_format after one repair attempt; returning the raw reply: ${second.error}`
+  );
+  return reply;
+}
+
+/** One repair turn: the bridge's text content, or the plain text. A tool call in it is not used. */
+function repairTurn(bridge, readTurn) {
+  return async (prompt) => {
+    const { text } = await readTurn(prompt);
+    if (!bridge) return text;
+    const outcome = parseToolBridgeOutput(bridge, text);
+    if (outcome.error) throw new Error(outcome.error);
+    return outcome.content;
+  };
+}
+
+/**
+ * The whole answer of a buffered turn (tools or response_format): tool calls
+ * or text, with the text checked against response_format.
+ */
+async function bufferedAnswer({ request, readTurn, signal, log }) {
+  const { bridge, jsonMode, prompt } = request;
+  const outcome = bridge
+    ? await runToolBridge({ bridge, prompt, readTurn, log })
+    : await jsonModeTurn({ prompt, readTurn });
+  if (jsonMode && outcome.calls.length === 0 && outcome.content) {
+    const regenerate = repairTurn(bridge, readTurn);
+    outcome.content = await ensureJSONReply({ jsonMode, prompt, reply: outcome.content, regenerate, signal, log });
+  }
+  // Image links would break a JSON reply, so they only stand in for missing text.
+  if (!bridge && !outcome.content) outcome.content = composeContent("", outcome.collected.images);
+  if (outcome.calls.length === 0 && !outcome.content) throw upstreamError("Gemini Web did not return an answer");
+  return outcome;
 }
 
 function completionPayload({ message, finishReason, reportedModel, usage }) {
@@ -543,6 +597,13 @@ function imageTaskModel(models) {
 
 // ─── Execute stages ─────────────────────────────────────────────────────────
 
+/** The prompt Gemini gets: the tool bridge owns the reply format when there are tools. */
+function turnPrompt(basePrompt, bridge, jsonMode) {
+  if (bridge) return buildToolBridgePrompt(bridge, basePrompt, jsonMode);
+  if (jsonMode) return buildJSONModePrompt(basePrompt, jsonMode);
+  return basePrompt;
+}
+
 function noUserMessageError() {
   return geminiWebError("No user message found", {
     status: 400,
@@ -566,11 +627,13 @@ function prepareRequest(requestBody, requestedModel, log) {
   const { cleanModel } = parseModelSuffix(requestedModel);
   try {
     const bridge = parseToolBridge(requestBody);
+    const jsonMode = parseResponseFormat(requestBody);
     const flattened = flattenMessages(requestBody.messages);
-    const prompt = promptFromTurns(flattened.turns);
-    if (!prompt || !flattened.hasUserTurn) throw noUserMessageError();
+    const basePrompt = promptFromTurns(flattened.turns);
+    if (!basePrompt || !flattened.hasUserTurn) throw noUserMessageError();
     const inputImages = decodeInputImages(flattened.images);
-    return { requestBody, requestedModel, cleanModel, prompt, bridge, inputImages };
+    const prompt = turnPrompt(basePrompt, bridge, jsonMode);
+    return { requestBody, requestedModel, cleanModel, prompt, bridge, jsonMode, inputImages };
   } catch (error) {
     return { failure: errorResponse(error) };
   }
@@ -675,20 +738,28 @@ async function plainCompletion(context) {
   );
 }
 
-/** A tool-bridge completion: every attempt read in full, then JSON or SSE. */
-async function bridgedCompletion({ request, account, sendTurn, turn, signal, log, wantsStream, includeUsage }) {
+/**
+ * One buffered turn on the account: send, read the whole answer, check the
+ * model. Once Google accepted a turn the request is never replayed.
+ */
+function turnReader({ sendTurn, turn, signal, account, request }) {
+  return async (prompt) => {
+    const upstream = await sendTurn(prompt);
+    turn.accepted = true;
+    const collected = await collectEvents(upstream.body, { signal, knownModelIds: account.knownModelIds });
+    if (collected.modelId && collected.modelId !== account.routing.modelId) {
+      throw modelMismatchError(request.cleanModel);
+    }
+    return collected;
+  };
+}
+
+/** A buffered completion (tools or response_format): read in full, then JSON or SSE. */
+async function bufferedCompletion({ request, account, sendTurn, turn, signal, log, wantsStream, includeUsage }) {
   let outcome;
   try {
-    outcome = await runToolBridge({
-      bridge: request.bridge,
-      prompt: request.prompt,
-      sendTurn,
-      collect: (body) => collectEvents(body, { signal, knownModelIds: account.knownModelIds }),
-      routing: account.routing,
-      requestedModel: request.cleanModel,
-      turn,
-      log,
-    });
+    const readTurn = turnReader({ sendTurn, turn, signal, account, request });
+    outcome = await bufferedAnswer({ request, readTurn, signal, log });
   } catch (error) {
     return turnFailure(error, signal, turn);
   }
@@ -724,8 +795,8 @@ async function completeTurn({ request, account, requestBody, wantsStream, signal
     });
   const includeUsage = Boolean(requestBody.stream_options?.include_usage);
 
-  if (request.bridge) {
-    return bridgedCompletion({ request, account, sendTurn, turn, signal, log, wantsStream, includeUsage });
+  if (request.bridge || request.jsonMode) {
+    return bufferedCompletion({ request, account, sendTurn, turn, signal, log, wantsStream, includeUsage });
   }
 
   let upstream;
