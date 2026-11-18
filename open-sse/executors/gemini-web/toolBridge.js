@@ -11,6 +11,7 @@
 import { randomUUID } from "node:crypto";
 
 import { unsupportedControl } from "./config.js";
+import { balancedObjectAt, isObject, parseLenientJson, text } from "./jsonText.js";
 
 /** Gemini is asked at most this many times for a usable tool-bridge reply. */
 export const MAX_TOOL_BRIDGE_ATTEMPTS = 3;
@@ -22,14 +23,6 @@ export const GEMINI_WEB_INVALID_TOOL_CALL_CODE = "gemini_web_invalid_tool_call";
 const CHOICE_MODES = new Set(["none", "required"]);
 
 // ─── Request ────────────────────────────────────────────────────────────────
-
-function text(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function isObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 /**
  * OpenAI `tool_choice` as one of none, auto, required or function. Anything
@@ -138,62 +131,6 @@ export function toolBridgeRetryPrompt(prompt, reason) {
 }
 
 // ─── Reply ──────────────────────────────────────────────────────────────────
-
-/** Scan state for JSON string literals: inside a string, and after a backslash. */
-function stepString(state, ch) {
-  if (state.escaped) state.escaped = false;
-  else if (ch === "\\") state.escaped = true;
-  else if (ch === '"') state.inString = false;
-}
-
-/** The balanced `{...}` that starts at `start`, or "" when it never closes. */
-function balancedObjectAt(value, start) {
-  const state = { inString: false, escaped: false };
-  let depth = 0;
-  for (let i = start; i < value.length; i += 1) {
-    const ch = value[i];
-    if (state.inString) stepString(state, ch);
-    else if (ch === '"') state.inString = true;
-    else if (ch === "{") depth += 1;
-    else if (ch === "}" && --depth === 0) return value.slice(start, i + 1);
-  }
-  return "";
-}
-
-/** A \uXXXX escape parses to the same character as \n, \r or \t would. */
-function escapeControl(ch) {
-  return `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
-}
-
-/** Escape raw control characters inside JSON string literals. */
-function escapeStringControlChars(value) {
-  const state = { inString: false, escaped: false };
-  let out = "";
-  for (const ch of value) {
-    if (!state.inString) {
-      if (ch === '"') state.inString = true;
-      out += ch;
-    } else if (!state.escaped && ch < " ") {
-      out += escapeControl(ch);
-    } else {
-      stepString(state, ch);
-      out += ch;
-    }
-  }
-  return out;
-}
-
-function parseLenientJson(value) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    try {
-      return JSON.parse(escapeStringControlChars(value));
-    } catch {
-      return undefined;
-    }
-  }
-}
 
 function payloadContent(content) {
   if (content === undefined || content === null) return "";
