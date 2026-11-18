@@ -54,7 +54,9 @@ Gemini Web has no function calling of its own, so OpenAI function tools go throu
 - `tool_choice` supports `auto`, `none`, `required`, and `{"type":"function","function":{"name":...}}`. With `none`, the tools are left out of the prompt.
 - 9router never makes up a call. If a reply cannot be used, Gemini is asked again with the reason, up to three turns in total. Then the request fails with 502 and code `gemini_web_invalid_tool_call`. Every attempt is a separate turn on the account. An empty answer, such as `{"content":""}`, fails with 502, as an empty plain answer does.
 - Earlier tool calls and tool results in the history are written into the prompt as `[Call Tool: name with ID id and Input: args]` and `[Tool Result for ID id]: result`. The whole history is sent on every turn.
-- With tools on, the reply is read in full before it is returned, because a tool call is known only once the JSON is complete. Streaming clients then get the reasoning, the tool calls or text, and the finish chunk together.
+- With tools on, the reply is read in full before it is returned, because a tool call is known only once the JSON is complete. Streaming clients get the role chunk once Google accepts the first turn, then an SSE comment `: keep-alive` every 15 seconds while Gemini works, then the reasoning, the tool calls or text, and the finish chunk together. The comment stops when the reply is sent, on an error, and when the client cancels; a cancel also stops the Google request.
+- On a stream, a first turn that Google rejects still returns its HTTP status. A failure after that, such as `gemini_web_invalid_tool_call`, ends the stream with an error chunk under HTTP 200, as a failure in a plain stream does.
+- OpenAI clients get the comment as is and skip it. Claude, Gemini, and Responses clients do not get it, because 9router's translator only forwards `data:` lines; it still counts as activity for 9router's own stall timer.
 - A tool that is not a named function tool, a forced tool name that was not declared, and the legacy `functions` field are rejected with 400 before any Google request.
 
 This depends on Gemini following the JSON format. It is less reliable than native function calling, especially with many or complex tools.
@@ -67,7 +69,7 @@ Gemini Web has no JSON mode, so `response_format` is best-effort, ported from ge
 - The prompt asks for JSON only. The reply is checked: a code fence and prose around the JSON are removed. `json_object` needs an object. `json_schema` needs the schema's top-level `type` and its `required` keys; nothing deeper is checked, and a schema that cannot be read only needs valid JSON.
 - An unusable reply is asked for once more, with the reason. If that reply is still unusable, or the repair turn fails, the first reply is returned as it came, with a warning in the log. The repair is one more turn on the account.
 - With tools, the tool bridge prompt carries the rule instead: a text reply puts the JSON itself in `content`. A tool call is returned as is and skips JSON mode. A repair is one turn, and a tool call in it is not used.
-- The reply is read in full before it is returned, also for streaming clients. Generated image links are left out when there is JSON text, because they would break it.
+- The reply is read in full before it is returned, also for streaming clients, which get the same heartbeat as with tools. Generated image links are left out when there is JSON text, because they would break it.
 - Only OpenAI chat clients can ask for it. Claude, Gemini, and Responses clients have no field that 9router translates into `response_format`.
 
 Video, music, Canvas, and Deep Research are not supported.

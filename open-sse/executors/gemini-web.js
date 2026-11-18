@@ -554,10 +554,18 @@ function toolBridgeMessage({ calls, content, collected }) {
   return message;
 }
 
-/** The whole bridged reply as SSE: it is only known once Gemini finished. */
-function toolBridgeSse({ message, finishReason, usage, reportedModel, includeUsage }) {
-  const { chunk, usageChunk } = completionChunks(reportedModel);
-  const events = [chunk({ role: "assistant", content: "" })];
+/** The finished buffered reply: message, finish reason and usage. */
+function bufferedReply(outcome, requestBody) {
+  const message = toolBridgeMessage(outcome);
+  const finishReason = outcome.calls.length > 0 ? "tool_calls" : "stop";
+  const output = outcome.calls.length > 0 ? JSON.stringify(outcome.calls) : outcome.content;
+  const usage = usagePayload(outcome.collected.usage, requestBody, output.length + outcome.collected.reasoning.length);
+  return { message, finishReason, usage };
+}
+
+/** The buffered reply as SSE chunks after the role chunk: it is only known once Gemini finished. */
+function bufferedChunks({ message, finishReason, usage }, { chunk, usageChunk, includeUsage }) {
+  const events = [];
   if (message.reasoning_content) events.push(chunk({ reasoning_content: message.reasoning_content }));
   if (message.tool_calls) {
     message.tool_calls.forEach((call, index) => events.push(chunk({ tool_calls: [{ index, ...call }] })));
@@ -566,20 +574,10 @@ function toolBridgeSse({ message, finishReason, usage, reportedModel, includeUsa
   }
   events.push(chunk({}, finishReason));
   if (includeUsage) events.push(usageChunk(usage));
-  const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + SSE_DONE;
-  return new Response(body, { status: 200, headers: { ...SSE_HEADERS_NO_BUFFER } });
+  return events;
 }
 
-function toolBridgeResponse({ outcome, wantsStream, requestBody, reportedModel, includeUsage }) {
-  const message = toolBridgeMessage(outcome);
-  const finishReason = outcome.calls.length > 0 ? "tool_calls" : "stop";
-  const output = outcome.calls.length > 0 ? JSON.stringify(outcome.calls) : outcome.content;
-  const usage = usagePayload(
-    outcome.collected.usage,
-    requestBody,
-    output.length + outcome.collected.reasoning.length
-  );
-  if (wantsStream) return toolBridgeSse({ message, finishReason, usage, reportedModel, includeUsage });
+function bufferedJson({ message, finishReason, usage }, reportedModel) {
   return new Response(JSON.stringify(completionPayload({ message, finishReason, reportedModel, usage })), {
     status: 200,
     headers: { "Content-Type": "application/json" },
@@ -740,11 +738,15 @@ async function plainCompletion(context) {
 
 /**
  * One buffered turn on the account: send, read the whole answer, check the
- * model. Once Google accepted a turn the request is never replayed.
+ * model. Once Google accepted a turn the request is never replayed. The first
+ * turn is already sent when the reader is made, so the caller can still
+ * answer a rejected first turn with its HTTP status.
  */
-function turnReader({ sendTurn, turn, signal, account, request }) {
+function turnReader({ first, sendTurn, turn, signal, account, request }) {
+  let pending = first;
   return async (prompt) => {
-    const upstream = await sendTurn(prompt);
+    const upstream = pending || (await sendTurn(prompt, signal));
+    pending = null;
     turn.accepted = true;
     const collected = await collectEvents(upstream.body, { signal, knownModelIds: account.knownModelIds });
     if (collected.modelId && collected.modelId !== account.routing.modelId) {
@@ -754,24 +756,83 @@ function turnReader({ sendTurn, turn, signal, account, request }) {
   };
 }
 
-/** A buffered completion (tools or response_format): read in full, then JSON or SSE. */
+/**
+ * Seconds a buffered stream may sit silent. Gemini can think for minutes
+ * before a bridged reply exists; the comment keeps proxies and clients from
+ * timing out. OpenAI clients skip SSE comment lines.
+ */
+const BUFFERED_HEARTBEAT_MS = 15 * 1000;
+const SSE_HEARTBEAT = "keep-alive";
+
+/**
+ * A buffered reply streamed to the client: the role chunk at once, a
+ * heartbeat comment while Gemini works, then the whole reply. A failure after
+ * this point ends the stream with an error chunk, like a plain stream.
+ */
+function bufferedStream({ answer, cancel, signal, requestBody, reportedModel, includeUsage }) {
+  const chunks = { ...completionChunks(reportedModel), includeUsage };
+  const state = { closed: false, heartbeat: null };
+  const stopHeartbeat = () => clearInterval(state.heartbeat);
+
+  const readable = new ReadableStream(
+    {
+      async start(controller) {
+        const { send, comment, done, finish } = sseWriter(controller, state);
+        send(chunks.chunk({ role: "assistant", content: "" }));
+        state.heartbeat = setInterval(() => comment(SSE_HEARTBEAT), BUFFERED_HEARTBEAT_MS);
+        try {
+          const reply = bufferedReply(await answer(), requestBody);
+          for (const payload of bufferedChunks(reply, chunks)) send(payload);
+          done();
+        } catch (error) {
+          send(streamErrorPayload(error, signal));
+        } finally {
+          stopHeartbeat();
+          finish();
+        }
+      },
+      cancel(reason) {
+        state.closed = true;
+        stopHeartbeat();
+        cancel.abort(reason);
+      },
+    },
+    { highWaterMark: 16384 }
+  );
+  return new Response(readable, { status: 200, headers: { ...SSE_HEADERS_NO_BUFFER } });
+}
+
+/**
+ * A buffered completion (tools or response_format): Gemini's reply is read in
+ * full before it is checked and shaped. The first turn is sent before
+ * anything is answered, so a rejected turn keeps its HTTP status and stays
+ * retryable.
+ */
 async function bufferedCompletion({ request, account, sendTurn, turn, signal, log, wantsStream, includeUsage }) {
-  let outcome;
+  const cancel = new AbortController();
+  const turnSignal = signal ? AbortSignal.any([signal, cancel.signal]) : cancel.signal;
+  let first;
   try {
-    const readTurn = turnReader({ sendTurn, turn, signal, account, request });
-    outcome = await bufferedAnswer({ request, readTurn, signal, log });
+    first = await sendTurn(request.prompt, turnSignal);
   } catch (error) {
     return turnFailure(error, signal, turn);
   }
-  return markNonReplayableResponse(
-    toolBridgeResponse({
-      outcome,
-      wantsStream,
-      requestBody: request.requestBody,
-      reportedModel: account.reportedModel,
-      includeUsage,
-    })
-  );
+  const readTurn = turnReader({ first, sendTurn, turn, signal: turnSignal, account, request });
+  const answer = () => bufferedAnswer({ request, readTurn, signal: turnSignal, log });
+  const { requestBody } = request;
+  const { reportedModel } = account;
+
+  if (wantsStream) {
+    const stream = bufferedStream({ answer, cancel, signal: turnSignal, requestBody, reportedModel, includeUsage });
+    return markNonReplayableResponse(stream);
+  }
+  let outcome;
+  try {
+    outcome = await answer();
+  } catch (error) {
+    return turnFailure(error, signal, turn);
+  }
+  return markNonReplayableResponse(bufferedJson(bufferedReply(outcome, requestBody), reportedModel));
 }
 
 /**
@@ -781,14 +842,14 @@ async function bufferedCompletion({ request, account, sendTurn, turn, signal, lo
  */
 async function completeTurn({ request, account, requestBody, wantsStream, signal, log, proxyOptions, transport }) {
   const turn = { dispatched: false, accepted: false };
-  const sendTurn = (turnPrompt) =>
+  const sendTurn = (turnPrompt, turnSignal = signal) =>
     sendGeminiWebTurn({
       resolved: account.resolved,
       routing: account.routing,
       prompt: turnPrompt,
       inputImages: request.inputImages,
       thinkingLevel: resolveRequestedThinking(requestBody, request.requestedModel),
-      signal,
+      signal: turnSignal,
       proxyOptions,
       transport,
       turn,
@@ -1039,6 +1100,7 @@ function sseWriter(controller, state) {
   };
   return {
     send: (payload) => write(`data: ${JSON.stringify(payload)}\n\n`),
+    comment: (text) => write(`: ${text}\n\n`),
     done: () => write(SSE_DONE),
     finish: () => {
       if (state.closed) return;

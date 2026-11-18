@@ -985,6 +985,167 @@ describe("Gemini Web JSON mode", () => {
   });
 });
 
+describe("Gemini Web buffered stream heartbeat", () => {
+  const LOOKUP = {
+    type: "function",
+    function: { name: "lookup", parameters: { type: "object", properties: { q: { type: "string" } }, required: ["q"] } },
+  };
+  const CALL_REPLY = '{"tool_calls":[{"name":"lookup","arguments":{"q":"gemini"}}]}';
+  const HEARTBEAT = ": keep-alive\n\n";
+
+  /** A Google answer body the test finishes by hand. */
+  function heldAnswer() {
+    const held = { cancelled: false };
+    held.response = new Response(
+      new ReadableStream({
+        start(controller) {
+          held.controller = controller;
+        },
+        cancel() {
+          held.cancelled = true;
+        },
+      }),
+      { status: 200 }
+    );
+    held.finish = (text) => {
+      held.controller.enqueue(new TextEncoder().encode(bodyText([answerFrame(text)])));
+      held.controller.close();
+    };
+    return held;
+  }
+
+  /** Reads the raw SSE text as it arrives. */
+  function sseReader(result) {
+    const reader = result.response.body.getReader();
+    const decoder = new TextDecoder();
+    let seen = "";
+    return {
+      reader,
+      next: async () => {
+        const { value, done } = await reader.read();
+        if (!done) seen += decoder.decode(value, { stream: true });
+        return done ? null : decoder.decode(value);
+      },
+      rest: async () => {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) return seen;
+          seen += decoder.decode(value, { stream: true });
+        }
+      },
+    };
+  }
+
+  const toolStream = (harness, extra = {}) =>
+    executeWith(harness, {
+      stream: true,
+      body: chatBody([userText("Define gemini")], { stream: true, tools: [LOOKUP], ...extra }),
+    });
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("sends an SSE comment every 15 seconds while the reply is buffered, then the reply", async () => {
+    const held = heldAnswer();
+    const harness = googleTransport({ generate: () => held.response });
+    const result = await toolStream(harness);
+    expect(result.response.status).toBe(200);
+    expect(isNonReplayableResponse(result.response)).toBe(true);
+
+    const sse = sseReader(result);
+    expect(JSON.parse((await sse.next()).slice(6)).choices[0].delta).toEqual({ role: "assistant", content: "" });
+    vi.advanceTimersByTime(14999);
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(await sse.next()).toBe(HEARTBEAT);
+    vi.advanceTimersByTime(15000);
+    expect(await sse.next()).toBe(HEARTBEAT);
+
+    held.finish(CALL_REPLY);
+    const text = await sse.rest();
+    const data = text.split("\n\n").filter((line) => line.startsWith("data: "));
+    expect(data.at(-1)).toBe("data: [DONE]");
+    expect(JSON.parse(data.at(-3).slice(6)).choices[0].delta.tool_calls[0].function.arguments).toBe('{"q":"gemini"}');
+    expect(JSON.parse(data.at(-2).slice(6)).choices[0].finish_reason).toBe("tool_calls");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops the heartbeat when the reply fails", async () => {
+    const held = heldAnswer();
+    const harness = googleTransport({ generate: () => held.response });
+    const sse = sseReader(await toolStream(harness));
+
+    await sse.next();
+    vi.advanceTimersByTime(15000);
+    expect(await sse.next()).toBe(HEARTBEAT);
+    held.controller.error(new Error("socket reset"));
+
+    const text = await sse.rest();
+    expect(text).not.toContain("[DONE]");
+    expect(JSON.parse(text.trim().split("\n\n").at(-1).slice(6)).error.type).toBe("upstream_error");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops the heartbeat and Google's stream when the client cancels", async () => {
+    const held = heldAnswer();
+    const harness = googleTransport({ generate: () => held.response });
+    const sse = sseReader(await toolStream(harness));
+
+    await sse.next();
+    vi.advanceTimersByTime(15000);
+    expect(await sse.next()).toBe(HEARTBEAT);
+    await sse.reader.cancel("client went away");
+    await vi.waitFor(() => expect(held.cancelled).toBe(true));
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(harness.state.generation).toBe(1);
+  });
+
+  it("ends the stream with the invalid tool call error after three attempts", async () => {
+    const harness = googleTransport({ generate: () => answerResponse([answerFrame("No call.")]) });
+    const result = await toolStream(harness, { tool_choice: "required" });
+
+    const { chunks, done } = await readSse(result);
+    expect(result.response.status).toBe(200);
+    expect(done).toBe(false);
+    expect(chunks.at(-1).error).toMatchObject({ code: "gemini_web_invalid_tool_call", type: "upstream_error" });
+    expect(harness.state.generation).toBe(3);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("returns a rejected first turn as an HTTP error, before any stream starts", async () => {
+    const harness = googleTransport({ generate: () => new Response("", { status: 429 }) });
+    const result = await toolStream(harness);
+
+    expect(result.response.status).toBe(429);
+    expect(result.response.headers.get("content-type")).toContain("application/json");
+    expect(isNonReplayableResponse(result.response)).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("sends no heartbeat on a plain stream", async () => {
+    const held = heldAnswer();
+    const harness = googleTransport({ generate: () => held.response });
+    const result = await executeWith(harness, { stream: true, body: chatBody([userText("Hi")], { stream: true }) });
+    const sse = sseReader(result);
+
+    await sse.next();
+    vi.advanceTimersByTime(60000);
+    expect(vi.getTimerCount()).toBe(0);
+    held.finish("Hello");
+
+    const text = await sse.rest();
+    expect(text).not.toContain(": keep-alive");
+    expect(text).toContain('"content":"Hello"');
+    expect(text.endsWith("data: [DONE]\n\n")).toBe(true);
+  });
+});
+
 describe("Gemini Web request contract", () => {
   it("rejects legacy functions and non-function tools before any upstream call", async () => {
     const harness = googleTransport();
