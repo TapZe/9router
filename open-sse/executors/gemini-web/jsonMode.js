@@ -133,12 +133,16 @@ function typeMatches(want, actual) {
   return want === actual || (want === "number" && actual === "integer");
 }
 
+function isKeyList(value) {
+  return Array.isArray(value) && value.every((key) => typeof key === "string");
+}
+
 /** The part of a schema that is checked, or null when it cannot be read. */
 function schemaShape(schema) {
   if (!isObject(schema)) return null;
   const { type = "", required = [] } = schema;
   if (type !== null && typeof type !== "string") return null;
-  if (required !== null && !(Array.isArray(required) && required.every((key) => typeof key === "string"))) return null;
+  if (required !== null && !isKeyList(required)) return null;
   return { type: text(type).toLowerCase(), required: required || [] };
 }
 

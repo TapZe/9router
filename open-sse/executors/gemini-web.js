@@ -252,6 +252,11 @@ function errorCode(status, error) {
   return GEMINI_WEB_UNSUPPORTED_CONTROL_CODE;
 }
 
+/** A client cancel or an aborted request, not an upstream failure. */
+function isAbort(error, signal) {
+  return Boolean(signal?.aborted || error?.name === "AbortError");
+}
+
 function errorResponse(error, { nonReplayable = false } = {}) {
   const status = errorStatus(error);
   const payload = {
@@ -422,7 +427,7 @@ async function sendGeminiWebTurn({
  * have, the request must not be replayed on another account.
  */
 function turnFailure(error, signal, turn) {
-  if (signal?.aborted || error?.name === "AbortError") return errorResponse(abortError());
+  if (isAbort(error, signal)) return errorResponse(abortError());
   return errorResponse(error, { nonReplayable: turn.accepted || mayHaveRun(error, turn) });
 }
 
@@ -473,14 +478,8 @@ async function ensureJSONReply({ jsonMode, prompt, reply, regenerate, signal, lo
   if (!first.error) return first.json;
   log?.debug?.("GEMINI-WEB", `response_format reply was not usable: ${first.error}`);
 
-  let repaired;
-  try {
-    repaired = await regenerate(repairJSONPrompt(prompt, jsonMode, first.error));
-  } catch (error) {
-    if (signal?.aborted || error?.name === "AbortError") throw error;
-    log?.warn?.("GEMINI-WEB", `response_format repair request failed; returning the raw reply: ${safeMessage(error)}`);
-    return reply;
-  }
+  const repaired = await repairJSONReply({ jsonMode, prompt, reason: first.error, regenerate, signal, log });
+  if (repaired === null) return reply;
   const second = validateJSONReply(repaired, jsonMode);
   if (!second.error) return second.json;
   log?.warn?.(
@@ -488,6 +487,17 @@ async function ensureJSONReply({ jsonMode, prompt, reply, regenerate, signal, lo
     `Gemini reply still does not match response_format after one repair attempt; returning the raw reply: ${second.error}`
   );
   return reply;
+}
+
+/** The repair turn's reply, or null when the repair request failed. */
+async function repairJSONReply({ jsonMode, prompt, reason, regenerate, signal, log }) {
+  try {
+    return await regenerate(repairJSONPrompt(prompt, jsonMode, reason));
+  } catch (error) {
+    if (isAbort(error, signal)) throw error;
+    log?.warn?.("GEMINI-WEB", `response_format repair request failed; returning the raw reply: ${safeMessage(error)}`);
+    return null;
+  }
 }
 
 /** One repair turn: the bridge's text content, or the plain text. A tool call in it is not used. */
@@ -665,7 +675,7 @@ async function resolveSession({ credentials, signal, log, proxyOptions, transpor
   try {
     return { resolved: await resolveGeminiWebSession(credentials, { signal, proxyOptions, transport }) };
   } catch (error) {
-    if (signal?.aborted || error?.name === "AbortError") return { failure: errorResponse(abortError()) };
+    if (isAbort(error, signal)) return { failure: errorResponse(abortError()) };
     log?.debug?.("GEMINI-WEB", `Bootstrap failed with HTTP ${errorStatus(error)}`);
     return { failure: errorResponse(error) };
   }
@@ -696,7 +706,7 @@ async function collectAnswer({ upstream, signal, account, request }) {
   try {
     collected = await collectEvents(upstream.body, { signal, knownModelIds: account.knownModelIds });
   } catch (error) {
-    if (signal?.aborted || error?.name === "AbortError") return { failure: errorResponse(abortError()) };
+    if (isAbort(error, signal)) return { failure: errorResponse(abortError()) };
     return { failure: errorResponse(error, { nonReplayable: true }) };
   }
   if (collected.modelId && collected.modelId !== account.routing.modelId) {
@@ -1073,7 +1083,7 @@ function closingChunks(acc, { chunk, usageChunk, includeUsage, requestBody }) {
 }
 
 function streamErrorPayload(error, signal) {
-  if (signal?.aborted || error?.name === "AbortError") {
+  if (isAbort(error, signal)) {
     return { error: { message: "The Gemini Web request was aborted", type: "aborted", code: ABORT_CODE } };
   }
   return {
