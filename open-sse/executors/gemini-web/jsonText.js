@@ -35,9 +35,11 @@ export function balancedObjectAt(value, start) {
   return "";
 }
 
-/** A \uXXXX escape parses to the same character as \n, \r or \t would. */
+const SHORT_ESCAPES = { "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+
+/** The JSON escape for a raw control character: \n, \r, \t, or \uXXXX. */
 function escapeControl(ch) {
-  return `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
+  return SHORT_ESCAPES[ch] ?? `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
 }
 
 /** Escape raw control characters inside JSON string literals. */
