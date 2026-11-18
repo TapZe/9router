@@ -74,9 +74,11 @@ function parses(doc) {
   }
 }
 
-/** `doc` when it is JSON, its escaped form when only raw control characters break it, else null. */
+/**
+ * `doc` with raw control characters in its strings escaped, when that is
+ * JSON, else null. Valid JSON has none, so it comes back as it was.
+ */
 function validJSON(doc) {
-  if (parses(doc)) return doc;
   const escaped = escapeStringControlChars(doc);
   return parses(escaped) ? escaped : null;
 }
