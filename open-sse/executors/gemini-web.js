@@ -802,7 +802,6 @@ function bufferedStream({ answer, cancel, signal, requestBody, reportedModel, in
         }
       },
       cancel(reason) {
-        state.closed = true;
         stopHeartbeat();
         cancel.abort(reason);
       },

@@ -12,9 +12,8 @@ import { balancedObjectAt, escapeStringControlChars, isObject, text } from "./js
 
 /** The JSON Schema in a json_schema block: OpenAI nests it under "schema". */
 function schemaDocument(block) {
-  if (block === undefined || block === null) return null;
   if (isObject(block) && block.schema !== undefined && block.schema !== null) return block.schema;
-  return block;
+  return block ?? null;
 }
 
 /**
@@ -79,7 +78,7 @@ function parses(doc) {
 function validJSON(doc) {
   if (parses(doc)) return doc;
   const escaped = escapeStringControlChars(doc);
-  return escaped !== doc && parses(escaped) ? escaped : null;
+  return parses(escaped) ? escaped : null;
 }
 
 /**
@@ -102,21 +101,12 @@ function topLevelObject(form) {
 /**
  * The JSON document in a reply, without a code fence or prose around it, or
  * null. The whole reply, with and then without its fence, is tried before any
- * object inside it.
+ * object inside it. The fence needs no second object scan: the objects inside
+ * it are found in the whole reply too.
  */
 export function extractJSONReply(reply) {
   const trimmed = reply.trim();
-  if (!trimmed) return null;
-  const forms = [...new Set([trimmed, stripCodeFence(trimmed)])];
-  for (const form of forms) {
-    const doc = validJSON(form);
-    if (doc) return doc;
-  }
-  for (const form of forms) {
-    const doc = topLevelObject(form);
-    if (doc) return doc;
-  }
-  return null;
+  return validJSON(trimmed) || validJSON(stripCodeFence(trimmed)) || topLevelObject(trimmed);
 }
 
 /** object, array, string, number, integer, boolean or null. */
@@ -137,9 +127,11 @@ function isKeyList(value) {
   return Array.isArray(value) && value.every((key) => typeof key === "string");
 }
 
-/** The part of a schema that is checked, or null when it cannot be read. */
+/**
+ * The part of a schema that is checked, or null when it cannot be read. A
+ * schema that is not an object has no type or required keys to check.
+ */
 function schemaShape(schema) {
-  if (!isObject(schema)) return null;
   const { type = "", required = [] } = schema;
   if (type !== null && typeof type !== "string") return null;
   if (required !== null && !isKeyList(required)) return null;

@@ -45,8 +45,8 @@ describe("Gemini Web response_format parsing", () => {
     const format = (json_schema) => parseResponseFormat({ response_format: { type: "json_schema", json_schema } });
     expect(format({ type: "array" })).toEqual({ schema: { type: "array" } });
     expect(format({ name: "p", schema: null })).toEqual({ schema: { name: "p", schema: null } });
-    expect(format(undefined)).toEqual({ schema: null });
-    expect(format(null)).toEqual({ schema: null });
+    expect(format(undefined)).toStrictEqual({ schema: null });
+    expect(format(null)).toStrictEqual({ schema: null });
   });
 });
 
@@ -106,6 +106,13 @@ describe("Gemini Web JSON reply extraction", () => {
     ["not JSON", "The answer is 42.", null],
     ["truncated object", '{"name":"Ada"', null],
     ["empty", "   ", null],
+    ["fenced array", "```json\n[1, 2]\n```", "[1, 2]"],
+    ["fenced array with the word json inside", '```\n["json"]\n```', '["json"]'],
+    ["fence that never closes", "```json\n[1, 2]", "[1, 2]"],
+    ["object at the start with prose after it", '{"a":1} is the answer', '{"a":1}'],
+    ["an object that never closes hides later ones", '{ this one never closes, but {"a":1} does', null],
+    ["spaces stay as they are when a newline is escaped", '{"a":"x y\nz"}', '{"a":"x y\\nz"}'],
+    ["raw newline in a string that is broken anyway", '{"a":"x\ny", oops}', null],
   ])("%s", (_name, reply, expected) => {
     expect(extractJSONReply(reply)).toBe(expected);
   });
@@ -142,6 +149,14 @@ describe("Gemini Web JSON reply check", () => {
     ["required keys need an object", '["x"]', { schema: { required: ["a", "b"] } }, fail("the reply is a JSON array, want a JSON object with a, b")],
     ["required keys without a type", '{"a":1}', { schema: { required: ["a"] } }, ok('{"a":1}')],
     ["invalid JSON fails before the schema is checked", "no json here", PERSON_MODE, fail("the reply is not valid JSON")],
+    ["an integer satisfies integer", "36", { schema: { type: "integer" } }, ok("36")],
+    ["an integer is not a string", "36", { schema: { type: "string" } }, fail("the reply is a JSON integer, want string")],
+    ["a string is not a number", '"x"', { schema: { type: "number" } }, fail("the reply is a JSON string, want number")],
+    ["a null type still checks required keys", '["x"]', { schema: { type: null, required: ["a"] } }, fail("the reply is a JSON array, want a JSON object with a")],
+    ["a type it cannot read skips required keys", '["x"]', { schema: { type: 5, required: ["a"] } }, ok('["x"]')],
+    ["a null required list still checks the type", '["x"]', { schema: { type: "object", required: null } }, fail("the reply is a JSON array, want object")],
+    ["a required list with a non-string is not checked", '{"a":1}', { schema: { required: [1] } }, ok('{"a":1}')],
+    ["json_schema without a schema needs an object", '["x"]', { schema: null }, fail("the reply is a JSON array, not a JSON object")],
   ])("%s", (_name, reply, jsonMode, expected) => {
     expect(validateJSONReply(reply, jsonMode)).toEqual(expected);
   });

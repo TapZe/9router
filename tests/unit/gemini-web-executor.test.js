@@ -741,6 +741,16 @@ describe("Gemini Web tool calling", () => {
     expect(harness.state.generation).toBe(1);
   });
 
+  it("accepts a bridged reply that names the routed model", async () => {
+    const payload = answerPayload(CALL_REPLY);
+    payload[3] = { model: AUTO_ENTRY.modelId };
+    const harness = googleTransport({ generate: () => answerResponse([payloadFrame(payload)]) });
+    const result = await executeWith(harness, { body: chatBody([userText("Define gemini")], { tools: [LOOKUP] }) });
+
+    expect(result.response.status).toBe(200);
+    expect((await jsonOf(result)).choices[0].finish_reason).toBe("tool_calls");
+  });
+
   it("stops when a bridged reply comes from another model", async () => {
     const payload = answerPayload(CALL_REPLY);
     payload[3] = { model: PRO_ENTRY.modelId };
@@ -876,6 +886,7 @@ describe("Gemini Web JSON mode", () => {
 
     expect(result.response.status).toBe(200);
     expect((await jsonOf(result)).choices[0].message.content).toBe("Not JSON.");
+    expect(log.warn.mock.calls[0][0]).toBe("GEMINI-WEB");
     expect(log.warn.mock.calls[0][1]).toMatch(/^response_format repair request failed; returning the raw reply: /);
   });
 
@@ -965,10 +976,44 @@ describe("Gemini Web JSON mode", () => {
     const harness = googleTransport({
       generate: replies('{"content":"Sure, here you go."}', '{"tool_calls":[{"name":"done","arguments":{}}]}'),
     });
-    const result = await ask(harness, { response_format: { type: "json_object" }, tools: [DONE] });
+    const log = quietLog();
+    const result = await ask(harness, { response_format: { type: "json_object" }, tools: [DONE] }, { log });
 
     expect((await jsonOf(result)).choices[0].message.content).toBe("Sure, here you go.");
     expect(harness.state.generation).toBe(2);
+    expect(log.warn.mock.calls[0][1]).toMatch(/^response_format repair request failed; returning the raw reply: /);
+  });
+
+  it("skips JSON mode for a tool call that also carries content", async () => {
+    const harness = googleTransport({
+      generate: replies('{"tool_calls":[{"name":"done","arguments":{"answer":"x"}}],"content":"Calling it."}'),
+    });
+    const result = await ask(harness, { response_format: { type: "json_object" }, tools: [DONE] });
+
+    expect((await jsonOf(result)).choices[0].finish_reason).toBe("tool_calls");
+    expect(harness.state.generation).toBe(1);
+  });
+
+  it("leaves a tool bridge text reply alone without response_format", async () => {
+    const harness = googleTransport({ generate: replies('{"content":"Plain words."}') });
+    const log = quietLog();
+    const result = await ask(harness, { tools: [DONE] }, { log });
+
+    expect((await jsonOf(result)).choices[0].message.content).toBe("Plain words.");
+    expect(harness.state.generation).toBe(1);
+    expect(log.debug).not.toHaveBeenCalled();
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("trims the reply before it is checked or returned raw", async () => {
+    const blank = googleTransport({ generate: replies("   ") });
+    const blankResult = await ask(blank, { response_format: { type: "json_object" } });
+    expect(blankResult.response.status).toBe(502);
+    expect(blank.state.generation).toBe(1);
+
+    const harness = googleTransport({ generate: replies("  Not JSON.  ", "Still not.") });
+    const result = await ask(harness, { response_format: { type: "json_object" } });
+    expect((await jsonOf(result)).choices[0].message.content).toBe("Not JSON.");
   });
 
   it("streams the clean JSON as one content delta", async () => {
@@ -1104,6 +1149,26 @@ describe("Gemini Web buffered stream heartbeat", () => {
 
     expect(vi.getTimerCount()).toBe(0);
     expect(harness.state.generation).toBe(1);
+  });
+
+  it("stops the heartbeat and Google's stream when the client request is aborted", async () => {
+    const held = heldAnswer();
+    const client = new AbortController();
+    const harness = googleTransport({ generate: () => held.response });
+    const result = await executeWith(harness, {
+      stream: true,
+      signal: client.signal,
+      body: chatBody([userText("Define gemini")], { stream: true, tools: [LOOKUP] }),
+    });
+    const sse = sseReader(result);
+
+    await sse.next();
+    client.abort();
+    const text = await sse.rest();
+
+    expect(JSON.parse(text.trim().split("\n\n").at(-1).slice(6)).error.type).toBe("aborted");
+    expect(held.cancelled).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("ends the stream with the invalid tool call error after three attempts", async () => {
