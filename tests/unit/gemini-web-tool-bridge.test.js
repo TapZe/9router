@@ -150,6 +150,35 @@ describe("Gemini Web tool bridge prompt", () => {
     );
   });
 
+  it("asks for the JSON reply itself as content under response_format", () => {
+    const bridge = parseToolBridge({ tools: [{ type: "function", function: { name: "ping" } }], tool_choice: "required" });
+    const schema = { type: "object", required: ["name"] };
+    expect(buildToolBridgePrompt(bridge, "User: hi", { schema: null })).toBe(
+      [
+        "You are an OpenAI-compatible assistant running behind a bridge to Gemini web.",
+        "You MUST respond with JSON only. Do not output markdown code fences.",
+        "Output schema:",
+        '{"tool_calls":[{"name":"<tool_name>","arguments":{"<parameter>":<value>}}]} OR {"content":<reply_json>}',
+        "Rules:",
+        "- Use only tool names listed below.",
+        "- arguments must be a JSON object that sets every required parameter of the tool's parameters schema.",
+        '- Escape newlines and double quotes inside JSON strings as \\n and \\".',
+        "- You must return at least one tool call.",
+        '- Without a tool call, "content" must be the reply itself as a JSON object (not a string), with the ' +
+          "fields the conversation asks for.",
+        "Available tools:",
+        "- name: ping",
+        "",
+        "Conversation:",
+        "User: hi",
+      ].join("\n")
+    );
+    expect(buildToolBridgePrompt(bridge, "x", { schema })).toContain(
+      '- Without a tool call, "content" must be the reply itself as a JSON value (not a string) matching this ' +
+        'JSON Schema: {"type":"object","required":["name"]}. Set every required property.\nAvailable tools:'
+    );
+  });
+
   it("writes the retry note after the prompt", () => {
     expect(toolBridgeRetryPrompt("P", "why")).toBe(
       "P\n\nYour previous reply could not be used: why. Reply again with JSON only, exactly matching the " +

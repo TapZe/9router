@@ -102,18 +102,45 @@ function toolLine(tool) {
   return line;
 }
 
-/** Wrap the flattened conversation in the tool-bridge contract. */
-export function buildToolBridgePrompt(bridge, basePrompt) {
+/**
+ * Under response_format the text reply is JSON itself, so the template shows
+ * it as a value, not a string; otherwise the model copies the template and
+ * writes prose.
+ */
+function contentTemplate(jsonMode) {
+  return jsonMode ? '{"content":<reply_json>}' : '{"content":"<assistant_text>"}';
+}
+
+function jsonModeRules(jsonMode) {
+  if (!jsonMode) return [];
+  if (jsonMode.schema === null) {
+    return [
+      '- Without a tool call, "content" must be the reply itself as a JSON object (not a string), with the ' +
+        "fields the conversation asks for.",
+    ];
+  }
+  return [
+    '- Without a tool call, "content" must be the reply itself as a JSON value (not a string) matching this ' +
+      `JSON Schema: ${JSON.stringify(jsonMode.schema)}. Set every required property.`,
+  ];
+}
+
+/**
+ * Wrap the flattened conversation in the tool-bridge contract. `jsonMode` is
+ * the request's response_format (see jsonMode.js), or null.
+ */
+export function buildToolBridgePrompt(bridge, basePrompt, jsonMode = null) {
   const lines = [
     "You are an OpenAI-compatible assistant running behind a bridge to Gemini web.",
     "You MUST respond with JSON only. Do not output markdown code fences.",
     "Output schema:",
-    '{"tool_calls":[{"name":"<tool_name>","arguments":{"<parameter>":<value>}}]} OR {"content":"<assistant_text>"}',
+    `{"tool_calls":[{"name":"<tool_name>","arguments":{"<parameter>":<value>}}]} OR ${contentTemplate(jsonMode)}`,
     "Rules:",
     "- Use only tool names listed below.",
     "- arguments must be a JSON object that sets every required parameter of the tool's parameters schema.",
     '- Escape newlines and double quotes inside JSON strings as \\n and \\".',
     ...choiceRules(bridge),
+    ...jsonModeRules(jsonMode),
     "Available tools:",
     ...bridge.tools.map(toolLine),
     "",
