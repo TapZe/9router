@@ -414,3 +414,44 @@ describe("fingerprintToolKey", () => {
     expect(fingerprintToolKey(null)).toBe("");
   });
 });
+
+describe("native complete tool names", () => {
+  it("restores Gemini calls/results inside wrappers without touching signed data", () => {
+    const opaque = { signature: "inspect_file", name: "inspect_file" };
+    const original = { response: { candidates: [{ content: { parts: [{ functionCall: { name: "inspect_file", args: { name: "inspect_file" }, id: "g1" }, thoughtSignature: "signed" }, { functionResponse: { name: "inspect_file", response: opaque } }, opaque] } }] } };
+    const before = JSON.stringify(original);
+    const restored = restoreToolNames(original, new Map([["inspect_file", "read"]]), true);
+    expect(restored.response.candidates[0].content.parts[0]).toEqual({ functionCall: { name: "read", args: { name: "inspect_file" }, id: "g1" }, thoughtSignature: "signed" });
+    expect(restored.response.candidates[0].content.parts[1].functionResponse).toEqual({ name: "read", response: opaque });
+    expect(restored.response.candidates[0].content.parts[2]).toBe(opaque);
+    expect(JSON.stringify(original)).toBe(before);
+    expect(restoreToolNames(original, new Map())).toBe(original);
+    expect(restoreToolNames({ candidates: [] }, new Map([["other", "name"]]))).toEqual({ candidates: [] });
+  });
+  it("restores Responses native custom calls but not raw input", () => {
+    const call = { type: "custom_tool_call", name: "edit_file", input: "edit_file/read", call_id: "id" };
+    const map = new Map([["edit_file", "edit"]]);
+    expect(restoreToolNames({ output: [call] }, map, true).output[0]).toEqual({ ...call, name: "edit" });
+    expect(restoreToolNames({ item: call }, map, true).item).toEqual({ ...call, name: "edit" });
+    expect(call.name).toBe("edit_file");
+  });
+});
+
+describe("Factory restoration is explicitly opt-in", () => {
+  it.each([undefined, false])("keeps native/custom/envelope names unchanged with flag %s", (flag) => {
+    const map = new Map([["wire", "client"]]);
+    const custom = { type: "custom_tool_call", name: "wire", input: "raw wire" };
+    const native = { candidates: [{ content: { parts: [{ functionCall: { name: "wire", args: { name: "wire" } } }] } }] };
+    const envelope = { type: "response.completed", response: { output: [{ type: "function_call", name: "wire", arguments: "{}" }] } };
+    expect(restoreToolNames(native, map, flag)).toBe(native);
+    expect(restoreToolNames(envelope, map, flag)).toBe(envelope);
+    expect(restoreToolNames({ output: [custom] }, map, flag).output[0]).toBe(custom);
+    expect(restoreToolNames({ item: custom }, map, flag).item).toBe(custom);
+    expect(restoreToolNames({ output: [{ type: "function_call", name: "wire", arguments: "raw wire" }] }, map, flag).output[0]).toEqual({ type: "function_call", name: "client", arguments: "raw wire" });
+  });
+  it("propagates Factory provenance through arrays and completed response envelopes", () => {
+    const original = [{ type: "response.completed", response: { output: [{ type: "custom_tool_call", name: "wire", input: "raw wire" }] } }];
+    expect(restoreToolNames(original, new Map([["wire", "client"]]), true)[0].response.output[0]).toEqual({ type: "custom_tool_call", name: "client", input: "raw wire" });
+    expect(original[0].response.output[0].name).toBe("wire");
+  });
+});

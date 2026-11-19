@@ -22,6 +22,8 @@ import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/strea
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
 import { takeRenamedToolNames } from "../utils/opencodeFingerprint.js";
+import { FACTORY_DROID_SYSTEM_PROMPT } from "../executors/factory.js";
+import { captureFactoryCompatibility, FACTORY_COMPATIBILITY_CONTEXT, preserveFactoryResponsesPrompt } from "../utils/factoryRequestCompatibility.js";
 import { injectCaveman } from "../rtk/caveman.js";
 import { injectPonytail } from "../rtk/ponytail.js";
 import { injectCustomPrompt } from "../rtk/customPrompt.js";
@@ -180,6 +182,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Expose raw client headers to translators/executors for session-id resolution
   if (credentials) credentials.rawHeaders = clientRawRequest?.headers || {};
 
+  const isFactory = ["factory", "fy", "droid"].includes(provider);
+  let factoryContext;
+  if (isFactory) {
+    const captured = captureFactoryCompatibility(sourceFormat, structuredClone(body), FACTORY_DROID_SYSTEM_PROMPT);
+    body = captured.body;
+    factoryContext = captured.context;
+  }
+
   // Auto-strip media blocks the model can't read (vision/audio/pdf) before translation.
   if (!passthrough) {
     const caps = getCapabilitiesForModel(provider, model);
@@ -225,6 +235,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     delete translatedBody._customToolNames;
     translatedBody.model = stripThinkingSuffix(upstreamModel);
     stripContinuityFields(translatedBody);
+  }
+  if (isFactory) {
+    if (targetFormat === FORMATS.OPENAI_RESPONSES) translatedBody = preserveFactoryResponsesPrompt(sourceFormat, body, translatedBody);
+    customToolNames = new Set(factoryContext.sourceCustomToolNames ?? customToolNames ?? []);
+    translatedBody[FACTORY_COMPATIBILITY_CONTEXT] = { ...factoryContext, previousToolNameMap: toolNameMap };
   }
 
   // Tool normalization: MCP-equivalent built-in dedup (Claude clients) + same-name
@@ -412,7 +427,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     providerResponseFormat = result.responseFormat || targetFormat;
     const renamedToolNames = takeRenamedToolNames(translatedBody);
     if (renamedToolNames?.size) {
-      toolNameMap = new Map([...(toolNameMap || []), ...renamedToolNames]);
+      toolNameMap = isFactory ? renamedToolNames : new Map([...(toolNameMap || []), ...renamedToolNames]);
     }
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {

@@ -146,3 +146,28 @@ describe("forced-SSE JSON path for a Responses-API client behind a chat upstream
     expect(json.choices[0].message.tool_calls[0].function.name).toBe("shell");
   });
 });
+
+describe("native Gemini call linkage in JSON conversion", () => {
+  it.each([FORMATS.GEMINI, FORMATS.GEMINI_CLI, FORMATS.ANTIGRAVITY, FORMATS.VERTEX])("preserves supplied call IDs for Factory %s conversion", (format) => {
+    const native = { candidates: [{ content: { parts: [{ functionCall: { id: "native_call_1", name: "read", args: { path: "read/inspect_file" } } }] } }] };
+    const response = translateNonStreamingResponse(format === FORMATS.ANTIGRAVITY ? { response: native } : native, format, FORMATS.OPENAI, null, true);
+    expect(response.choices[0].message.tool_calls[0]).toEqual({ id: "native_call_1", type: "function", function: { name: "read", arguments: '{"path":"read/inspect_file"}' } });
+    expect(native.candidates[0].content.parts[0].functionCall.id).toBe("native_call_1");
+  });
+  it.each([FORMATS.GEMINI, FORMATS.GEMINI_CLI, FORMATS.ANTIGRAVITY, FORMATS.VERTEX])("retains generated IDs by default and false for non-Factory %s conversion", (format) => {
+    const native = { candidates: [{ content: { parts: [{ functionCall: { id: "native_call_1", name: "read", args: { path: "read/inspect_file" } } }] } }] };
+    for (const flag of [undefined, false]) {
+      const response = translateNonStreamingResponse(format === FORMATS.ANTIGRAVITY ? { response: native } : native, format, FORMATS.OPENAI, null, flag);
+      const call = response.choices[0].message.tool_calls[0];
+      expect(call.id).toMatch(/^call_read_\d+_0$/);
+      expect(call.function).toEqual({ name: "read", arguments: '{"path":"read/inspect_file"}' });
+    }
+    expect(native.candidates[0].content.parts[0].functionCall.id).toBe("native_call_1");
+  });
+  it.each([undefined, ""])("keeps the Factory missing-ID fallback (%s)", (id) => {
+    const body = { candidates: [{ content: { parts: [{ functionCall: { id, name: "read", args: {} } }] } }] };
+    const call = translateNonStreamingResponse(body, FORMATS.GEMINI, FORMATS.OPENAI, null, true).choices[0].message.tool_calls[0];
+    expect(call.id).toMatch(/^call_read_\d+_0$/);
+    expect(call.function).toEqual({ name: "read", arguments: "{}" });
+  });
+});

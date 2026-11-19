@@ -195,7 +195,7 @@ export function translateResponse(targetFormat, sourceFormat, chunk, state) {
       if (!state.streamToolCallIds) state.streamToolCallIds = new Map();
       ensureStreamToolCallIds(chunk, state.streamToolCallIds);
     }
-    return [restoreToolNames(decloakStreamChunk(chunk, state?.toolNameMap), state?.toolNameMap)];
+    return [restoreToolNames(decloakStreamChunk(chunk, state?.toolNameMap), state?.toolNameMap, state?.factoryCompatibility === true)];
   }
 
   let results = [chunk];
@@ -209,7 +209,7 @@ export function translateResponse(targetFormat, sourceFormat, chunk, state) {
   if (directFn) {
     const converted = directFn(chunk, state);
     const directResults = converted ? (Array.isArray(converted) ? converted : [converted]) : [];
-    return restoreToolNames(directResults, state?.toolNameMap);
+    return restoreToolNames(directResults, state?.toolNameMap, state?.factoryCompatibility === true);
   }
 
   // Step 1: target -> openai (if target is not openai)
@@ -240,7 +240,7 @@ export function translateResponse(targetFormat, sourceFormat, chunk, state) {
     }
   }
 
-  results = restoreToolNames(results, state?.toolNameMap);
+  results = restoreToolNames(results, state?.toolNameMap, state?.factoryCompatibility === true);
 
   // Attach OpenAI intermediate results for logging
   if (openaiResults && sourceFormat !== FORMATS.OPENAI && targetFormat !== FORMATS.OPENAI) {

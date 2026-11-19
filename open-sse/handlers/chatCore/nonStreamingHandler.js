@@ -183,7 +183,7 @@ function openAIResponsesToCompletion(responseBody, fallbackModel = "unknown") {
 /**
  * Translate non-streaming response body from provider format → OpenAI format.
  */
-export function translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames = null) {
+export function translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames = null, factoryCompatibility = false) {
   if (targetFormat === sourceFormat) return responseBody;
   // Provider responded in OpenAI Chat Completions shape but the client speaks
   // Responses API — convert so tool_calls/text surface as Responses `output`.
@@ -232,7 +232,7 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
             } catch {}
           }
           toolCalls.push({
-            id: `call_${name}_${Date.now()}_${toolCalls.length}`,
+            id: (factoryCompatibility === true && part.functionCall.id) || `call_${name}_${Date.now()}_${toolCalls.length}`,
             type: "function",
             function: { name, arguments: JSON.stringify(args) }
           });
@@ -352,6 +352,7 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
  */
 export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, pxpipe, reqTag, log }) {
   trackDone();
+  const factoryCompatibility = ["factory", "fy", "droid"].includes(provider);
   const contentType = providerResponse.headers.get("content-type") || "";
   let responseBody;
 
@@ -387,6 +388,9 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   responseBody = unwrapClineEnvelope(responseBody, provider);
 
   reqLogger.logProviderResponse(providerResponse.status, providerResponse.statusText, providerResponse.headers, responseBody);
+  if (factoryCompatibility && toolNameMap?.size) {
+    responseBody = restoreToolNames(responseBody, toolNameMap, factoryCompatibility);
+  }
   if (onRequestSuccess) {
     Promise.resolve()
       .then(onRequestSuccess)
@@ -404,7 +408,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
   const translatedResponse = needsTranslation(targetFormat, sourceFormat)
-    ? translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames)
+    ? translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames, factoryCompatibility)
     : responseBody;
   const isClaudeMessageResponse = sourceFormat === FORMATS.CLAUDE && translatedResponse?.type === "message";
   // Responses-format translation produces a `object:"response"` body with no
@@ -473,7 +477,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
 
   return {
     success: true,
-    response: new Response(JSON.stringify(restoreToolNames(translatedResponse, toolNameMap)), {
+    response: new Response(JSON.stringify(restoreToolNames(translatedResponse, toolNameMap, factoryCompatibility)), {
       headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", ...upstreamResponseHeaders(providerResponse.headers) }
     })
   };

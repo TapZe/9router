@@ -89,7 +89,7 @@ describe("Factory Qwen3.8 Max later system messages from Droid 1.5.0", () => {
     const sent = await send("kimi-k3", userFirst.slice(0, 3));
     expect(sent).toEqual([
       { role: "user", content: "hi" },
-      { role: "system", content: `${FACTORY_DROID_SYSTEM_PROMPT}\n\nPlan mode is on.` },
+      { role: "system", content: `${FACTORY_DROID_SYSTEM_PROMPT}\n\n  Plan mode is on.  ` },
       { role: "user", content: "go" },
     ]);
   });

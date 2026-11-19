@@ -6,6 +6,7 @@ import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
 import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE, ensureStreamToolCallIds } from "./streamHelpers.js";
 import { restoreToolNames } from "./opencodeFingerprint.js";
+import { createFactoryToolNameStream } from "./factoryToolNameStream.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
@@ -63,18 +64,32 @@ export function createSSEStream(options = {}) {
 
   let buffer = "";
   let usage = null;
+  const isFactory = ["factory", "fy", "droid"].includes(provider);
+  const factoryCompatibilityActive = isFactory && !!toolNameMap?.size;
+  let factoryNames = factoryCompatibilityActive ? createFactoryToolNameStream(toolNameMap) : null;
 
   // Tool-call ids already sent to the client, keyed by the tool-call index.
   // A late fragment that opens a NEW index without an id must not reach the
   // client as-is: strict OpenAI-compatible SDKs abort the turn on a
   // tool_call without a string id (#4992).
   const seenToolCallIds = new Map();
+  const factoryChoiceToolCallIds = factoryCompatibilityActive ? new Map() : null;
+  const normalizeToolCallIds = (chunk) => {
+    if (!factoryChoiceToolCallIds) return ensureStreamToolCallIds(chunk, seenToolCallIds);
+    let changed = false;
+    for (const [position, choice] of (chunk.choices ?? []).entries()) {
+      const key = choice.index ?? position;
+      if (!factoryChoiceToolCallIds.has(key)) factoryChoiceToolCallIds.set(key, new Map());
+      changed = ensureStreamToolCallIds({ choices: [choice] }, factoryChoiceToolCallIds.get(key)) || changed;
+    }
+    return changed;
+  };
 
   // Per-stream decoder with stream:true to correctly handle multi-byte chars split across chunks
   const decoder = new TextDecoder("utf-8", { fatal: false });
 
   const state = mode === STREAM_MODE.TRANSLATE
-    ? { ...initState(sourceFormat), provider, toolNameMap, customToolNames: new Set(customToolNames || []), model, sessionId: credentials?._clientSessionId || null,
+    ? { ...initState(sourceFormat), provider, factoryCompatibility: isFactory, toolNameMap, customToolNames: new Set(customToolNames || []), model, sessionId: credentials?._clientSessionId || null,
         // Which upstream format this stream came from. A response translator can be
         // reached either directly (target === its registered source) or as the second
         // hop of a pivot, and on the terminal null chunk the pivot drops it — so a
@@ -98,6 +113,14 @@ export function createSSEStream(options = {}) {
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
   let finalized = false;
   let completionFlushTimer = null;
+  // Native upstream terminal events do not carry the Chat client's sentinel.
+  const emitFactoryChatDone = (controller) => {
+    if (!isFactory || sourceFormat !== FORMATS.OPENAI || streamDoneSent) return;
+    reqLogger?.appendConvertedChunk?.(SSE_DONE);
+    controller.enqueue(sharedEncoder.encode(SSE_DONE));
+    streamDoneSent = true;
+    sseEmittedCount++;
+  };
 
   // Lane quirk: upstream streams thinking under the OpenRouter aliases
   // (`reasoning` / `reasoning_details[]`) instead of reasoning_content — OpenCode
@@ -134,32 +157,10 @@ export function createSSEStream(options = {}) {
     }
   };
 
-  // Emit the deferred response.completed now — at [DONE], or when the watchdog
-  // below gives up on a usage trailer that never arrives.
-  const flushPendingCompletion = (controller) => {
-    const completed = translateResponse(targetFormat, sourceFormat, null, state);
-    for (const item of completed || []) {
-      if (item === null || item === undefined) continue;
-      const output = formatSSE(item, sourceFormat);
-      reqLogger?.appendConvertedChunk?.(output);
-      controller.enqueue(sharedEncoder.encode(output));
-      sseEmittedCount++;
-    }
-    finalizeStream();
-  };
-
-  return new TransformStream({
-    transform(chunk, controller) {
-      if (!ttftAt) ttftAt = Date.now();
-      const text = decoder.decode(chunk, { stream: true });
-      buffer += text;
-      reqLogger?.appendProviderChunk?.(text);
-
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
+  const processLines = (lines, controller) => {
       for (const line of lines) {
-        const trimmed = line.trim();
+        const preparedEvent = typeof line === "object";
+        const trimmed = preparedEvent ? "" : line.trim();
         if (isDebugEnabled && trimmed) {
           sseLineCount++;
           if (trimmed.startsWith("event:")) {
@@ -176,22 +177,32 @@ export function createSSEStream(options = {}) {
         // Passthrough mode: normalize and forward
         if (mode === STREAM_MODE.PASSTHROUGH) {
           let output;
-          let injectedUsage = false;
+          let injectedUsage = preparedEvent;
           let responsesTerminal = false;
 
           // Upstream already sent the sentinel; flush() must not append a second one.
-          if (trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]") streamDoneSent = true;
+          if (trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]") {
+            processLines(factoryNames?.flush() ?? [], controller);
+            streamDoneSent = true;
+          }
 
-          if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
+          if (preparedEvent || (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]")) {
             try {
-              let parsed = JSON.parse(trimmed.slice(5).trim());
+              let parsed = preparedEvent ? line : JSON.parse(trimmed.slice(5).trim());
+              if (!preparedEvent && factoryNames) {
+                const events = factoryNames.push(parsed);
+                if (parsed.error || parsed.type === "error") factoryNames = null;
+                processLines(events, controller);
+                continue;
+              }
+              if (preparedEvent) output = `data: ${JSON.stringify(parsed)}\n`;
 
               const idFixed = fixInvalidId(parsed);
 
               // A fragment that opens a new tool-call index without an id breaks
               // strict OpenAI-compatible clients. Mint/reuse one before the
               // chunk reaches the client.
-              const toolCallIdFixed = ensureStreamToolCallIds(parsed, seenToolCallIds);
+              const toolCallIdFixed = normalizeToolCallIds(parsed);
 
               // The fingerprint pass renames a colliding caller tool to an alias
               // (read -> read_client). On this path nothing restored it, so the
@@ -199,7 +210,7 @@ export function createSSEStream(options = {}) {
               // "Model tried to call unavailable tool 'read_client'" (#4986).
               let toolNameRestored = false;
               if (toolNameMap?.size) {
-                const restored = restoreToolNames(parsed, toolNameMap);
+                const restored = restoreToolNames(parsed, toolNameMap, isFactory);
                 if (restored !== parsed) {
                   parsed = restored;
                   toolNameRestored = true;
@@ -310,6 +321,7 @@ export function createSSEStream(options = {}) {
             }
           }
 
+          if (preparedEvent && !output.endsWith("\n\n")) output += "\n";
           reqLogger?.appendConvertedChunk?.(output);
           controller.enqueue(sharedEncoder.encode(output));
           // Responses clients (codex CLI) close on response.completed instead of [DONE]
@@ -318,10 +330,23 @@ export function createSSEStream(options = {}) {
         }
 
         // Translate mode
-        if (!trimmed) continue;
+        if (!preparedEvent && !trimmed) continue;
 
-        const parsed = parseSSELine(trimmed, targetFormat);
+        let parsed = preparedEvent ? line : parseSSELine(trimmed, targetFormat);
         if (!parsed) continue;
+        if (!preparedEvent && factoryNames) {
+          if (parsed.done) processLines(factoryNames.flush(), controller);
+          else {
+            const events = factoryNames.push(parsed);
+            if (parsed.error || parsed.type === "error") factoryNames = null;
+            processLines(events, controller);
+            continue;
+          }
+        }
+        if (factoryCompatibilityActive) {
+          normalizeToolCallIds(parsed);
+          parsed = restoreToolNames(parsed, toolNameMap, isFactory);
+        }
 
         // Responses API same-format passthrough: preserve event framing + track terminal state
         const isOpenAIResponsesStream = targetFormat === FORMATS.OPENAI_RESPONSES;
@@ -354,6 +379,7 @@ export function createSSEStream(options = {}) {
             sseEmittedCount++;
           }
 
+          emitFactoryChatDone(controller);
           if (keepsOpenAIResponsesFormat && !streamDoneSent) {
             const doneOutput = "data: [DONE]\n\n";
             reqLogger?.appendConvertedChunk?.(doneOutput);
@@ -469,6 +495,32 @@ export function createSSEStream(options = {}) {
           }, PENDING_COMPLETION_FLUSH_MS);
         }
       }
+  };
+
+  const flushPendingCompletion = (controller) => {
+    processLines(factoryNames?.flush() ?? [], controller);
+    const completed = translateResponse(targetFormat, sourceFormat, null, state);
+    for (const item of completed || []) {
+      if (item === null || item === undefined) continue;
+      const output = formatSSE(item, sourceFormat);
+      reqLogger?.appendConvertedChunk?.(output);
+      controller.enqueue(sharedEncoder.encode(output));
+      sseEmittedCount++;
+    }
+    finalizeStream();
+  };
+
+  return new TransformStream({
+    transform(chunk, controller) {
+      if (!ttftAt) ttftAt = Date.now();
+      const text = decoder.decode(chunk, { stream: true });
+      buffer += text;
+      reqLogger?.appendProviderChunk?.(text);
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      processLines(lines, controller);
+
     },
 
     flush(controller) {
@@ -478,6 +530,11 @@ export function createSSEStream(options = {}) {
       try {
         const remaining = decoder.decode();
         if (remaining) buffer += remaining;
+        if (factoryCompatibilityActive) {
+          if (buffer.trim()) processLines([buffer], controller);
+          buffer = "";
+          processLines(factoryNames?.flush() ?? [], controller);
+        }
 
         if (mode === STREAM_MODE.PASSTHROUGH) {
           // An unterminated trailing "data: [DONE]" is the upstream sentinel: don't
@@ -581,6 +638,7 @@ export function createSSEStream(options = {}) {
           streamDoneSent = true;
         }
 
+        emitFactoryChatDone(controller);
         finalizeStream();
       } catch (error) {
         console.log("Error in flush:", error);

@@ -443,10 +443,11 @@ export function takeRenamedToolNames(body) {
 
 // Response side -------------------------------------------------------------
 
-/** Restore caller tool spellings in supported response/event shapes. */
-export function restoreToolNames(payload, map) {
+/** Restore caller spellings; Factory alone opts into native/custom envelope shapes. */
+export function restoreToolNames(payload, map, factoryCompatibility = false) {
   if (!map?.size || !payload) return payload;
-  if (Array.isArray(payload)) return payload.map((item) => restoreToolNames(item, map));
+  const factory = factoryCompatibility === true;
+  if (Array.isArray(payload)) return payload.map((item) => restoreToolNames(item, map, factory));
   if (typeof payload !== "object") return payload;
 
   let out = payload;
@@ -496,15 +497,47 @@ export function restoreToolNames(payload, map) {
   // OpenAI Responses final JSON body.
   if (Array.isArray(payload.output)) {
     put("output", payload.output.map((item) =>
-      item?.type === "function_call" && typeof item.name === "string" && map.has(item.name)
+      (item?.type === "function_call" || (factory && item?.type === "custom_tool_call")) && typeof item.name === "string" && map.has(item.name)
         ? { ...item, name: map.get(item.name) }
         : item));
   }
 
   // OpenAI Responses SSE events such as response.output_item.added/done.
   const item = payload.item;
-  if (item?.type === "function_call" && typeof item.name === "string" && map.has(item.name)) {
+  if ((item?.type === "function_call" || (factory && item?.type === "custom_tool_call")) && typeof item.name === "string" && map.has(item.name)) {
     put("item", { ...item, name: map.get(item.name) });
+  }
+
+  if (!factory) return out;
+
+  const restoreCandidates = (candidates) => {
+    let changed = false;
+    const next = candidates.map((candidate) => {
+      if (!Array.isArray(candidate?.content?.parts)) return candidate;
+      let partsChanged = false;
+      const parts = candidate.content.parts.map((part) => {
+        for (const key of ["functionCall", "functionResponse"]) {
+          const call = part?.[key];
+          if (typeof call?.name === "string" && map.has(call.name)) {
+            partsChanged = true;
+            return { ...part, [key]: { ...call, name: map.get(call.name) } };
+          }
+        }
+        return part;
+      });
+      if (!partsChanged) return candidate;
+      changed = true;
+      return { ...candidate, content: { ...candidate.content, parts } };
+    });
+    return changed ? next : candidates;
+  };
+  if (Array.isArray(payload.candidates)) {
+    const candidates = restoreCandidates(payload.candidates);
+    if (candidates !== payload.candidates) put("candidates", candidates);
+  }
+  if (payload.response && typeof payload.response === "object") {
+    const response = restoreToolNames(payload.response, map, factory);
+    if (response !== payload.response) put("response", response);
   }
 
   return out;

@@ -7,6 +7,12 @@ import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
 } from "../services/oauthCredentialManager.js";
+import { recordRenamedToolNames } from "../utils/opencodeFingerprint.js";
+import {
+  FACTORY_COMPATIBILITY_CONTEXT, FactoryCompatibilityError, captureFactoryCompatibility,
+  applyFactoryToolAliases, applyExplicitFactoryToolChoice, composeFactoryToolNameMaps,
+  prepareFactoryPromptBlocks,
+} from "../utils/factoryRequestCompatibility.js";
 
 export const FACTORY_DROID_SYSTEM_PROMPT =
   "You are Droid, an AI software engineering agent built by Factory.\n" +
@@ -258,7 +264,13 @@ export class FactoryExecutor extends BaseExecutor {
       const response = new Response(JSON.stringify({ error: { message } }), { status: 400, headers: { "Content-Type": "application/json" } });
       return { response, url: this.buildUrl(args.model, args.stream, 0, args.credentials), headers: {}, transformedBody: args.body };
     }
-    return super.execute(args);
+    try {
+      return await super.execute(args);
+    } catch (error) {
+      if (!(error instanceof FactoryCompatibilityError)) throw error;
+      const response = new Response(JSON.stringify({ error: { message: error.message } }), { status: 400, headers: { "Content-Type": "application/json" } });
+      return { response, url: this.buildUrl(args.model, args.stream, 0, args.credentials), headers: {}, transformedBody: args.body };
+    }
   }
 
   async refreshCredentials(credentials, log, proxyOptions = null) {
@@ -343,8 +355,14 @@ export class FactoryExecutor extends BaseExecutor {
 
   transformRequest(model, body, stream, credentials) {
     if (!body || typeof body !== "object") return body;
-    const cloned = { ...body };
     const gateway = resolveTargetGateway(model);
+    const captured = body[FACTORY_COMPATIBILITY_CONTEXT]
+      ? { body, context: body[FACTORY_COMPATIBILITY_CONTEXT] }
+      : captureFactoryCompatibility(({ anthropic: "claude", google: "gemini", "openai-completions": "openai" })[gateway] ?? gateway, body, FACTORY_DROID_SYSTEM_PROMPT);
+    const context = captured.context;
+    let cloned = { ...captured.body };
+    cloned[FACTORY_COMPATIBILITY_CONTEXT] = context;
+    if (cloned.generationConfig) cloned.generationConfig = { ...cloned.generationConfig };
     const m = cleanModelId(model);
     const droidRequest = droidRequestFor(m, factoryInferenceRegion(credentials), requestedEffortOf(gateway, body));
 
@@ -360,6 +378,7 @@ export class FactoryExecutor extends BaseExecutor {
           const name = t.name || t.function?.name || "";
           const desc = t.description || t.function?.description || "";
           const schema = t.input_schema || t.parameters || t.function?.parameters || { type: "object" };
+          if (t.name && t.input_schema) return t;
           return {
             name,
             description: desc,
@@ -370,6 +389,8 @@ export class FactoryExecutor extends BaseExecutor {
         // OpenAI Responses flat shape: { type: "function", name, description, parameters }
         cloned.tools = cloned.tools.map((t) => {
           if (!t || typeof t !== "object") return t;
+          if (t.type && t.type !== "function") return t;
+          if (typeof t.name === "string" && !t.function) return t;
           const rawName = t.name || t.function?.name || "";
           const desc = t.description || t.function?.description || "";
           const params = t.parameters || t.function?.parameters || { type: "object", properties: {} };
@@ -427,16 +448,19 @@ export class FactoryExecutor extends BaseExecutor {
       }
     }
 
-    // 2. Inject Droid System Prompt Attestation prefix & strip competing CLI identities
-    const DROID_PROMPT_PREFIX = "You are Droid, an AI software engineering agent built by Factory";
-
-    const stripCompeting = (str) => {
-      if (typeof str !== "string") return str;
-      return str
-        .replace(/You are Claude Code[^.\n]*[.\n]/gi, "")
-        .replace(/You are Claude Code/gi, "")
-        .trim();
+    // Source capture already removed the greeting at its original block boundary.
+    const stripCompeting = (text) => {
+      if (typeof text !== "string") return text;
+      const cleaned = text.replace(/You are Claude Code[^.\n]*[.\n]/gi, "").replace(/You are Claude Code/gi, "");
+      return cleaned === text ? text : cleaned.trim();
     };
+    const promptBlocks = (blocks) => prepareFactoryPromptBlocks(blocks.map((block) => {
+      if (typeof block === "string") return stripCompeting(block);
+      if (typeof block?.text !== "string") return block;
+      const text = stripCompeting(block.text);
+      return text === block.text ? block : { ...block, text };
+    }), FACTORY_DROID_SYSTEM_PROMPT, { stripGreeting: false });
+    const promptText = (text) => promptBlocks(text === "" ? [] : [text]).map((block) => typeof block === "string" ? block : block.text).join("\n\n");
 
     if (gateway === "anthropic") {
       // Claude Messages format requires max_tokens
@@ -447,33 +471,19 @@ export class FactoryExecutor extends BaseExecutor {
       delete cloned.reasoning_effort;
 
       if (typeof cloned.system === "string") {
-        const clean = stripCompeting(cloned.system);
-        cloned.system = clean.includes(DROID_PROMPT_PREFIX)
-          ? clean
-          : (clean ? `${FACTORY_DROID_SYSTEM_PROMPT}\n\n${clean}` : FACTORY_DROID_SYSTEM_PROMPT);
-      } else if (Array.isArray(cloned.system)) {
-        const cleaned = cloned.system
-          .map((b) => typeof b === "string" ? stripCompeting(b) : { ...b, text: stripCompeting(b.text || "") })
-          .filter((b) => (typeof b === "string" ? b.length > 0 : (b.text && b.text.length > 0)));
-        const hasPrefix = cleaned.some((item) =>
-          typeof item === "string" ? item.includes(DROID_PROMPT_PREFIX) : item.text?.includes(DROID_PROMPT_PREFIX),
-        );
-        if (!hasPrefix) {
-          cleaned.unshift({ type: "text", text: FACTORY_DROID_SYSTEM_PROMPT });
-        }
-        cloned.system = cleaned;
+        cloned.system = promptText(cloned.system);
       } else {
-        cloned.system = [{ type: "text", text: FACTORY_DROID_SYSTEM_PROMPT }];
+        // Identity removal can exhaust a cached block; Anthropic rejects empty text.
+        cloned.system = promptBlocks(Array.isArray(cloned.system) ? cloned.system : [])
+          .map((block) => typeof block === "string" ? { type: "text", text: block } : block)
+          .filter((block) => block?.type !== "text" || block.text !== "");
       }
     } else if (gateway === "openai-responses") {
       // OpenAI Responses format requires system prompt in top-level `instructions`
       cloned.store = false;
 
-      if (typeof cloned.instructions === "string" && cloned.instructions.trim()) {
-        const clean = stripCompeting(cloned.instructions);
-        cloned.instructions = clean.includes(DROID_PROMPT_PREFIX)
-          ? clean
-          : (clean ? `${FACTORY_DROID_SYSTEM_PROMPT}\n\n${clean}` : FACTORY_DROID_SYSTEM_PROMPT);
+      if (typeof cloned.instructions === "string" && cloned.instructions.length > 0) {
+        cloned.instructions = promptText(cloned.instructions);
       } else if (Array.isArray(cloned.input)) {
         const sysTurns = cloned.input.filter(
           (turn) => turn && (turn.role === "system" || turn.role === "developer"),
@@ -482,10 +492,7 @@ export class FactoryExecutor extends BaseExecutor {
           .map((turn) => extractTextContent(turn.content))
           .filter(Boolean)
           .join("\n\n");
-        const clean = stripCompeting(combined);
-        cloned.instructions = clean.includes(DROID_PROMPT_PREFIX)
-          ? clean
-          : (clean ? `${FACTORY_DROID_SYSTEM_PROMPT}\n\n${clean}` : FACTORY_DROID_SYSTEM_PROMPT);
+        cloned.instructions = promptText(combined);
         // Strip system turns from input array since instructions carries it
         cloned.input = cloned.input.filter((turn) => turn.role !== "system" && turn.role !== "developer");
       } else {
@@ -494,13 +501,17 @@ export class FactoryExecutor extends BaseExecutor {
 
       // Strip server-generated IDs to prevent 404
       if (Array.isArray(cloned.input)) {
-        cloned.input = cloned.input.filter((item) => {
-          if (typeof item === "string" && SERVER_ID_PATTERN.test(item)) return false;
+        cloned.input = cloned.input.flatMap((item) => {
+          if (typeof item === "string" && SERVER_ID_PATTERN.test(item)) return [];
           if (item && typeof item === "object" && !Array.isArray(item)) {
-            if (item.type === "item_reference") return false;
-            if (typeof item.id === "string" && SERVER_ID_PATTERN.test(item.id)) delete item.id;
+            if (item.type === "item_reference") return [];
+            if (typeof item.id === "string" && SERVER_ID_PATTERN.test(item.id)) {
+              const copy = { ...item };
+              delete copy.id;
+              return [copy];
+            }
           }
-          return true;
+          return [item];
         });
       }
     } else if (gateway === "google") {
@@ -528,25 +539,11 @@ export class FactoryExecutor extends BaseExecutor {
       }
 
       if (typeof cloned.systemInstruction === "string") {
-        const clean = stripCompeting(cloned.systemInstruction);
-        const text = clean.includes(DROID_PROMPT_PREFIX)
-          ? clean
-          : (clean ? `${FACTORY_DROID_SYSTEM_PROMPT}\n\n${clean}` : FACTORY_DROID_SYSTEM_PROMPT);
-        cloned.systemInstruction = {
-          role: "user",
-          parts: [{ text }],
-        };
+        cloned.systemInstruction = { role: "user", parts: [{ text: promptText(cloned.systemInstruction) }] };
       } else if (cloned.systemInstruction?.parts && Array.isArray(cloned.systemInstruction.parts)) {
-        const cleaned = cloned.systemInstruction.parts
-          .map((p) => (typeof p === "string" ? { text: stripCompeting(p) } : { ...p, text: stripCompeting(p.text || "") }))
-          .filter((p) => typeof p.text === "string" && p.text.length > 0);
-        const hasPrefix = cleaned.some((item) => item.text?.includes(DROID_PROMPT_PREFIX));
-        if (!hasPrefix) {
-          cleaned.unshift({ text: FACTORY_DROID_SYSTEM_PROMPT });
-        }
         cloned.systemInstruction = {
-          role: "user",
-          parts: cleaned,
+          ...cloned.systemInstruction,
+          parts: promptBlocks(cloned.systemInstruction.parts).map((block) => typeof block === "string" ? { text: block } : block),
         };
       } else {
         cloned.systemInstruction = {
@@ -626,19 +623,9 @@ export class FactoryExecutor extends BaseExecutor {
         if (sysIndex >= 0) {
           const sys = msgs[sysIndex];
           if (typeof sys.content === "string") {
-            const clean = stripCompeting(sys.content);
-            sys.content = clean.includes(DROID_PROMPT_PREFIX)
-              ? clean
-              : (clean ? `${FACTORY_DROID_SYSTEM_PROMPT}\n\n${clean}` : FACTORY_DROID_SYSTEM_PROMPT);
+            sys.content = promptText(sys.content);
           } else if (Array.isArray(sys.content)) {
-            const cleaned = sys.content
-              .map((c) => ({ ...c, text: stripCompeting(c.text || "") }))
-              .filter((c) => c.text && c.text.length > 0);
-            const has = cleaned.some((c) => c.text?.includes(DROID_PROMPT_PREFIX));
-            if (!has) {
-              cleaned.unshift({ type: "text", text: FACTORY_DROID_SYSTEM_PROMPT });
-            }
-            sys.content = cleaned;
+            sys.content = promptBlocks(sys.content).map((block) => typeof block === "string" ? { type: "text", text: block } : block);
           }
         } else {
           msgs.unshift({ role: "system", content: FACTORY_DROID_SYSTEM_PROMPT });
@@ -694,6 +681,12 @@ export class FactoryExecutor extends BaseExecutor {
       }
     }
 
+    const aliased = applyFactoryToolAliases(cloned, gateway, context.previousToolNameMap);
+    const reverse = composeFactoryToolNameMaps(context.previousToolNameMap, aliased.toolNameMap);
+    cloned = aliased.body;
+    delete cloned[FACTORY_COMPATIBILITY_CONTEXT];
+    recordRenamedToolNames(body, reverse);
+
     // 5. Droid's fields for the model, provider, and effort
     if (droidRequest) {
       const sent = applyDroidRequest(cloned, droidRequest, globalThis.crypto.randomUUID());
@@ -717,10 +710,10 @@ export class FactoryExecutor extends BaseExecutor {
           sent.max_tokens = Math.max(sent.max_tokens, sent.thinking.budget_tokens + 1024);
         }
       }
-      return sent;
+      return applyExplicitFactoryToolChoice(sent, gateway, context);
     }
 
-    return cloned;
+    return applyExplicitFactoryToolChoice(cloned, gateway, context);
   }
 }
 

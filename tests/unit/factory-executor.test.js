@@ -332,7 +332,7 @@ describe("FactoryExecutor", () => {
   describe("transformRequest - Tool Formatting & Preservation", () => {
     const executor = new FactoryExecutor();
 
-    it("preserves tool names verbatim without mutation", () => {
+    it("aliases owned tool names without changing unknown names or caller input", () => {
       const body = {
         messages: [{ role: "user", content: "Inspect code" }],
         tools: [
@@ -354,7 +354,8 @@ describe("FactoryExecutor", () => {
       const transformed = executor.transformRequest("kimi-k3", body, true);
       const toolNames = transformed.tools.map((t) => t.function.name);
 
-      expect(toolNames).toEqual(["read_file", "bash", "grep_search"]);
+      expect(toolNames).toEqual(["read_file", "omp_bash", "grep_search"]);
+      expect(body.tools[1].function.name).toBe("bash");
     });
 
     it("formats tools for Claude Anthropic Messages gateway with input_schema", () => {
