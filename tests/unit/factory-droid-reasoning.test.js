@@ -4,6 +4,7 @@ import { getThinkingLevels } from "../../open-sse/providers/thinkingLevels.js";
 import factoryRegistry from "../../open-sse/providers/registry/factory.js";
 import { FactoryExecutor } from "../../open-sse/executors/factory.js";
 import { factoryEffortFor } from "../../open-sse/providers/thinkingLevels.js";
+import { FACTORY_DROID_MODELS } from "../../open-sse/providers/factoryDroid.js";
 import { translateRequest } from "../../open-sse/translator/index.js";
 
 // Efforts and the default effort Droid 1.3.0 lists for each model, read from
@@ -107,6 +108,14 @@ describe("Factory reasoning efforts from Droid 1.3.0", () => {
         reasoning: reasons,
         thinkingCanDisable: !reasons || efforts.includes("none"),
       });
+    }
+  });
+
+  it("gives a Factory id without a Droid row the levels of its thinking format", () => {
+    // gpt-5.1 left the Droid list in 1.3.0; a saved selection can still ask for its levels.
+    expect(FACTORY_DROID_MODELS["gpt-5.1"]).toBeUndefined();
+    for (const provider of ["factory", "fy", "droid"]) {
+      expect(getThinkingLevels(provider, "gpt-5.1"), provider).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"]);
     }
   });
 
