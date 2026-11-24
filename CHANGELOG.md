@@ -1,8 +1,9 @@
-# Unreleased
+# v0.5.123-factory.1
 
 ## Features
-- **Factory**: report Droid 1.10.0 as the client version. Reasoning efforts, default efforts, context and output limits, image support, and request fields now come from one table generated from the Droid 1.10.0 binary.
-- **Factory**: add Claude Fable 5.2, Gemini 4 Hydrogen, and Gemini 4 Carbon from Droid 1.10.0. Fable 5.2 has Fable 5.1's limits, efforts low to max with default high, and no EU provider. Hydrogen has a 1M context with 65K output, defaults to high effort, and works in every region. Carbon matches Argon: global only, default medium. All three take images.
+- **Factory**: sync model metadata, request templates, and client headers with Droid 1.18.0. The catalog has 94 models. This adds the GPT-6.2 Astra and Sol families, GPT-6 Astra Ultra Fast, and Gemini 4 Neon without removing any models.
+- **Factory**: send `XHIGH` for Gemini 4 Neon and Hydrogen. Neon is global-only and sends a 65,536-token output cap without sampling defaults. Hydrogen keeps its sampling defaults in global, EU, and US. The catalog and wire defaults use the same [verified binary](https://github.com/TapZe/omp-provider-factory-droid/blob/v1.8.0/ROBUSTNESS.md#droid-1180-compatibility) as the OMP provider.
+- **Factory**: use provisional Droid token prices for the six GPT-6.2 variants and Gemini 4 Neon. Local price overrides still take precedence.
 - **Factory**: send Anthropic thinking block binding (`block_binding`, beta `thinking-binding-controls-2026-08-01`) for Fable 5.1, Fable 5.2, and the Claude 5.5 models on Anthropic, as Droid 1.10.0 does.
 - **Factory**: accept image input on Muse Spark 1.2 and 1.3, as Droid 1.10.0 does.
 - **Factory**: price Factory usage at OpenRouter's listed price for the same upstream model (a static table taken from OpenRouter's public model list on 2026-11-13; 9router does not sync it). Fable 5.2 was billed at the generic Claude rate and Muse Spark Open, Nemotron 3 Ultra, Mistral, Inkling, and Beam had no price. Fast variants, Qwen3.8 Max, Nemotron 3.5 Super, Atlas, Aster, and Garnet have no OpenRouter equivalent and keep the general fallback. Kimi K3, GLM 5.2, GLM 5.3, and DeepSeek V4 Pro use their makers' published USD prices instead (Moonshot, Z.ai, DeepSeek peak rate), because OpenRouter's listings for them are far off. Your own price overrides still win.
@@ -16,6 +17,10 @@
 
 ## Fixes
 - Factory now aliases the eight OMP tool names on upstream requests and restores client names in responses and replay history. Explicit tool choices survive translation and Droid defaults; conflicting tool names or restrictions that cannot cross formats fail before fetch. Prompt preparation removes only the exact initial OMP greeting and preserves the remaining instruction bytes. Streaming restores complete tool names before clients interpret calls, including Responses custom tools and native Gemini calls.
+- **Factory**: use harness-neutral `tool_` wire aliases for `bash`, `glob`, `grep`, `task`, and `web_search`. Clients still receive the original tool names.
+- **Factory**: adapt the exact cooperation sentence in recognized OMP subagent system blocks before translation. Other clients, user messages, tool schemas, and explicit tool choices are unaffected by this adaptation.
+- **Factory**: read the inference region from extended `whoami`. India uses the global API origin and routes supported models through Bedrock. New hosted sign-ins use a separate API origin only for EU. Existing generated regional origins are corrected when they match the stored region.
+- **Factory**: use Droid's per-provider Anthropic fallbacks and betas. Responses requests use the request session ID as the default cache key and preserve explicit cache keys on OpenAI and Bedrock.
 - Factory Anthropic requests now drop empty system text blocks after greeting and identity removal, preventing `cache_control cannot be set for empty text blocks` errors without trimming surviving instructions.
 - Factory responses translated into Chat Completions now end with one `[DONE]` frame, including native upstream streams that close without that sentinel. Tool arguments, usage trailers, and native Claude/Responses client terminals retain their existing handling.
 - Factory's extended response-name restoration and native Gemini call-ID preservation are explicit opt-ins. Other providers keep their previous response behavior, including OpenCode's existing restoration timing.
