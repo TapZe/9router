@@ -206,9 +206,8 @@ export const PROVIDER_PRICING = {
   },
   // Factory (Droid) — OpenRouter's listed price for the same upstream model,
   // from https://openrouter.ai/api/v1/models on 2026-11-13 ($/1M). Static: 9router
-  // does not sync OpenRouter prices. Droid's own rate cards are in Factory credits,
-  // so they are not used. Models with no clear OpenRouter equivalent (fast variants,
-  // qwen3.8-max, nemotron-3.5-super, Atlas, Aster, Garnet) are left out.
+  // does not sync OpenRouter prices. Models with no clear equivalent are left out,
+  // except for selected provisional API rates documented below.
   // OpenRouter's listings for kimi-k3, glm-5.2, glm-5.3 and deepseek-v4-pro are far
   // off their makers' prices, so those use the maker's published USD API price
   // (read 2026-11-13).
@@ -220,6 +219,15 @@ export const PROVIDER_PRICING = {
     "glm-5.2": { input: 1.4, output: 4.4, cached: 0.26, reasoning: 4.4 },
     // https://api-docs.deepseek.com/quick_start/pricing (peak rate; off-peak is half)
     "deepseek-v4-pro": { input: 1.32, output: 3.96, cached: 0.044, reasoning: 3.96 },
+    // Droid labels these rates pending-official-pricing-docs. Use GPT-6.2's
+    // 30-minute cache-write rate; this table cannot represent long-context tiers.
+    "gpt-6.2-astra": { input: 3.2, output: 16, cached: 0.16, reasoning: 16, cache_creation: 4 },
+    "gpt-6.2-astra-fast": { input: 6.4, output: 32, cached: 0.32, reasoning: 32, cache_creation: 8 },
+    "gpt-6.2-astra-ultrafast": { input: 9.6, output: 48, cached: 0.48, reasoning: 48, cache_creation: 12 },
+    "gpt-6.2-sol": { input: 0.8, output: 4, cached: 0.04, reasoning: 4, cache_creation: 1 },
+    "gpt-6.2-sol-fast": { input: 1.6, output: 8, cached: 0.08, reasoning: 8, cache_creation: 2 },
+    "gpt-6.2-sol-ultrafast": { input: 2.4, output: 12, cached: 0.12, reasoning: 12, cache_creation: 3 },
+    "gemini-4-neon": { input: 1.2, output: 6, cached: 0.06, reasoning: 6, cache_creation: 0 },
     "claude-fable-5.2": { input: 8, output: 40, cached: 0.2, reasoning: 40, cache_creation: 10 },
     "claude-fable-5.1": { input: 10, output: 50, cached: 0.25, reasoning: 50, cache_creation: 12.5 },
     "claude-fable-5": { input: 10, output: 50, cached: 1, reasoning: 50, cache_creation: 12.5 },
@@ -511,8 +519,10 @@ export function getPricingForModel(provider, model) {
   if (!model) return null;
 
   // 1. Provider-specific override
-  if (provider && PROVIDER_PRICING[provider]?.[model]) {
-    return PROVIDER_PRICING[provider][model];
+  const pricingProvider = provider === "fy" || provider === "droid" || provider === "factory-ai" ? "factory" : provider;
+  const override = PROVIDER_PRICING[pricingProvider]?.[model];
+  if (override) {
+    return override;
   }
 
   // 2. Free namespaces bill $0 regardless of the model name behind them.

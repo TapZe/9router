@@ -1,3 +1,5 @@
+import { FACTORY_DROID_VERSION } from "../factoryDroid.js";
+
 export default {
   id: "factory",
   priority: 15,
@@ -25,8 +27,8 @@ export default {
     format: "openai",
     headers: {
       "X-Factory-Client": "cli",
-      "X-Client-Version": "1.10.0",
-      "User-Agent": "factory-cli/1.10.0",
+      "X-Client-Version": FACTORY_DROID_VERSION,
+      "User-Agent": `factory-cli/${FACTORY_DROID_VERSION}`,
     },
     usage: {
       url: "https://api.factory.ai/api/billing/limits",
@@ -105,7 +107,14 @@ export default {
     { id: "minimax-m2.7", name: "MiniMax M2.7 (Factory)", targetFormat: "claude", supportedFormats: ["claude"] },
 
     // GPT / Codex / Grok family (routed to /api/llm/o/v1/responses)
+    { id: "gpt-6.2-astra", name: "GPT-6.2 Astra (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6.2-astra-fast", name: "GPT-6.2 Astra Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6.2-astra-ultrafast", name: "GPT-6.2 Astra Ultra Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6.2-sol", name: "GPT-6.2 Sol (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6.2-sol-fast", name: "GPT-6.2 Sol Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6.2-sol-ultrafast", name: "GPT-6.2 Sol Ultra Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-6-astra", name: "GPT-6 Astra (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6-astra-ultrafast", name: "GPT-6 Astra Ultra Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-6-sol", name: "GPT-6 Sol (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-6-sol-fast", name: "GPT-6 Sol Fast (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "gpt-6.1-sol", name: "GPT-6.1 Sol (Factory)", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
@@ -162,6 +171,7 @@ export default {
     { id: "beam-1.0", name: "Beam 1.0 (Factory)", targetFormat: "openai", supportedFormats: ["openai"] },
 
     // Google Gemini family (routed to /api/llm/g/v1/generate)
+    { id: "gemini-4-neon", name: "Gemini 4 Neon (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "gemini-4-hydrogen", name: "Gemini 4 Hydrogen (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "gemini-4-carbon", name: "Gemini 4 Carbon (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },
     { id: "gemini-4-argon", name: "Gemini 4 Argon (Factory)", targetFormat: "gemini", supportedFormats: ["gemini"] },

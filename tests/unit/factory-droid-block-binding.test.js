@@ -22,7 +22,9 @@ describe("Factory Anthropic thinking block binding from Droid 1.10.0", () => {
     for (const model of ["claude-fable-5.1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]) {
       const { sent, headers } = send(model, "global", { output_config: { effort: "high" } });
       expect(sent.thinking, model).toEqual({ type: "adaptive", display: "summarized", block_binding: BINDING });
-      expect(headers["anthropic-beta"], model).toBe(`${BETA},${TOOL_STREAMING}`);
+      const fallbackBetas = model === "claude-fable-5.1" || model === "claude-opus-5-5"
+        ? ["server-side-fallback-2026-06-01", "fallback-credit-2026-06-01"] : [];
+      expect(headers["anthropic-beta"], model).toBe([BETA, ...fallbackBetas, TOOL_STREAMING].join(","));
     }
   });
 

@@ -50,6 +50,26 @@ describe("Factory exact prompt preparation", () => {
       expect(result.context.promptPrepared).toBe(true);
     }
   });
+  it("adapts only the cooperation sentence in the original OMP subagent system block", () => {
+    const sentence = "You are operating on a piece of work assigned to you by the main agent.";
+    const child = `⁂ Role\nBuild a test.\n⁂ Coop\n${sentence}\nKeep the remaining instructions.\n⁂ Completion\nReport the result.\n`;
+    const expected = child.replace("You are operating", "You are working");
+    const fixtures = [
+      ["openai", { messages: [{ role: "system", content: "Parent rules." }, { role: "developer", content: child }, { role: "user", content: child }] }, (b) => b.messages[1].content],
+      ["openai-responses", { instructions: child }, (b) => b.instructions],
+      ["claude", { system: [{ text: "Parent rules." }, { text: child, cache_control: { type: "ephemeral" } }] }, (b) => b.system[1].text],
+      ["gemini", { systemInstruction: { parts: [{ text: child }] } }, (b) => b.systemInstruction.parts[0].text],
+    ];
+    for (const [format, original, prompt] of fixtures) {
+      const captured = captureFactoryCompatibility(format, original, droid).body;
+      expect(prompt(captured), format).toBe(expected);
+      expect(prompt(original), format).toBe(child);
+      expect(captureFactoryCompatibility(format, captured, droid).body).toEqual(captured);
+    }
+    const quoted = { messages: [{ role: "system", content: `Example:\n${child}` }, { role: "user", content: child }] };
+    expect(captureFactoryCompatibility("openai", quoted, droid).body).toBe(quoted);
+    expect(captureFactoryCompatibility("openai", fixtures[0][1], droid).body.messages[2].content).toBe(child);
+  });
 });
 
 it("does not guess prompt or tool schemas for opaque source formats", () => {

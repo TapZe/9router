@@ -1,4 +1,9 @@
-import { FACTORY_TOOL_ALIASES, OMP_GREETING_PREAMBLE } from "../config/factoryCompatibility.js";
+import {
+  FACTORY_SUBAGENT_COOP_PREAMBLE,
+  FACTORY_TOOL_ALIASES,
+  OMP_GREETING_PREAMBLE,
+  OMP_SUBAGENT_COOP_PREAMBLE,
+} from "../config/factoryCompatibility.js";
 import { FORMATS } from "../translator/formats.js";
 
 /** Request-local provenance, excluded from JSON and read before structuredClone. */
@@ -101,9 +106,21 @@ export function prepareFactoryPromptBlocks(blocks, droidPrompt, { stripGreeting 
   return prepared;
 }
 
+function prepareSubagentBlock(block) {
+  const text = textOf(block);
+  if (!text?.startsWith("⁂ Role\n")) return block;
+  const completion = text.lastIndexOf("\n⁂ Completion\n");
+  if (completion < 0) return block;
+  const coop = text.lastIndexOf("\n⁂ Coop\n", completion);
+  if (coop < 0 || !text.startsWith(OMP_SUBAGENT_COOP_PREAMBLE, coop)) return block;
+  return withText(block, text.slice(0, coop) + FACTORY_SUBAGENT_COOP_PREAMBLE +
+    text.slice(coop + OMP_SUBAGENT_COOP_PREAMBLE.length));
+}
+
 function prepareSourcePrompt(body, format, droidPrompt) {
   if (![FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, FORMATS.CLAUDE, FORMATS.GEMINI].includes(format)) return body;
-  const prepare = (blocks) => prepareFactoryPromptBlocks(blocks, droidPrompt, { ensurePrefix: false });
+  const stripGreeting = (blocks) => prepareFactoryPromptBlocks(blocks, droidPrompt, { ensurePrefix: false });
+  const prepare = (blocks) => mapArray(stripGreeting(blocks), prepareSubagentBlock);
   const contentBlocks = (value) => Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
   const restoreContent = (original, blocks) => typeof original === "string" ? blocks.map(textOf).join("\n\n") : blocks;
   if (format === FORMATS.CLAUDE) {
@@ -144,18 +161,26 @@ function prepareSourcePrompt(body, format, droidPrompt) {
   let main = blocks.findIndex((block) => textOf(block)?.length > 0);
   if (main < 0) return body;
   if (textOf(blocks[main]) === droidPrompt) main = blocks.findIndex((block, index) => index > main && textOf(block)?.length > 0);
-  if (main < 0) return body;
-  const turnIndex = positions[main];
-  const turn = body[key][turnIndex];
-  const turnBlocks = contentBlocks(turn.content);
-  const offset = positions.slice(0, main).filter((position) => position === turnIndex).length;
-  const text = textOf(turnBlocks[offset]);
-  const prepared = prepare([turnBlocks[offset]]);
-  if (prepared.length === 1 && textOf(prepared[0]) === text) return body;
-  const nextBlocks = [...turnBlocks.slice(0, offset), ...prepared, ...turnBlocks.slice(offset + 1)];
-  const turns = [...body[key]];
-  turns[turnIndex] = { ...turn, content: restoreContent(turn.content, nextBlocks) };
-  return { ...body, [key]: turns };
+  const mainTurn = positions[main];
+  const offset = positions.slice(0, main).filter((position) => position === mainTurn).length;
+  let prepared = body[key];
+  const lastPromptTurn = positions.at(-1);
+  for (let index = 0; index <= lastPromptTurn; index++) {
+    const turn = body[key][index];
+    const original = contentBlocks(turn.content);
+    let next = original;
+    if (index === mainTurn) {
+      const selected = stripGreeting([original[offset]]);
+      if (selected.length !== 1 || selected[0] !== original[offset]) {
+        next = [...original.slice(0, offset), ...selected, ...original.slice(offset + 1)];
+      }
+    }
+    next = mapArray(next, prepareSubagentBlock);
+    if (next === original) continue;
+    if (prepared === body[key]) prepared = [...body[key]];
+    prepared[index] = field(turn, "content", restoreContent(turn.content, next));
+  }
+  return field(body, key, prepared);
 }
 
 /** Capture caller provenance before translators or tool deduplication lose it. */

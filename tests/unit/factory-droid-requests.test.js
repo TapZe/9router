@@ -3,12 +3,12 @@ import { FactoryExecutor } from "../../open-sse/executors/factory.js";
 import { FACTORY_DROID_MODELS } from "../../open-sse/providers/factoryDroid.js";
 import { FACTORY_DROID_REQUESTS } from "../../open-sse/providers/factoryDroidRequests.js";
 
-// Fields Droid 1.3.0 decides per model, effort, and provider. The request
+// Fields Droid decides per model, effort, and provider. The request
 // sends Droid's value for each, or leaves it out when Droid does.
 const DROID_OWNED_FIELDS = {
-  anthropic: ["thinking", "output_config.effort", "speed", "context_management"],
+  anthropic: ["thinking", "output_config.effort", "speed", "context_management", "fallbacks"],
   responses: [
-    "reasoning", "include", "parallel_tool_calls", "prompt_cache_retention", "text.verbosity",
+    "reasoning", "include", "parallel_tool_calls", "prompt_cache_key", "prompt_cache_retention", "text.verbosity",
     "service_tier", "safety_identifier", "max_output_tokens", "tool_choice",
   ],
   completions: [
@@ -51,7 +51,7 @@ function send(model, region, body) {
   return { sent, headers };
 }
 
-describe("Factory request fields from Droid 1.3.0", () => {
+describe("Factory request fields from Droid 1.18.0", () => {
   it("sends Droid's body and betas for every model, provider, and effort", () => {
     for (const [model, droid] of Object.entries(FACTORY_DROID_MODELS)) {
       for (const [region, provider] of Object.entries(droid.providers)) {
@@ -59,6 +59,7 @@ describe("Factory request fields from Droid 1.3.0", () => {
           const request = FACTORY_DROID_REQUESTS[model][provider][effort];
           const label = `${model} ${region} ${effort}`;
           const { sent, headers } = send(model, region, clientBody(droid.api, effort));
+          expect(headers["x-api-provider"], label).toBe(provider);
           for (const path of DROID_OWNED_FIELDS[droid.api]) {
             const expected = at(request.body, path);
             if (expected === "$session") expect(at(sent, path), `${label} ${path}`).toMatch(UUID);
@@ -104,10 +105,38 @@ describe("Factory request fields from Droid 1.3.0", () => {
     expect(sent).toMatchObject({ temperature: 1, reasoning_effort: "high", reasoning_history: "preserved" });
   });
 
-  it("uses one session id for safety_identifier and x-session-id", () => {
+  it("uses the same session id in Responses cache, safety, and session fields", () => {
     const { sent, headers } = send("gpt-5.5", "global", clientBody("responses", "high"));
     expect(sent.safety_identifier).toMatch(UUID);
+    expect(sent.prompt_cache_key).toBe(sent.safety_identifier);
     expect(headers["x-session-id"]).toBe(sent.safety_identifier);
+  });
+
+  it("keeps an explicit Responses cache key on supported providers", () => {
+    const body = { ...clientBody("responses", "high"), prompt_cache_key: "thread-cache" };
+    const direct = send("gpt-5.2", "global", body).sent;
+    expect(direct.prompt_cache_key).toBe("thread-cache");
+    expect(direct.prompt_cache_retention).toBe("24h");
+    const bedrock = send("gpt-5.6-terra", "in", body).sent;
+    expect(bedrock.prompt_cache_key).toBe("thread-cache");
+    expect(bedrock.prompt_cache_retention).toBeUndefined();
+    expect(send("grok-4.7", "global", body).sent.prompt_cache_key).toMatch(UUID);
+  });
+
+  it("keeps refusal fallbacks on direct Anthropic but not on Vertex", () => {
+    const body = { ...clientBody("anthropic", "high"), fallbacks: [{ model: "client-fallback" }] };
+    const direct = send("claude-opus-5-5", "global", body);
+    expect(direct.sent.fallbacks).toEqual([{ model: "claude-opus-5" }]);
+    expect(direct.headers["anthropic-beta"].split(",")).toContain("server-side-fallback-2026-06-01");
+    const vertex = send("claude-opus-5-5", "eu", body);
+    expect(vertex.sent.fallbacks).toBeUndefined();
+    expect(vertex.headers["anthropic-beta"]).not.toContain("server-side-fallback");
+  });
+
+  it("selects the ultra-fast Responses tier for GPT-6.2 Sol Ultra Fast", () => {
+    const model = "gpt-6.2-sol-ultrafast";
+    const { sent } = send(model, "global", { ...clientBody("responses", "xhigh"), model });
+    expect(sent).toMatchObject({ model: "gpt-6.2-sol-ultrafast", service_tier: "ultrafast", reasoning: { effort: "xhigh" } });
   });
 
   // execute stops these ids first, so no other request path remains for them.

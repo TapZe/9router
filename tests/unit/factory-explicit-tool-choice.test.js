@@ -25,7 +25,7 @@ describe("Factory explicit choice preservation", () => {
   it("keeps native restrictions, ancillary fields and all allowed names", () => {
     const raw = { mode: "VALIDATED", allowedFunctionNames: ["read", "bash"], future: { signed: "opaque" } };
     const result = applyExplicitFactoryToolChoice({}, "google", context("gemini", raw));
-    expect(result.toolConfig.functionCallingConfig).toEqual({ ...raw, allowedFunctionNames: ["inspect_file", "omp_bash"] });
+    expect(result.toolConfig.functionCallingConfig).toEqual({ ...raw, allowedFunctionNames: ["inspect_file", "tool_bash"] });
     expect(raw.allowedFunctionNames).toEqual(["read", "bash"]);
     const claude = { type: "tool", name: "read", disable_parallel_tool_use: true };
     expect(applyExplicitFactoryToolChoice({}, "anthropic", context("claude", claude)).tool_choice).toEqual({ ...claude, name: "inspect_file" });
@@ -41,7 +41,7 @@ describe("Factory explicit choice preservation", () => {
       const original = format === "antigravity" ? { project: "p", request } : { project: "p", ...request };
       const captured = captureFactoryCompatibility(format, original, "Droid");
       expect(captured.body).toBe(original);
-      expect(applyExplicitFactoryToolChoice({}, "google", captured.context).toolConfig.functionCallingConfig.allowedFunctionNames).toEqual(["inspect_file", "omp_bash"]);
+      expect(applyExplicitFactoryToolChoice({}, "google", captured.context).toolConfig.functionCallingConfig.allowedFunctionNames).toEqual(["inspect_file", "tool_bash"]);
       expect(() => applyExplicitFactoryToolChoice({}, "openai-completions", captured.context)).toThrow("cannot preserve");
     }
   });

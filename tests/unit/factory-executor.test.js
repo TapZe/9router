@@ -182,24 +182,31 @@ describe("FactoryExecutor", () => {
     });
   });
 
-  describe("Claude thinking from Droid 1.3.0", () => {
+  describe("Claude thinking and fallbacks", () => {
     const claude = (m, effort) => droidRequestFor(m, "global", effort).body;
     const BINDING = { prefix_mismatch_behavior: "drop_block" };
+    const FALLBACK = [{ model: "claude-opus-5" }];
 
     it("configures summarized adaptive thinking for current Claude models", () => {
       for (const m of ["claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5", "atlas-07-21", "aster-07-15"]) {
-        expect(claude(m, "medium"), m).toEqual({ thinking: { type: "adaptive", display: "summarized" }, output_config: { effort: "medium" } });
+        expect(claude(m, "medium"), m).toEqual({
+          thinking: { type: "adaptive", display: "summarized" }, output_config: { effort: "medium" },
+          ...(m === "claude-fable-5" ? { fallbacks: FALLBACK } : {}),
+        });
       }
       // Droid 1.10.0 also binds thinking blocks for these on anthropic.
       for (const m of ["claude-fable-5.1", "claude-opus-5-5", "claude-sonnet-5-5"]) {
-        expect(claude(m, "medium"), m).toEqual({ thinking: { type: "adaptive", display: "summarized", block_binding: BINDING }, output_config: { effort: "medium" } });
+        expect(claude(m, "medium"), m).toEqual({
+          thinking: { type: "adaptive", display: "summarized", block_binding: BINDING }, output_config: { effort: "medium" },
+          ...(m !== "claude-sonnet-5-5" ? { fallbacks: FALLBACK } : {}),
+        });
       }
     });
 
     it("sends Droid's off body, which keeps thinking on for Opus 5.5 and Sonnet 5.5", () => {
       expect(claude("claude-sonnet-5", "none")).toEqual({ thinking: { type: "disabled" } });
       // Droid 1.3.0 lists no off effort for Opus 5.5, so a disable request gets its default effort.
-      expect(claude("claude-opus-5-5", "none")).toEqual({ thinking: { type: "adaptive", display: "summarized", block_binding: BINDING }, output_config: { effort: "medium" } });
+      expect(claude("claude-opus-5-5", "none")).toEqual({ thinking: { type: "adaptive", display: "summarized", block_binding: BINDING }, output_config: { effort: "medium" }, fallbacks: FALLBACK });
       expect(claude("claude-sonnet-5-5", "none")).toEqual({ thinking: { type: "between_tools" }, output_config: { effort: "high" } });
       expect(claude("claude-opus-4-7", "minimal").output_config).toEqual({ effort: "high" });
     });
@@ -262,8 +269,8 @@ describe("FactoryExecutor", () => {
       };
       const headers = executor.buildHeaders(creds, true, "", "claude-fable-5.1");
 
-      expect(headers["X-Client-Version"]).toBe("1.10.0");
-      expect(headers["User-Agent"]).toBe("factory-cli/1.10.0");
+      expect(headers["X-Client-Version"]).toBe("1.18.0");
+      expect(headers["User-Agent"]).toBe("factory-cli/1.18.0");
       expect(headers["Authorization"]).toBe("Bearer workos-token-123");
       expect(headers["X-Factory-Org-Id"]).toBe("RFmWaCAuH8jTGM21tL5k");
       expect(headers["x-provider-routing-source"]).toBe("registry_default");
@@ -354,7 +361,7 @@ describe("FactoryExecutor", () => {
       const transformed = executor.transformRequest("kimi-k3", body, true);
       const toolNames = transformed.tools.map((t) => t.function.name);
 
-      expect(toolNames).toEqual(["read_file", "omp_bash", "grep_search"]);
+      expect(toolNames).toEqual(["read_file", "tool_bash", "grep_search"]);
       expect(body.tools[1].function.name).toBe("bash");
     });
 

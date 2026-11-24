@@ -78,6 +78,28 @@ async function send(body, source, target, extra = {}) {
 beforeEach(() => { proxyAwareFetch.mockReset(); vi.stubGlobal("fetch", vi.fn(() => { throw new Error("Network forbidden"); })); });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
+describe("Droid 1.18.0 Gemini effort across client formats", () => {
+  it.each([
+    ["openai", { reasoning_effort: "xhigh" }],
+    ["openai-responses", { reasoning: { effort: "xhigh" } }],
+    ["claude", { thinking: { type: "adaptive" }, output_config: { effort: "xhigh" } }],
+    ["gemini", { generationConfig: { thinkingConfig: { thinkingLevel: "XHIGH" } } }],
+  ])("sends Neon XHIGH from %s", async (source, thinking) => {
+    proxyAwareFetch.mockImplementation(async () => upstream("gemini", true));
+    const result = await send({ ...request(source, true), ...thinking }, source, "gemini", {
+      modelInfo: { provider: "factory", model: "gemini-4-neon" },
+    });
+    expect(result.response.status, result.text).toBe(200);
+    const [url, init] = proxyAwareFetch.mock.calls[0];
+    expect(String(url)).toBe("https://api.factory.ai/api/llm/g/v1/generate");
+    expect(JSON.parse(init.body).generationConfig).toMatchObject({
+      maxOutputTokens: 65536,
+      thinkingConfig: { includeThoughts: true, thinkingLevel: "XHIGH" },
+    });
+    expect(returnedCall(source, true, result.text).name).toBe("read");
+  });
+});
+
 describe("Factory real chatCore compatibility roundtrip", () => {
   for (const target of Object.keys(models)) for (const source of new Set([target, "openai"])) for (const stream of [false, true]) {
     it(`${source} -> ${target}, ${stream ? "SSE" : "JSON"}: two requests preserve dispatch and replay`, async () => {
@@ -270,7 +292,7 @@ describe("Factory source intent survives translation and final templates", () =>
     const body = request("gemini", false);
     body.toolConfig = { functionCallingConfig: { mode: "VALIDATED", allowedFunctionNames: ["read", "bash"], future: { signed: "opaque" } } };
     expect((await send(body, "gemini", "gemini")).response.status).toBe(200);
-    expect(JSON.parse(proxyAwareFetch.mock.calls[0][1].body).toolConfig.functionCallingConfig).toEqual({ mode: "VALIDATED", allowedFunctionNames: ["inspect_file", "omp_bash"], future: { signed: "opaque" } });
+    expect(JSON.parse(proxyAwareFetch.mock.calls[0][1].body).toolConfig.functionCallingConfig).toEqual({ mode: "VALIDATED", allowedFunctionNames: ["inspect_file", "tool_bash"], future: { signed: "opaque" } });
     const native = request("claude", false);
     native.tool_choice = { type: "tool", name: "read", disable_parallel_tool_use: true };
     proxyAwareFetch.mockImplementation(async () => upstream("claude", false));

@@ -1,6 +1,6 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
-import { FACTORY_DROID_MODELS } from "../providers/factoryDroid.js";
+import { FACTORY_DROID_MODELS, FACTORY_DROID_VERSION } from "../providers/factoryDroid.js";
 import { FACTORY_DROID_REQUESTS } from "../providers/factoryDroidRequests.js";
 import { factoryEffortFor } from "../providers/thinkingLevels.js";
 import {
@@ -19,7 +19,7 @@ export const FACTORY_DROID_SYSTEM_PROMPT =
   "Help the user with software engineering tasks using the provided tools.\n" +
   "Ground all analysis, planning, and answers in actual file contents and tool outputs.";
 
-export const FACTORY_CLIENT_VERSION = "1.10.0";
+export const FACTORY_CLIENT_VERSION = FACTORY_DROID_VERSION;
 export const FACTORY_OPENAI_PLATFORM_ORG = "org-bHuLtG1fGmYk5YaOihAAXFBw";
 export const ANTHROPIC_VERSION = "2023-06-01";
 
@@ -81,7 +81,9 @@ export function resolveTargetGateway(modelId) {
   return GATEWAY_FOR_API[FACTORY_DROID_MODELS[cleanModelId(modelId)]?.api] ?? "openai-completions";
 }
 
-const INFERENCE_REGIONS = ["global", "eu", "us"];
+const INFERENCE_REGIONS = ["global", "eu", "us", "in"];
+const FACTORY_GLOBAL_API = "https://api.factory.ai";
+const FACTORY_EU_API = "https://api.eu.factory.ai";
 
 // Droid uses whoami's inferenceRegion when it is valid, else sends an eu org to
 // eu and every other org to global. Connections saved before inferenceRegion
@@ -97,7 +99,7 @@ export function factoryInferenceRegion(credentials) {
   } catch {
     // No saved endpoint, or not a URL
   }
-  return data.region === "eu" || endpointHost === "api.eu.factory.ai" ? "eu" : "global";
+  return factoryApiForRegion(data.region) === FACTORY_EU_API || endpointHost === "api.eu.factory.ai" ? "eu" : "global";
 }
 
 // Droid's table picks the provider for the region. A model with no provider
@@ -106,24 +108,29 @@ export function upstreamProviderFor(modelId, region = "global") {
   return FACTORY_DROID_MODELS[cleanModelId(modelId)]?.providers[region] ?? null;
 }
 
+export function factoryApiForRegion(region) {
+  return region === "eu" || region === "europe" ? FACTORY_EU_API : FACTORY_GLOBAL_API;
+}
+
 export function resolveFactoryApiBase(credentials = null) {
   if (process.env.FACTORY_API_BASE?.trim()) {
     return process.env.FACTORY_API_BASE.trim().replace(/\/+$/, "");
   }
-  const custom = credentials?.providerSpecificData?.apiEndpoint;
-  if (custom && typeof custom === "string" && custom.trim()) {
-    return custom.trim().replace(/\/+$/, "");
-  }
-  return "https://api.factory.ai";
+  const data = credentials?.providerSpecificData;
+  const endpoint = typeof data?.apiEndpoint === "string" ? data.apiEndpoint.trim().replace(/\/+$/, "") : "";
+  const region = typeof data?.region === "string" ? data.region.toLowerCase() : "";
+  const hosted = factoryApiForRegion(region);
+  // Only normalize origins older logins wrote for the stored region.
+  return !endpoint || endpoint.toLowerCase() === `https://api.${region}.factory.ai` ? hosted : endpoint;
 }
 
-// Fields Droid 1.3.0 decides per model, effort, and provider. The request
+// Fields Droid decides per model, effort, and provider. The request
 // drops each of them and takes Droid's value, so a field Droid leaves out is
 // left out here too.
 const DROID_OWNED_FIELDS = {
-  anthropic: ["thinking", "output_config.effort", "speed", "context_management"],
+  anthropic: ["thinking", "output_config.effort", "speed", "context_management", "fallbacks"],
   responses: [
-    "reasoning", "include", "parallel_tool_calls", "prompt_cache_retention", "text.verbosity",
+    "reasoning", "include", "parallel_tool_calls", "prompt_cache_key", "prompt_cache_retention", "text.verbosity",
     "service_tier", "safety_identifier", "max_output_tokens", "tool_choice",
   ],
   completions: [
@@ -364,7 +371,8 @@ export class FactoryExecutor extends BaseExecutor {
     cloned[FACTORY_COMPATIBILITY_CONTEXT] = context;
     if (cloned.generationConfig) cloned.generationConfig = { ...cloned.generationConfig };
     const m = cleanModelId(model);
-    const droidRequest = droidRequestFor(m, factoryInferenceRegion(credentials), requestedEffortOf(gateway, body));
+    const region = factoryInferenceRegion(credentials);
+    const droidRequest = droidRequestFor(m, region, requestedEffortOf(gateway, body));
 
     if (gateway !== "google") {
       cloned.stream = !!stream;
@@ -691,6 +699,14 @@ export class FactoryExecutor extends BaseExecutor {
     if (droidRequest) {
       const sent = applyDroidRequest(cloned, droidRequest, globalThis.crypto.randomUUID());
       if (gateway === "openai-responses") {
+        const cacheKey = cloned.prompt_cache_key;
+        if (typeof cacheKey === "string" && cacheKey.trim()) {
+          const provider = upstreamProviderFor(m, region);
+          if (provider === "openai" || provider === "bedrock_openai") {
+            sent.prompt_cache_key = cacheKey;
+            if (provider === "openai") sent.prompt_cache_retention = "24h";
+          }
+        }
         // Responses takes the effort in reasoning, and reasoning models refuse sampling fields.
         delete sent.reasoning_effort;
         if (sent.reasoning) {

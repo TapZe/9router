@@ -1,5 +1,5 @@
 import { FACTORY_CONFIG } from "../constants/oauth.js";
-import { FACTORY_CLIENT_VERSION, randomTraceparent } from "open-sse/executors/factory.js";
+import { FACTORY_CLIENT_VERSION, factoryApiForRegion, randomTraceparent } from "open-sse/executors/factory.js";
 // proxyAwareFetch, not bare fetch: the shared transport (env proxy, curved
 // dispatcher, keep-alive cap) must not depend on load order.
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
@@ -122,6 +122,7 @@ const factory = {
           "X-Factory-Client": "cli",
           "X-Client-Version": FACTORY_CLIENT_VERSION,
           "User-Agent": `factory-cli/${FACTORY_CLIENT_VERSION}`,
+          "X-Factory-Whoami-Extended": "true",
           traceparent: randomTraceparent(),
         },
       });
@@ -133,11 +134,7 @@ const factory = {
         inferenceRegion = whoami.inferenceRegion || null;
         if (whoami.region) {
           region = whoami.region;
-          if (region === "eu" || region === "europe") {
-            apiEndpoint = "https://api.eu.factory.ai";
-          } else if (region !== "global" && /^[a-z0-9-]+$/i.test(region)) {
-            apiEndpoint = `https://api.${region.toLowerCase()}.factory.ai`;
-          }
+          apiEndpoint = factoryApiForRegion(region);
         }
       }
     } catch {

@@ -5,7 +5,7 @@ import { createSSEStream } from "../../open-sse/utils/stream.js";
 import { createFactoryToolNameStream } from "../../open-sse/utils/factoryToolNameStream.js";
 beforeEach(() => { vi.stubGlobal("fetch", () => { throw new Error("Network forbidden"); }); });
 afterEach(() => { vi.unstubAllGlobals(); });
-const map = new Map([["inspect_file", "read"], ["omp_bash", "bash"]]);
+const map = new Map([["inspect_file", "read"], ["tool_bash", "bash"]]);
 const event = (calls, extra = {}, choice = 0) => ({ id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ index: choice, delta: { tool_calls: calls }, finish_reason: null, ...extra }] });
 const call = (name, args, index = 0, extra = {}) => ({ index, ...extra, function: { ...(name === undefined ? {} : { name }), ...(args === undefined ? {} : { arguments: args }) } });
 const encode = (chunks, done = true) => chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + (done ? "data: [DONE]\n\n" : "");
@@ -36,7 +36,7 @@ describe("Factory name fragment stream", () => {
     expect(chatCalls(text).map((tc) => tc.function?.arguments ?? "").join("")).toBe("{}");
   });
   it("keeps interleaved choices and indices independent and preserves text and usage", async () => {
-    const chunks = [event([call("inspect_", undefined, 2, { id: "call_a" })]), event([call("omp_", undefined, 2, { id: "call_b" })], {}, 1), event([call("omp_", undefined, 3, { id: "call_c" })]), event([call("file", "{\"a\":1}", 2)], { delta: { content: "text", reasoning_content: "think", tool_calls: [call("file", "{\"a\":1}", 2)] } }), event([call("bash", "{\"b\":2}", 2)], { finish_reason: "tool_calls" }, 1), event([call("bash", "{\"c\":3}", 3)], { finish_reason: "tool_calls" }), { choices: [], usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 } }];
+    const chunks = [event([call("inspect_", undefined, 2, { id: "call_a" })]), event([call("tool_", undefined, 2, { id: "call_b" })], {}, 1), event([call("tool_", undefined, 3, { id: "call_c" })]), event([call("file", "{\"a\":1}", 2)], { delta: { content: "text", reasoning_content: "think", tool_calls: [call("file", "{\"a\":1}", 2)] } }), event([call("bash", "{\"b\":2}", 2)], { finish_reason: "tool_calls" }, 1), event([call("bash", "{\"c\":3}", 3)], { finish_reason: "tool_calls" }), { choices: [], usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 } }];
     const text = await run(encode(chunks));
     const calls = chatCalls(text);
     expect(calls.filter((tc) => tc.function?.name).map((tc) => [tc.id, tc.function.name])).toEqual([["call_a", "read"], ["call_b", "bash"], ["call_c", "bash"]]);
@@ -96,7 +96,7 @@ describe("Factory name fragment stream", () => {
 it("keeps per-choice call IDs on later argument fragments", async () => {
   const text = await run(encode([
     event([call("inspect_file", "{", 0, { id: "call_a" })]),
-    event([call("omp_bash", "{}", 0, { id: "call_b" })], {}, 1),
+    event([call("tool_bash", "{}", 0, { id: "call_b" })], {}, 1),
     event([call(undefined, "}", 0)], { finish_reason: "tool_calls" }),
     event([], { finish_reason: "tool_calls" }, 1),
   ]));
@@ -108,7 +108,7 @@ it("keeps per-choice call IDs on later argument fragments", async () => {
 it("resolves headers by fallback position without merging parallel choices", () => {
   const helper = createFactoryToolNameStream(map);
   const chunk = (names) => ({ choices: names.map((name, index) => ({ delta: { tool_calls: [{ id: `call_${index}`, function: { name } }] } })) });
-  expect(helper.push(chunk(["inspect_", "omp_"]))).toEqual([]);
+  expect(helper.push(chunk(["inspect_", "tool_"]))).toEqual([]);
   expect(helper.push(chunk(["file", "bash"]))).toEqual([]);
   const headers = helper.flush();
   expect(headers.map((event) => [event.choices[0].index, event.choices[0].delta.tool_calls[0].id, event.choices[0].delta.tool_calls[0].function.name])).toEqual([[0, "call_0", "read"], [1, "call_1", "bash"]]);

@@ -1,6 +1,5 @@
-// Factory requests are priced at OpenRouter's listed price for the same
-// upstream model (openrouter.ai/api/v1/models, 2026-11-13). Droid's own rate
-// cards are in Factory credits, so they are not used.
+// Factory uses listed OpenRouter rates except for models with better maker
+// prices or selected provisional rates from the Droid registry.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -29,6 +28,15 @@ describe("Factory prices from OpenRouter", () => {
   it("leaves models with no OpenRouter equivalent on the general fallback", () => {
     expect(getPricingForModel("factory", "garnet-07-15")).toBeNull();
     expect(getPricingForModel("factory", "gpt-6-sol-fast")).toBeNull();
+  });
+});
+
+describe("Factory's provisional Droid rates", () => {
+  it("uses the same estimates for Factory and its aliases", () => {
+    for (const provider of ["factory", "fy", "droid", "factory-ai"]) {
+      expect(getPricingForModel(provider, "gemini-4-neon")).toEqual({ input: 1.2, output: 6, cached: 0.06, reasoning: 6, cache_creation: 0 });
+      expect(getPricingForModel(provider, "gpt-6.2-sol-ultrafast")).toEqual({ input: 2.4, output: 12, cached: 0.12, reasoning: 12, cache_creation: 3 });
+    }
   });
 });
 

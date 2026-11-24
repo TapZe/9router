@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { FactoryExecutor, factoryInferenceRegion, upstreamProviderFor } from "../../open-sse/executors/factory.js";
+import { FactoryExecutor, factoryInferenceRegion, resolveFactoryApiBase, upstreamProviderFor } from "../../open-sse/executors/factory.js";
 import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
 
 // No request in this file may reach Factory.
@@ -9,10 +9,11 @@ vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
 
 const withData = (providerSpecificData) => ({ accessToken: "tok", providerSpecificData });
 
-describe("Factory inference region from Droid 1.3.0", () => {
+describe("Factory inference regions", () => {
   it("reads the region the way Droid does", () => {
     // Droid uses inferenceRegion when it is valid, else sends an eu org to eu and others to global.
     expect(factoryInferenceRegion(withData({ inferenceRegion: "us", region: "eu" }))).toBe("us");
+    expect(factoryInferenceRegion(withData({ inferenceRegion: "in", region: "global" }))).toBe("in");
     expect(factoryInferenceRegion(withData({ inferenceRegion: "eu" }))).toBe("eu");
     expect(factoryInferenceRegion(withData({ inferenceRegion: "mars", region: "eu" }))).toBe("eu");
     expect(factoryInferenceRegion(withData({ region: "global" }))).toBe("global");
@@ -32,6 +33,18 @@ describe("Factory inference region from Droid 1.3.0", () => {
     expect(upstreamProviderFor("glm-5.3", "eu")).toBe("mistral");
     expect(upstreamProviderFor("kimi-k3", "us")).toBe("baseten");
     expect(upstreamProviderFor("kimi-k3", "global")).toBe("fireworks");
+  });
+
+  it("routes India through Bedrock without changing the hosted API origin", () => {
+    const india = withData({ inferenceRegion: "in", region: "in", apiEndpoint: "https://api.in.factory.ai/" });
+    const executor = new FactoryExecutor();
+    expect(executor.buildUrl("gpt-5.6-terra", true, 0, india)).toBe("https://api.factory.ai/api/llm/o/v1/responses");
+    expect(executor.buildHeaders(india, true, "", "gpt-5.6-terra")["x-api-provider"]).toBe("bedrock_openai");
+    expect(executor.buildHeaders(india, true, "", "claude-opus-5")["x-api-provider"]).toBe("bedrock_anthropic");
+    expect(resolveFactoryApiBase(withData({ region: "us", apiEndpoint: "https://api.us.factory.ai" }))).toBe("https://api.factory.ai");
+    expect(resolveFactoryApiBase(withData({ region: "eu" }))).toBe("https://api.eu.factory.ai");
+    expect(resolveFactoryApiBase(withData({ apiEndpoint: "https://custom.factory.ai" }))).toBe("https://custom.factory.ai");
+    expect(resolveFactoryApiBase(withData({ region: "in", apiEndpoint: "https://api.proxy.factory.ai" }))).toBe("https://api.proxy.factory.ai");
   });
 
   it("finds no provider when Droid lists none for the region", () => {

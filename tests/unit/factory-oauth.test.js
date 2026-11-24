@@ -40,8 +40,8 @@ describe("Factory OAuth & Token Management", () => {
       expect(getProvider("factory")).toBe(factory);
     });
 
-    it("reports Droid 1.10.0 as the client version", () => {
-      expect(FACTORY_CLIENT_VERSION).toBe("1.10.0");
+    it("reports Droid 1.18.0 as the client version", () => {
+      expect(FACTORY_CLIENT_VERSION).toBe("1.18.0");
     });
 
     it("keeps registry headers on the executor's Droid client version", () => {
@@ -99,12 +99,12 @@ describe("Factory OAuth & Token Management", () => {
         expect(resolveTargetGateway(id), id).toBe(gateways[targetFormat]);
       }
     });
-    it("does not include flex SKUs, router aliases, or unreleased models in Factory registry", () => {
+    it("excludes flex SKUs and routers but offers the shipped Astra Ultra Fast SKU", () => {
       const modelIds = new Set(factoryRegistry.models.map((m) => m.id));
       expect(modelIds.has("auto")).toBe(false);
       expect(modelIds.has("auto-fast")).toBe(false);
       expect(modelIds.has("gpt-6-sol-flex")).toBe(false);
-      expect(modelIds.has("gpt-6-astra-ultrafast")).toBe(false);
+      expect(modelIds.has("gpt-6-astra-ultrafast")).toBe(true);
     });
   });
 
@@ -248,6 +248,17 @@ describe("Factory OAuth & Token Management", () => {
 
       expect(extra.inferenceRegion).toBe("us");
       expect(mapped.providerSpecificData.inferenceRegion).toBe("us");
+    });
+
+    it.each(["in", "us"])("keeps %s inference separate from the global API origin", async (region) => {
+      proxyAwareFetch.mockResolvedValue({ ok: true, json: async () => ({ orgId: "org_1", region, inferenceRegion: region }) });
+      const extra = await factory.postExchange({ access_token: "synthetic-token" });
+      expect(proxyAwareFetch).toHaveBeenCalledWith("https://api.factory.ai/api/cli/whoami", expect.objectContaining({
+        headers: expect.objectContaining({ "X-Factory-Whoami-Extended": "true" }),
+      }));
+      expect(factory.mapTokens({ access_token: "synthetic-token" }, extra).providerSpecificData).toMatchObject({
+        region, inferenceRegion: region, apiEndpoint: "https://api.factory.ai",
+      });
     });
   });
 

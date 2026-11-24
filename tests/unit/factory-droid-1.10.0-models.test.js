@@ -60,10 +60,10 @@ describe("Factory models added in Droid 1.10.0", () => {
     expect((await response.json()).error.message).toBe("No providers available for this turn (model claude-fable-5.2, region eu)");
   });
 
-  it("lists Gemini 4 Hydrogen and sends Droid's body in every region, default high", async () => {
+  it("lists Gemini 4 Hydrogen and sends Droid's default high in all supported regions", async () => {
     expectListed("gemini-4-hydrogen", "Gemini 4 Hydrogen (Factory)", "gemini",
       { thinkingFormat: "gemini-level", thinkingCanDisable: false, contextWindow: 1_065_536, maxOutput: 65536 },
-      ["low", "medium", "high"]);
+      ["low", "medium", "high", "xhigh"]);
     for (const r of ["global", "eu", "us"]) {
       const { headers, sent } = await send("gemini-4-hydrogen", { messages: hi }, region(r));
       expect(headers["x-api-provider"], r).toBe("google");
@@ -81,5 +81,25 @@ describe("Factory models added in Droid 1.10.0", () => {
     expect(sent.generationConfig.temperature).toBeUndefined();
     const { response } = await send("gemini-4-carbon", { messages: hi }, region("eu"));
     expect(response.status).toBe(400);
+  });
+});
+
+describe("Factory Gemini 4 in Droid 1.18.0", () => {
+  it("lists Neon and sends XHIGH with an output cap but no sampling defaults", async () => {
+    expectListed("gemini-4-neon", "Gemini 4 Neon (Factory)", "gemini",
+      { thinkingFormat: "gemini-level", thinkingCanDisable: false, contextWindow: 1_048_576, maxOutput: 65536 },
+      ["low", "medium", "high", "xhigh"]);
+    const { sent } = await send("gemini-4-neon", { messages: hi, reasoning_effort: "xhigh", temperature: 0.2 });
+    expect(sent.generationConfig).toEqual({ maxOutputTokens: 65536, thinkingConfig: { includeThoughts: true, thinkingLevel: "XHIGH" } });
+    for (const r of ["eu", "us", "in"]) {
+      const { response } = await send("gemini-4-neon", { messages: hi }, region(r));
+      expect(response.status, r).toBe(400);
+      expect(proxyAwareFetch).not.toHaveBeenCalled();
+    }
+  });
+
+  it("preserves Hydrogen sampling defaults with XHIGH", async () => {
+    const { sent } = await send("gemini-4-hydrogen", { messages: hi, reasoning_effort: "xhigh" });
+    expect(sent.generationConfig).toEqual({ temperature: 1, topP: 0.95, topK: 64, thinkingConfig: { includeThoughts: true, thinkingLevel: "XHIGH" } });
   });
 });
