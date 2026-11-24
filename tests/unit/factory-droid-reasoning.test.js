@@ -6,6 +6,7 @@ import { FactoryExecutor } from "../../open-sse/executors/factory.js";
 import { factoryEffortFor } from "../../open-sse/providers/thinkingLevels.js";
 import { FACTORY_DROID_MODELS } from "../../open-sse/providers/factoryDroid.js";
 import { translateRequest } from "../../open-sse/translator/index.js";
+import { applyThinking } from "../../open-sse/translator/concerns/thinkingUnified.js";
 
 // Efforts and the default effort Droid 1.3.0 lists for each model, read from
 // the binary's model registry. "none" is Droid's off effort.
@@ -116,6 +117,14 @@ describe("Factory reasoning efforts from Droid 1.3.0", () => {
     expect(FACTORY_DROID_MODELS["gpt-5.1"]).toBeUndefined();
     for (const provider of ["factory", "fy", "droid"]) {
       expect(getThinkingLevels(provider, "gpt-5.1"), provider).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"]);
+    }
+  });
+
+  it("keeps the requested effort for a Factory id without a Droid row", () => {
+    // Translation runs before the executor rejects the id, so it must not throw.
+    for (const provider of ["factory", "fy", "droid"]) {
+      const body = applyThinking("openai", "gpt-5.1", { reasoning_effort: "high" }, provider);
+      expect(body.reasoning_effort, provider).toBe("high");
     }
   });
 
